@@ -130,8 +130,8 @@
             </svg>
             <span>Browser Login</span>
           </button>
-          <div class="pointer-events-none absolute top-full right-0 mt-2 hidden group-hover:block z-50 w-56 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed">
-            Opens a real Chromium browser window so you can sign into X manually. Your login session is saved permanently on disk.
+          <div class="pointer-events-none absolute top-full right-0 mt-2 hidden group-hover:block z-50 w-64 p-3 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed">
+            Opens a Chromium window to sign into X manually. You can also double-click <span class="font-mono text-accent-amber font-semibold">login_browser.bat</span> in your project folder to open the browser on your screen!
           </div>
         </div>
 
@@ -831,12 +831,17 @@
           <span>Launching...</span>
         `;
       }
-      showToast('Launching Chromium browser window for manual login...');
+      showToast('Launching Chromium for manual login...');
       try {
         const res = await fetch('/api/browser/launch-login', { method: 'POST' });
         const data = await res.json();
         if (res.ok) {
-          showToast(data.message || 'Browser launched! Sign into X, then return here.');
+          if (data.is_default_desktop === false) {
+            showToast('Server is in background mode — use login_browser.bat on desktop', true);
+            alert("To open the browser on your screen:\n\nDouble-click 'login_browser.bat' in your project folder!\n\n(Because this server is running in a background sandbox, Windows requires launching through your desktop batch file. Both use the exact same ./x_browser_profile!)");
+          } else {
+            showToast(data.message || 'Browser launched! Sign into X, then return here.');
+          }
         } else {
           showToast(data.detail || data.message || 'Failed to launch browser', true);
         }

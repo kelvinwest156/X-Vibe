@@ -559,6 +559,26 @@ async def trigger_scrape_now():
     }
 
 
+def is_on_default_desktop() -> bool:
+    """Checks whether the process is attached to the interactive user desktop."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        tid = kernel32.GetCurrentThreadId()
+        hDesk = user32.GetThreadDesktop(tid)
+        buf = ctypes.create_string_buffer(256)
+        needed = wintypes.DWORD()
+        user32.GetUserObjectInformationA(hDesk, 2, buf, 256, ctypes.byref(needed))
+        desk_name = buf.value.decode("ascii", errors="ignore")
+        return desk_name.lower() == "default"
+    except Exception:
+        return True
+
+
 @app.post("/api/browser/launch-login")
 async def launch_headful_login():
     """
@@ -570,9 +590,20 @@ async def launch_headful_login():
         is_manual_login_active = True
         logger.info("Opening Chromium window in headful mode for manual bootstrap login...")
         await browser_worker.open_headful_for_login()
+
+        on_default = is_on_default_desktop()
+        if not on_default:
+            msg = (
+                "Notice: Server is running in background sandbox. "
+                "To see the browser window directly on your monitor, double-click 'login_browser.bat' in the project folder!"
+            )
+        else:
+            msg = "Chromium window launched! Please log in to your X account on your desktop."
+
         return {
             "status": "browser_opened",
-            "message": "Chromium window launched! Please log in to your X account, then return to the dashboard."
+            "is_default_desktop": on_default,
+            "message": msg
         }
     except Exception as e:
         is_manual_login_active = False
