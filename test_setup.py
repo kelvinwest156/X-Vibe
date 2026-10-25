@@ -48,7 +48,7 @@ def test_database():
     session.close()
 
 async def test_ai_fallback():
-    print("-> Testing DeepSeek AI fallback when unconfigured...")
+    print("-> Testing Google Gemini AI fallback when unconfigured...")
     res = await ai_engine.evaluate_tweet("Hello world test tweet", "dev_user")
     assert "should_reply" in res
     assert res["should_reply"] is False

@@ -48,9 +48,12 @@ def init_db():
                 daily_action_cap=15,
                 min_cooldown_minutes=15,
                 search_query="buildinpublic OR #ai OR #python",
-                selected_model="deepseek-chat"
+                selected_model="gemini-2.5-flash"
             )
             db.add(config)
+            db.commit()
+        elif config.selected_model and "deepseek" in config.selected_model:
+            config.selected_model = "gemini-2.5-flash"
             db.commit()
     finally:
         db.close()

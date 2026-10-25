@@ -101,7 +101,7 @@
         <div class="hidden md:flex items-center gap-2 text-xs">
           <span class="text-gray-400">Model:</span>
           <span id="headerModelPill" class="font-mono text-accent-cyan font-medium px-2 py-0.5 rounded bg-accent-cyan/10 border border-accent-cyan/20">
-            deepseek-chat
+            gemini-2.5-flash
           </span>
         </div>
       </div>
@@ -278,17 +278,17 @@
             <span class="text-[11px] text-gray-500 font-mono">Real-time sync</span>
           </div>
 
-          <!-- DeepSeek API Key & Connection -->
+          <!-- Google Gemini API Key & Connection -->
           <div class="space-y-2.5">
             <div class="flex items-center justify-between">
               <label class="text-xs font-semibold text-gray-300 flex items-center">
-                <span>DeepSeek API Key</span>
+                <span>Google Gemini API Key</span>
                 <span class="group relative inline-flex items-center ml-1">
                   <svg class="w-3.5 h-3.5 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                   </svg>
-                  <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-56 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                    Private API key (sk-...) required for DeepSeek to analyze tweets and draft witty responses.
+                  <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-64 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
+                    Free API key from Google AI Studio. Allows Gemini to evaluate posts and draft witty replies with 1,500 free requests/day.
                   </span>
                 </span>
               </label>
@@ -298,11 +298,18 @@
             </div>
 
             <div class="relative">
-              <input type="password" id="apiKeyInput" placeholder="Enter sk-... to update"
+              <input type="password" id="apiKeyInput" placeholder="Enter Gemini key (AIzaSy...) to update"
                 class="w-full bg-surface-input border border-surface-borderLight rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-gray-600 focus:outline-none focus:border-accent-cyan pr-10">
               <button type="button" onclick="togglePasswordVisibility('apiKeyInput')" class="absolute right-3 top-2.5 text-gray-500 hover:text-gray-300 text-xs">
                 👁️
               </button>
+            </div>
+
+            <div class="flex items-center justify-between text-[11px]">
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-accent-cyan hover:underline inline-flex items-center gap-1 font-medium">
+                Get free key at Google AI Studio &nearr;
+              </a>
+              <span class="text-gray-500 text-[10px]">Free Tier: 15 RPM / 1,500 RPD</span>
             </div>
 
             <button onclick="testApiKey()" id="testKeyBtn" class="w-full px-3 py-2 text-xs font-semibold rounded-lg bg-surface-cardHover hover:bg-surface-border border border-surface-borderLight text-gray-200 transition flex items-center justify-center gap-2">
@@ -318,7 +325,7 @@
                 <span class="font-medium text-gray-300">Status:</span>
                 <span id="apiStatusText">Ready for validation</span>
               </div>
-              <p id="apiHintText" class="text-gray-500 text-[10px]">DeepSeek API keys always begin with 'sk-'.</p>
+              <p id="apiHintText" class="text-gray-500 text-[10px]">Get your free key at aistudio.google.com/app/apikey</p>
             </div>
           </div>
 
@@ -331,13 +338,16 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
                 <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-60 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                  <strong>deepseek-chat (V3)</strong> is fast and conversational. <strong>deepseek-reasoner (R1)</strong> executes extended step-by-step reasoning.
+                  <strong>gemini-2.5-flash</strong> is Google's ultra-fast, intelligent model. <strong>gemini-2.5-pro</strong> provides deep reasoning.
                 </span>
               </span>
             </label>
             <select id="modelSelect" onchange="onModelSelected()" class="w-full bg-surface-input border border-surface-borderLight rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-accent-cyan">
-              <option value="deepseek-chat">deepseek-chat (DeepSeek-V3: High Speed & Code Witty)</option>
-              <option value="deepseek-reasoner">deepseek-reasoner (DeepSeek-R1: Extended Reasoning)</option>
+              <option value="gemini-2.5-flash">gemini-2.5-flash (Gemini 2.5 Flash — Recommended)</option>
+              <option value="gemini-2.5-pro">gemini-2.5-pro (Gemini 2.5 Pro — Deep Reasoning)</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash (Gemini 2.0 Flash — Low Latency)</option>
+              <option value="gemini-1.5-flash">gemini-1.5-flash (Gemini 1.5 Flash — High Speed Free)</option>
+              <option value="gemini-1.5-pro">gemini-1.5-pro (Gemini 1.5 Pro — Extended Context)</option>
             </select>
             <p id="modelDescription" class="text-[11px] text-gray-500">
               Optimal for 1–2 sentence sharp commentary and value-adding coding insights.
@@ -638,10 +648,15 @@
     function onModelSelected() {
       const select = document.getElementById('modelSelect');
       const desc = document.getElementById('modelDescription');
-      if (select.value.includes('reasoner')) {
-        desc.innerText = 'Deep reasoning & chain-of-thought analysis for complex technical posts.';
+      const val = (select.value || '').toLowerCase();
+      if (val.includes('pro')) {
+        desc.innerText = 'Deep contextual intelligence and extended reasoning for complex tech topics.';
+      } else if (val.includes('2.5-flash')) {
+        desc.innerText = 'Optimal for sharp 1–2 sentence developer commentary, high speed, and generous free limits.';
+      } else if (val.includes('reasoner')) {
+        desc.innerText = 'Chain-of-thought analysis for complex technical logic.';
       } else {
-        desc.innerText = 'Optimal for 1–2 sentence sharp commentary and value-adding coding insights.';
+        desc.innerText = 'Fast and lightweight model ideal for frequent timeline scanning.';
       }
     }
 
@@ -688,7 +703,7 @@
 
       const btn = document.getElementById('testKeyBtn');
       const origHtml = btn.innerHTML;
-      btn.innerHTML = `<span>Validating with DeepSeek...</span>`;
+      btn.innerHTML = `<span>Validating with Google Gemini...</span>`;
       btn.disabled = true;
 
       const statusText = document.getElementById('apiStatusText');
@@ -706,9 +721,9 @@
         if (data.success) {
           statusText.innerText = 'Connected & Authenticated';
           statusText.className = 'font-bold text-accent-emerald';
-          hintText.innerText = `Verified with DeepSeek server. ${data.models.length} models accessible.`;
+          hintText.innerText = data.hint || `Verified with Google Gemini. ${data.models.length} models accessible.`;
           feedbackBox.className = 'text-[11px] p-2.5 rounded-lg border border-accent-emerald/40 bg-accent-emerald/10 text-emerald-200 space-y-0.5';
-          showToast('DeepSeek credentials verified successfully!');
+          showToast('Google Gemini credentials verified successfully!');
 
           // Populate model selector
           const select = document.getElementById('modelSelect');
@@ -724,9 +739,9 @@
         } else {
           statusText.innerText = 'Authentication Failed';
           statusText.className = 'font-bold text-accent-rose';
-          hintText.innerText = data.hint || data.error || 'Please ensure key is formatted like "sk-..."';
+          hintText.innerText = data.hint || data.error || 'Please ensure key is valid from aistudio.google.com';
           feedbackBox.className = 'text-[11px] p-2.5 rounded-lg border border-accent-rose/40 bg-accent-rose/10 text-rose-200 space-y-0.5';
-          showToast('DeepSeek authentication rejected', true);
+          showToast('AI authentication failed', true);
         }
       } catch (err) {
         statusText.innerText = 'Network Error';

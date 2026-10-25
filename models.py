@@ -48,7 +48,7 @@ class AgentConfig(Base):
     daily_action_cap = Column(Integer, default=15)            # Max daily interactions (anti-suspension)
     min_cooldown_minutes = Column(Integer, default=15)        # Min delay between individual posts
     search_query = Column(String(256), default="buildinpublic OR #ai")
-    selected_model = Column(String(64), default="deepseek-chat") # Chosen AI model
+    selected_model = Column(String(64), default="gemini-2.5-flash") # Chosen AI model
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

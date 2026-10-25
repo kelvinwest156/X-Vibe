@@ -44,7 +44,7 @@ from database import (
     update_agent_config,
     SessionLocal
 )
-from ai_engine import evaluate_tweet, test_deepseek_api, KNOWN_DEEPSEEK_MODELS
+from ai_engine import evaluate_tweet, test_ai_api, KNOWN_GEMINI_MODELS
 from browser_worker import XBrowserWorker
 from pydantic import BaseModel
 
@@ -129,7 +129,7 @@ async def background_automation_loop():
                 daily_cap = config.daily_action_cap
                 min_cooldown = config.min_cooldown_minutes
                 query = config.search_query
-                selected_model = config.selected_model or "deepseek-chat"
+                selected_model = config.selected_model or "gemini-2.5-flash"
                 daily_used = get_daily_actions_count(db)
             finally:
                 db.close()
@@ -382,7 +382,7 @@ async def get_status(db: Session = Depends(get_db)):
         is_logged_in=is_session_logged_in,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
-        selected_model=config.selected_model or "deepseek-chat",
+        selected_model=config.selected_model or "gemini-2.5-flash",
         recent_logs=[
             SystemLogEntry(
                 timestamp=entry["timestamp"],
@@ -398,7 +398,7 @@ async def get_status(db: Session = Depends(get_db)):
 async def get_config(db: Session = Depends(get_db)):
     """Returns current runtime agent configuration."""
     cfg = get_agent_config(db)
-    current_key = os.getenv("DEEPSEEK_API_KEY", "")
+    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("DEEPSEEK_API_KEY", "")
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
         id=cfg.id,
@@ -408,7 +408,7 @@ async def get_config(db: Session = Depends(get_db)):
         daily_action_cap=cfg.daily_action_cap,
         min_cooldown_minutes=cfg.min_cooldown_minutes,
         search_query=cfg.search_query,
-        selected_model=cfg.selected_model or "deepseek-chat",
+        selected_model=cfg.selected_model or "gemini-2.5-flash",
         masked_api_key=masked_key,
         updated_at=cfg.updated_at
     )
@@ -419,14 +419,18 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
     """Updates runtime agent toggles and AI settings."""
     if payload.api_key is not None and payload.api_key.strip():
         clean_key = payload.api_key.strip()
-        update_env_variable("DEEPSEEK_API_KEY", clean_key)
-        logger.info("Updated DEEPSEEK_API_KEY in environment and .env")
+        if clean_key.startswith("sk-"):
+            update_env_variable("DEEPSEEK_API_KEY", clean_key)
+            logger.info("Updated DEEPSEEK_API_KEY in environment and .env")
+        else:
+            update_env_variable("GEMINI_API_KEY", clean_key)
+            logger.info("Updated GEMINI_API_KEY in environment and .env")
 
     updates = payload.model_dump(exclude_unset=True, exclude={"api_key"})
     updated = update_agent_config(db, updates)
     logger.info(f"Updated agent configuration: {updates}")
 
-    current_key = os.getenv("DEEPSEEK_API_KEY", "")
+    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("DEEPSEEK_API_KEY", "")
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
         id=updated.id,
@@ -436,7 +440,7 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
         daily_action_cap=updated.daily_action_cap,
         min_cooldown_minutes=updated.min_cooldown_minutes,
         search_query=updated.search_query,
-        selected_model=updated.selected_model or "deepseek-chat",
+        selected_model=updated.selected_model or "gemini-2.5-flash",
         masked_api_key=masked_key,
         updated_at=updated.updated_at
     )
@@ -448,15 +452,15 @@ class TestKeyPayload(BaseModel):
 
 @app.get("/api/ai/models")
 async def get_models_endpoint():
-    """Returns available DeepSeek models and live connectivity status."""
-    return await test_deepseek_api()
+    """Returns available AI models and live connectivity status."""
+    return await test_ai_api()
 
 
 @app.post("/api/ai/test-key")
 async def test_key_endpoint(payload: TestKeyPayload):
-    """Tests a provided API key against DeepSeek's models endpoint."""
+    """Tests a provided API key against the AI provider."""
     key = payload.api_key.strip() if payload.api_key else None
-    return await test_deepseek_api(custom_key=key)
+    return await test_ai_api(custom_key=key)
 
 
 @app.get("/api/pending", response_model=List[ProcessedTweetResponse])
