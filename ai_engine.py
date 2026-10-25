@@ -81,10 +81,24 @@ async def test_deepseek_api(custom_key: Optional[str] = None) -> Dict[str, Any]:
                 "name": m.id,
                 "description": "Available on your DeepSeek account"
             })
+        # Check balance with a 1-token test probe
+        balance_warning = None
+        try:
+            await client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1
+            )
+        except Exception as probe_err:
+            probe_str = str(probe_err)
+            if "402" in probe_str or "Insufficient Balance" in probe_str:
+                balance_warning = "Key is valid, but account balance is $0 (Insufficient Balance). Please top up credits at https://platform.deepseek.com/top_up to generate live AI replies."
+
         return {
             "success": True,
             "error": None,
-            "hint": "API key is valid and connected to DeepSeek!",
+            "balance_warning": balance_warning,
+            "hint": balance_warning or "API key is valid and connected to DeepSeek!",
             "models": fetched_models if fetched_models else KNOWN_DEEPSEEK_MODELS
         }
     except Exception as e:
@@ -193,10 +207,18 @@ async def evaluate_tweet(
             }
 
     except Exception as e:
-        logger.error(f"Error calling DeepSeek API ({chosen_model}): {e}", exc_info=True)
+        err_msg = str(e)
+        logger.error(f"Error calling DeepSeek API ({chosen_model}): {err_msg}")
+        
+        user_friendly_reason = f"DeepSeek API Error: {err_msg}"
+        if "402" in err_msg or "Insufficient Balance" in err_msg:
+            user_friendly_reason = "DeepSeek Insufficient Balance ($0 balance). Top up credits at https://platform.deepseek.com/top_up to enable AI replies."
+        elif "401" in err_msg or "Authentication" in err_msg:
+            user_friendly_reason = "DeepSeek API key rejected (401 Unauthorized). Check your API key in .env or dashboard."
+
         return {
             "should_reply": False,
             "reply_text": None,
-            "reasoning": f"DeepSeek API Error: {str(e)}",
-            "raw_response": f"ERROR: {str(e)}"
+            "reasoning": user_friendly_reason,
+            "raw_response": f"ERROR: {err_msg}"
         }
