@@ -74,6 +74,32 @@ def get_default_chromium_path() -> Optional[str]:
     return None
 
 
+def kill_profile_browser_processes(profile_dir: str):
+    """
+    Safely terminates ONLY browser processes whose command line explicitly targets `profile_dir`
+    (e.g. x_browser_profile), leaving the user's personal browser windows completely untouched.
+    """
+    profile_folder_name = os.path.basename(os.path.normpath(profile_dir))
+    if not profile_folder_name:
+        return
+
+    if os.name == "nt":
+        import subprocess
+        ps_cmd = (
+            f"Get-CimInstance Win32_Process -Filter \"Name='brave.exe' OR Name='chrome.exe' OR Name='msedge.exe'\" | "
+            f"Where-Object {{ $_.CommandLine -like '*{profile_folder_name}*' }} | "
+            f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+        )
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                timeout=20
+            )
+        except Exception as e:
+            logger.debug(f"Notice cleaning up profile processes: {e}")
+
+
 class XBrowserWorker:
     def __init__(self, profile_dir: str = DEFAULT_PROFILE_DIR, headless: bool = False, executable_path: Optional[str] = None):
         self.profile_dir = profile_dir
@@ -151,7 +177,16 @@ class XBrowserWorker:
         if self.executable_path:
             launch_kwargs["executable_path"] = self.executable_path
 
-        self._context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+        try:
+            self._context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+        except Exception as e:
+            if "ProcessSingleton" in str(e) or "0x20" in str(e) or "already in use" in str(e):
+                logger.warning("Profile lock detected. Releasing orphaned bot browser instance and retrying...")
+                kill_profile_browser_processes(self.profile_dir)
+                await asyncio.sleep(1.0)
+                self._context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
+            else:
+                raise
 
         self._context.on("page", lambda p: asyncio.create_task(self._apply_stealth(p)))
         self._context.on("close", lambda: setattr(self, "_context", None))
@@ -247,7 +282,8 @@ class XBrowserWorker:
 
                 current_url = page.url
                 if "login" in current_url or "i/flow/login" in current_url:
-                    logger.info("Session status: Redirected to login page (Logged Out).")
+                    logger.info("Session status: Redirected to login page (Logged Out). Releasing profile lock.")
+                    await self._close_context_internal()
                     return False
 
                 logged_in_selectors = [
@@ -264,13 +300,18 @@ class XBrowserWorker:
 
                 login_btn = await page.query_selector('a[href="/login"], [data-testid="loginButton"]')
                 if login_btn:
-                    logger.info("Session status: Login button detected (Logged Out).")
+                    logger.info("Session status: Login button detected (Logged Out). Releasing profile lock.")
+                    await self._close_context_internal()
                     return False
 
-                return "home" in current_url
+                is_ok = "home" in current_url
+                if not is_ok:
+                    await self._close_context_internal()
+                return is_ok
 
             except Exception as e:
                 logger.warning(f"Error checking login status: {e}")
+                await self._close_context_internal()
                 return False
 
     async def scrape_feed(self, search_query: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:

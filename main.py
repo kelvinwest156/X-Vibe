@@ -10,6 +10,11 @@ import asyncio
 # Critical fix for Windows: Playwright subprocesses require ProactorEventLoop
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        import uvicorn.loops.asyncio
+        uvicorn.loops.asyncio.asyncio_setup = lambda use_subprocess=False: None
+    except Exception:
+        pass
 
 import os
 import time
@@ -620,6 +625,19 @@ async def launch_headful_login():
         raise HTTPException(status_code=500, detail=f"Failed to open browser: {str(e)}")
 
 
+@app.post("/api/browser/release")
+async def release_browser_profile():
+    """
+    Releases the browser context and pauses background checks so an external login script
+    (login.py / login_browser.bat) can use ./x_browser_profile without a lock conflict.
+    """
+    global is_manual_login_active
+    is_manual_login_active = True
+    logger.info("Releasing browser profile lock for external login assistant...")
+    await browser_worker.stop()
+    return {"status": "released"}
+
+
 @app.post("/api/browser/check-session")
 async def check_session():
     """Forces an active verification of the X login session."""
@@ -633,4 +651,9 @@ if __name__ == "__main__":
     import uvicorn
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, loop="asyncio", reload=True)
+        try:
+            import uvicorn.loops.asyncio
+            uvicorn.loops.asyncio.asyncio_setup = lambda use_subprocess=False: None
+        except Exception:
+            pass
+    uvicorn.run(app, host="127.0.0.1", port=8000)
