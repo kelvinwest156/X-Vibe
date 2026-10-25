@@ -48,6 +48,7 @@ class AgentConfig(Base):
     daily_action_cap = Column(Integer, default=15)            # Max daily interactions (anti-suspension)
     min_cooldown_minutes = Column(Integer, default=15)        # Min delay between individual posts
     search_query = Column(String(256), default="buildinpublic OR #ai")
+    selected_model = Column(String(64), default="deepseek-chat") # Chosen AI model
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -78,6 +79,8 @@ class AgentConfigUpdate(BaseModel):
     daily_action_cap: Optional[int] = None
     min_cooldown_minutes: Optional[int] = None
     search_query: Optional[str] = None
+    selected_model: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 class AgentConfigResponse(BaseModel):
@@ -88,6 +91,8 @@ class AgentConfigResponse(BaseModel):
     daily_action_cap: int
     min_cooldown_minutes: int
     search_query: str
+    selected_model: str
+    masked_api_key: Optional[str] = None
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -114,4 +119,5 @@ class AgentStatusResponse(BaseModel):
     is_logged_in: bool
     pending_approvals_count: int
     total_processed_count: int
+    selected_model: str
     recent_logs: List[SystemLogEntry]

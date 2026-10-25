@@ -25,6 +25,17 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db():
     """Initializes database tables and seeds default AgentConfig if empty."""
     Base.metadata.create_all(bind=engine)
+    
+    # Auto-migration: check if selected_model exists in agent_config
+    with engine.connect() as conn:
+        try:
+            columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(agent_config)").fetchall()]
+            if "selected_model" not in columns:
+                conn.exec_driver_sql("ALTER TABLE agent_config ADD COLUMN selected_model VARCHAR(64) DEFAULT 'deepseek-chat'")
+                conn.commit()
+        except Exception:
+            pass
+
     db = SessionLocal()
     try:
         config = db.query(AgentConfig).filter(AgentConfig.id == 1).first()
@@ -36,7 +47,8 @@ def init_db():
                 polling_interval_minutes=15,
                 daily_action_cap=15,
                 min_cooldown_minutes=15,
-                search_query="buildinpublic OR #ai OR #python"
+                search_query="buildinpublic OR #ai OR #python",
+                selected_model="deepseek-chat"
             )
             db.add(config)
             db.commit()

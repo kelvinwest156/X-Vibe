@@ -44,8 +44,9 @@ from database import (
     update_agent_config,
     SessionLocal
 )
-from ai_engine import evaluate_tweet
+from ai_engine import evaluate_tweet, test_deepseek_api, KNOWN_DEEPSEEK_MODELS
 from browser_worker import XBrowserWorker
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -127,6 +128,7 @@ async def background_automation_loop():
                 daily_cap = config.daily_action_cap
                 min_cooldown = config.min_cooldown_minutes
                 query = config.search_query
+                selected_model = config.selected_model or "deepseek-chat"
                 daily_used = get_daily_actions_count(db)
             finally:
                 db.close()
@@ -173,10 +175,10 @@ async def background_automation_loop():
                     if is_tweet_already_processed(db, tweet_id):
                         continue
 
-                    logger.info(f"Evaluating tweet {tweet_id} by @{t['author']}: '{t['text'][:60]}...'")
+                    logger.info(f"Evaluating tweet {tweet_id} by @{t['author']} using {selected_model}: '{t['text'][:60]}...'")
 
                     # DeepSeek AI Evaluation
-                    ai_result = await evaluate_tweet(t["text"], t["author"])
+                    ai_result = await evaluate_tweet(t["text"], t["author"], model_name=selected_model)
 
                     if not ai_result["should_reply"]:
                         logger.info(f"DeepSeek skipped tweet {tweet_id}: {ai_result['reasoning']}")
@@ -322,6 +324,27 @@ async def serve_dashboard():
     return HTMLResponse("<h1>Static dashboard not found. Please verify static/index.html</h1>", status_code=404)
 
 
+def update_env_variable(key: str, value: str):
+    """Updates a key in the local .env file and environment."""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        found = False
+        new_lines = []
+        for line in lines:
+            if line.startswith(f"{key}="):
+                new_lines.append(f"{key}={value}\n")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f"{key}={value}\n")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    os.environ[key] = value
+
+
 @app.get("/api/status", response_model=AgentStatusResponse)
 async def get_status(db: Session = Depends(get_db)):
     """Returns the comprehensive run state for the UI."""
@@ -343,6 +366,7 @@ async def get_status(db: Session = Depends(get_db)):
         is_logged_in=is_session_logged_in,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
+        selected_model=config.selected_model or "deepseek-chat",
         recent_logs=[
             SystemLogEntry(
                 timestamp=entry["timestamp"],
@@ -357,16 +381,66 @@ async def get_status(db: Session = Depends(get_db)):
 @app.get("/api/config", response_model=AgentConfigResponse)
 async def get_config(db: Session = Depends(get_db)):
     """Returns current runtime agent configuration."""
-    return get_agent_config(db)
+    cfg = get_agent_config(db)
+    current_key = os.getenv("DEEPSEEK_API_KEY", "")
+    masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
+    return AgentConfigResponse(
+        id=cfg.id,
+        is_active=cfg.is_active,
+        auto_pilot_mode=cfg.auto_pilot_mode,
+        polling_interval_minutes=cfg.polling_interval_minutes,
+        daily_action_cap=cfg.daily_action_cap,
+        min_cooldown_minutes=cfg.min_cooldown_minutes,
+        search_query=cfg.search_query,
+        selected_model=cfg.selected_model or "deepseek-chat",
+        masked_api_key=masked_key,
+        updated_at=cfg.updated_at
+    )
 
 
 @app.post("/api/config", response_model=AgentConfigResponse)
 async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depends(get_db)):
-    """Updates runtime agent toggles."""
-    updates = payload.model_dump(exclude_unset=True)
+    """Updates runtime agent toggles and AI settings."""
+    if payload.api_key is not None and payload.api_key.strip():
+        clean_key = payload.api_key.strip()
+        update_env_variable("DEEPSEEK_API_KEY", clean_key)
+        logger.info("Updated DEEPSEEK_API_KEY in environment and .env")
+
+    updates = payload.model_dump(exclude_unset=True, exclude={"api_key"})
     updated = update_agent_config(db, updates)
     logger.info(f"Updated agent configuration: {updates}")
-    return updated
+
+    current_key = os.getenv("DEEPSEEK_API_KEY", "")
+    masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
+    return AgentConfigResponse(
+        id=updated.id,
+        is_active=updated.is_active,
+        auto_pilot_mode=updated.auto_pilot_mode,
+        polling_interval_minutes=updated.polling_interval_minutes,
+        daily_action_cap=updated.daily_action_cap,
+        min_cooldown_minutes=updated.min_cooldown_minutes,
+        search_query=updated.search_query,
+        selected_model=updated.selected_model or "deepseek-chat",
+        masked_api_key=masked_key,
+        updated_at=updated.updated_at
+    )
+
+
+class TestKeyPayload(BaseModel):
+    api_key: Optional[str] = None
+
+
+@app.get("/api/ai/models")
+async def get_models_endpoint():
+    """Returns available DeepSeek models and live connectivity status."""
+    return await test_deepseek_api()
+
+
+@app.post("/api/ai/test-key")
+async def test_key_endpoint(payload: TestKeyPayload):
+    """Tests a provided API key against DeepSeek's models endpoint."""
+    key = payload.api_key.strip() if payload.api_key else None
+    return await test_deepseek_api(custom_key=key)
 
 
 @app.get("/api/pending", response_model=List[ProcessedTweetResponse])
