@@ -646,8 +646,22 @@
     }
 
     async function toggleAgentActive() {
-      if (!currentConfig) return;
-      const newState = !currentConfig.is_active;
+      const btn = document.getElementById('masterToggleBtn');
+      const label = document.getElementById('masterToggleLabel');
+      const isCurrentlyActive = label ? label.innerText.toLowerCase().includes('pause') : (currentConfig ? currentConfig.is_active : false);
+      const newState = !isCurrentlyActive;
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `
+          <svg class="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span>Updating...</span>
+        `;
+      }
+
       try {
         const res = await fetch('/api/config', {
           method: 'POST',
@@ -657,10 +671,14 @@
         if (res.ok) {
           currentConfig = await res.json();
           showToast(newState ? 'Agent Online — background worker activated' : 'Agent Paused');
-          fetchStatus();
+        } else {
+          showToast('Failed to toggle agent state', true);
         }
       } catch (err) {
-        showToast('Failed to toggle agent state', true);
+        showToast('Network error toggling agent', true);
+      } finally {
+        if (btn) btn.disabled = false;
+        await fetchStatus();
       }
     }
 
@@ -765,26 +783,71 @@
     }
 
     async function triggerScrapeNow() {
-      showToast('Initiating immediate scrape cycle...');
+      const btn = document.getElementById('triggerScrapeBtn');
+      const origHtml = btn ? btn.innerHTML : null;
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `
+          <svg class="w-3.5 h-3.5 text-accent-cyan animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span class="hidden sm:inline">Scanning...</span>
+        `;
+      }
+      showToast('Initiating scrape cycle...');
       try {
         const res = await fetch('/api/trigger-scrape', { method: 'POST' });
-        if (res.ok) {
-          showToast('Feed scan underway');
-          setTimeout(fetchStatus, 1500);
+        const data = await res.json();
+        if (!res.ok || data.status === 'not_logged_in') {
+          showToast(data.message || 'Cannot scan feed: Not logged into X', true);
+        } else {
+          showToast(data.message || 'Scrape cycle started! Scanning target feed...');
+          setTimeout(() => {
+            fetchStatus();
+            fetchPendingApprovals();
+          }, 2000);
         }
       } catch (err) {
         showToast('Failed to trigger cycle', true);
+      } finally {
+        if (btn && origHtml) {
+          btn.innerHTML = origHtml;
+          btn.disabled = false;
+        }
       }
     }
 
     async function launchLoginBrowser() {
-      showToast('Launching Chromium for manual X login...');
+      const btn = document.getElementById('launchLoginBtn');
+      const origHtml = btn ? btn.innerHTML : null;
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `
+          <svg class="w-3.5 h-3.5 text-accent-amber animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span>Launching...</span>
+        `;
+      }
+      showToast('Launching Chromium browser window for manual login...');
       try {
         const res = await fetch('/api/browser/launch-login', { method: 'POST' });
         const data = await res.json();
-        showToast(data.message || 'Browser launched');
+        if (res.ok) {
+          showToast(data.message || 'Browser launched! Sign into X, then return here.');
+        } else {
+          showToast(data.detail || data.message || 'Failed to launch browser', true);
+        }
       } catch (err) {
-        showToast('Error launching browser', true);
+        showToast('Error launching browser window', true);
+      } finally {
+        if (btn && origHtml) {
+          btn.innerHTML = origHtml;
+          btn.disabled = false;
+        }
+        setTimeout(fetchStatus, 3000);
       }
     }
 
@@ -796,9 +859,9 @@
         if (data.is_logged_in) {
           showToast('X Session authenticated!');
         } else {
-          showToast('X Session logged out. Use "Browser Login"', true);
+          showToast('X Session logged out. Please click "Browser Login" to sign in.', true);
         }
-        fetchStatus();
+        await fetchStatus();
       } catch (err) {
         showToast('Failed to verify session', true);
       }

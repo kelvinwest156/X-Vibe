@@ -5,7 +5,7 @@ Features:
 - Stealth masking (evades bot detection)
 - Humanized keystrokes & randomized delay intervals
 - Safe selector targeting with fallback handling
-- Single-instance lock to prevent concurrent sessions
+- Single-instance lock to prevent concurrent sessions (deadlock-free architecture)
 """
 
 import os
@@ -36,89 +36,121 @@ class XBrowserWorker:
             from playwright_stealth import stealth_async
             await stealth_async(page)
         except Exception as e:
-            logger.debug(f"playwright_stealth helper: {e}, applying direct script masking")
+            logger.debug(f"playwright_stealth helper notice: {e}")
 
         # Direct script masking as a guaranteed layer
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            window.chrome = {
-                runtime: {}
-            };
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en']
-            });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-        """)
+        try:
+            await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                window.chrome = {
+                    runtime: {}
+                };
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+            """)
+        except Exception:
+            pass
 
-    async def start(self, force_headful: bool = False) -> BrowserContext:
-        """Launches the persistent browser context if not already active."""
-        async with self._lock:
-            if self._context:
-                return self._context
-
-            os.makedirs(self.profile_dir, exist_ok=True)
-            use_headless = False if force_headful else self.headless
-
-            logger.info(f"Launching persistent Playwright browser (headless={use_headless}, profile={self.profile_dir})")
-            self._playwright = await async_playwright().start()
-
-            # Anti-detection launch flags
-            args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-infobars",
-                "--disable-dev-shm-usage",
-                "--disable-background-networking",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ]
-
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=self.profile_dir,
-                headless=use_headless,
-                args=args,
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-            )
-
-            # Hook stealth onto every newly opened page
-            self._context.on("page", lambda p: asyncio.create_task(self._apply_stealth(p)))
-
-            self.is_running = True
+    async def _ensure_context(self, force_headful: bool = False) -> BrowserContext:
+        """
+        Internal: Launches persistent context WITHOUT acquiring self._lock.
+        Assumes caller manages lock or concurrency.
+        """
+        if self._context:
             return self._context
 
-    async def stop(self):
-        """Safely closes the browser context."""
-        async with self._lock:
-            if self._context:
-                try:
-                    await self._context.close()
-                except Exception as e:
-                    logger.warning(f"Error closing context: {e}")
-                self._context = None
+        os.makedirs(self.profile_dir, exist_ok=True)
+        use_headless = False if force_headful else self.headless
 
-            if self._playwright:
-                try:
-                    await self._playwright.stop()
-                except Exception as e:
-                    logger.warning(f"Error stopping playwright: {e}")
-                self._playwright = None
+        logger.info(f"Launching Playwright Chromium (headless={use_headless}, profile={self.profile_dir})")
+        if not self._playwright:
+            self._playwright = await async_playwright().start()
 
-            self.is_running = False
-            logger.info("Browser context closed.")
+        args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-infobars",
+            "--disable-dev-shm-usage",
+            "--disable-background-networking",
+            "--disable-features=IsolateOrigins,site-per-process",
+        ]
 
-    async def get_active_page(self) -> Page:
-        """Retrieves or creates a valid page."""
-        context = await self.start()
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=self.profile_dir,
+            headless=use_headless,
+            args=args,
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        )
+
+        self._context.on("page", lambda p: asyncio.create_task(self._apply_stealth(p)))
+        self._context.on("close", lambda: setattr(self, "_context", None))
+        self.is_running = True
+        return self._context
+
+    async def _get_page_internal(self, force_headful: bool = False) -> Page:
+        """Internal helper to retrieve or create a page without re-locking."""
+        if self._context:
+            try:
+                if self._context.pages:
+                    page = self._context.pages[0]
+                    await self._apply_stealth(page)
+                    return page
+                else:
+                    page = await self._context.new_page()
+                    await self._apply_stealth(page)
+                    return page
+            except Exception:
+                logger.info("Existing browser session closed or expired; initializing fresh context...")
+                await self._close_context_internal()
+
+        context = await self._ensure_context(force_headful=force_headful)
         if context.pages:
             page = context.pages[0]
         else:
             page = await context.new_page()
         await self._apply_stealth(page)
         return page
+
+    async def _close_context_internal(self):
+        """Internal helper to close context and playwright without re-locking."""
+        if self._context:
+            try:
+                await self._context.close()
+            except Exception as e:
+                logger.warning(f"Notice closing context: {e}")
+            self._context = None
+
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                logger.warning(f"Notice stopping playwright: {e}")
+            self._playwright = None
+
+        self.is_running = False
+        logger.info("Browser context closed.")
+
+    async def start(self, force_headful: bool = False) -> BrowserContext:
+        """Public method to start browser."""
+        async with self._lock:
+            return await self._ensure_context(force_headful=force_headful)
+
+    async def stop(self):
+        """Public method to stop browser."""
+        async with self._lock:
+            await self._close_context_internal()
+
+    async def get_active_page(self) -> Page:
+        """Public method to get active page."""
+        async with self._lock:
+            return await self._get_page_internal()
 
     async def human_delay(self, min_sec: float = 3.0, max_sec: float = 7.0):
         """Randomized human-like pause. Never uses flat timeouts."""
@@ -133,9 +165,7 @@ class XBrowserWorker:
 
         for char in text:
             await page.keyboard.type(char)
-            # Randomized keystroke timing (50ms - 150ms)
             delay = random.uniform(0.05, 0.15)
-            # Micro-pause occasionally after spaces or punctuation
             if char in " ,.!?":
                 delay += random.uniform(0.1, 0.3)
             await asyncio.sleep(delay)
@@ -143,22 +173,19 @@ class XBrowserWorker:
     async def check_login_status(self) -> bool:
         """
         Navigates to X and checks if user session is active.
-        Looks for primary navigation elements (Home timeline, user profile).
         """
         async with self._lock:
-            page = await self.get_active_page()
+            page = await self._get_page_internal()
             try:
-                logger.info("Checking X login status...")
+                logger.info("Checking X login status on x.com/home...")
                 await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=30000)
-                await self.human_delay(2.0, 4.0)
+                await self.human_delay(2.0, 3.5)
 
-                # If redirected to login page or sign in modal is visible
                 current_url = page.url
                 if "login" in current_url or "i/flow/login" in current_url:
-                    logger.info("Not logged in (redirected to login page).")
+                    logger.info("Session status: Redirected to login page (Logged Out).")
                     return False
 
-                # Check for standard logged-in markers (like timeline or primary navigation)
                 logged_in_selectors = [
                     '[data-testid="AppTabBar_Home_Link"]',
                     '[data-testid="SideNav_AccountSwitcher_Button"]',
@@ -168,16 +195,14 @@ class XBrowserWorker:
                 for selector in logged_in_selectors:
                     elem = await page.query_selector(selector)
                     if elem:
-                        logger.info("Confirmed logged-in session on X.")
+                        logger.info("Session status: Confirmed logged-in session on X.")
                         return True
 
-                # If none found, double check if login button exists
                 login_btn = await page.query_selector('a[href="/login"], [data-testid="loginButton"]')
                 if login_btn:
-                    logger.info("Login buttons detected; user is logged out.")
+                    logger.info("Session status: Login button detected (Logged Out).")
                     return False
 
-                # Fallback check
                 return "home" in current_url
 
             except Exception as e:
@@ -187,10 +212,9 @@ class XBrowserWorker:
     async def scrape_feed(self, search_query: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Scrapes tweets from either the Home timeline or a search query.
-        Returns a list of dicts with tweet_id, author, text, url.
         """
         async with self._lock:
-            page = await self.get_active_page()
+            page = await self._get_page_internal()
             tweets_data: List[Dict[str, Any]] = []
 
             try:
@@ -203,14 +227,13 @@ class XBrowserWorker:
                     logger.info("Navigating to home timeline...")
 
                 await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                await self.human_delay(3.5, 6.0)
+                await self.human_delay(3.5, 5.0)
 
                 # Scroll gently to trigger tweet loading
                 for _ in range(2):
                     await page.mouse.wheel(0, random.randint(300, 600))
-                    await self.human_delay(1.5, 3.0)
+                    await self.human_delay(1.5, 2.5)
 
-                # Find all tweet articles on page
                 articles = await page.query_selector_all('article[data-testid="tweet"]')
                 logger.info(f"Found {len(articles)} tweet elements on page.")
 
@@ -219,8 +242,6 @@ class XBrowserWorker:
                         break
 
                     try:
-                        # Extract Tweet URL & Tweet ID
-                        # Look for link matching /status/<id>
                         links = await article.query_selector_all('a[href*="/status/"]')
                         tweet_id = None
                         tweet_url = None
@@ -236,11 +257,9 @@ class XBrowserWorker:
                         if not tweet_id:
                             continue
 
-                        # Extract Tweet Text
                         text_elem = await article.query_selector('[data-testid="tweetText"]')
                         tweet_text = await text_elem.inner_text() if text_elem else ""
 
-                        # Extract Author Handle
                         author_elem = await article.query_selector('[data-testid="User-Name"]')
                         author_raw = await author_elem.inner_text() if author_elem else ""
                         author_match = re.search(r'@([A-Za-z0-9_]+)', author_raw)
@@ -268,15 +287,14 @@ class XBrowserWorker:
         Navigates to the specific tweet, enters humanized reply, and submits.
         """
         async with self._lock:
-            page = await self.get_active_page()
+            page = await self._get_page_internal()
             target_url = tweet_url or f"https://x.com/i/status/{tweet_id}"
 
             try:
                 logger.info(f"Navigating to tweet for reply: {target_url}")
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
-                await self.human_delay(3.0, 5.5)
+                await self.human_delay(3.0, 5.0)
 
-                # Locate reply input area
                 reply_input_selectors = [
                     '[data-testid="tweetTextarea_0"]',
                     'div[role="textbox"][data-testid="tweetTextarea_0"]',
@@ -289,23 +307,20 @@ class XBrowserWorker:
                     if input_box:
                         break
 
-                # If direct textbox is not yet active, click the reply button first
                 if not input_box:
                     reply_btn = await page.query_selector('[data-testid="reply"]')
                     if reply_btn:
                         await reply_btn.click()
-                        await self.human_delay(1.5, 3.0)
+                        await self.human_delay(1.5, 2.5)
                         input_box = await page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=10000)
 
                 if not input_box:
                     logger.error("Could not find reply input box on the page.")
                     return False
 
-                # Type character-by-character with realistic cadence
                 await self.human_type(page, '[data-testid="tweetTextarea_0"]', reply_text)
-                await self.human_delay(2.0, 4.0)
+                await self.human_delay(1.5, 3.0)
 
-                # Locate tweet submit button
                 submit_selectors = [
                     '[data-testid="tweetButtonInline"]',
                     '[data-testid="tweetButton"]',
@@ -316,7 +331,6 @@ class XBrowserWorker:
                 for s in submit_selectors:
                     submit_btn = await page.query_selector(s)
                     if submit_btn:
-                        # Ensure button is not disabled
                         is_disabled = await submit_btn.get_attribute("disabled")
                         aria_disabled = await submit_btn.get_attribute("aria-disabled")
                         if not is_disabled and aria_disabled != "true":
@@ -326,13 +340,11 @@ class XBrowserWorker:
                     logger.error("Could not find active submit button.")
                     return False
 
-                # Slight hover pause before click
                 await submit_btn.hover()
-                await self.human_delay(0.8, 1.8)
+                await self.human_delay(0.5, 1.2)
                 await submit_btn.click()
 
-                # Wait for post action to complete
-                await self.human_delay(3.5, 6.0)
+                await self.human_delay(3.0, 5.0)
                 logger.info(f"Successfully posted reply to tweet {tweet_id}")
                 return True
 
@@ -343,10 +355,14 @@ class XBrowserWorker:
     async def open_headful_for_login(self):
         """
         Helper method to launch headful browser so the user can easily log into X manually.
-        Keeps running until manually stopped or closed.
+        Closes any existing headless session and opens headful window pointing to x.com/login.
         """
-        await self.stop()  # Stop any headless background instance first
-        context = await self.start(force_headful=True)
-        page = await self.get_active_page()
-        await page.goto("https://x.com/login", wait_until="domcontentloaded")
-        logger.info("Headful browser opened for manual login. Please log into your X account.")
+        async with self._lock:
+            await self._close_context_internal()
+            logger.info("Opening Chromium window for manual login...")
+            page = await self._get_page_internal(force_headful=True)
+            try:
+                await page.goto("https://x.com/login", wait_until="domcontentloaded", timeout=25000)
+            except Exception as e:
+                logger.warning(f"Initial navigation notice: {e}")
+            logger.info("Headful browser opened for manual login. Please sign into X in the browser window.")

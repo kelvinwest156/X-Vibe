@@ -90,6 +90,7 @@ browser_worker = XBrowserWorker(headless=HEADLESS)
 
 last_interaction_timestamp: float = 0.0  # Unix timestamp of last reply/post
 is_session_logged_in: bool = False
+is_manual_login_active: bool = False
 bg_worker_task: Optional[asyncio.Task] = None
 scrape_now_flag = asyncio.Event()
 
@@ -146,6 +147,16 @@ async def background_automation_loop():
                 # If active, check if manual trigger or wait for interval
                 pass
 
+            # Check if user is currently logging in via the headful Chromium window
+            if is_manual_login_active:
+                logger.info("Manual login session open. Background scanner waiting for user sign-in...")
+                try:
+                    await asyncio.wait_for(scrape_now_flag.wait(), timeout=15.0)
+                    scrape_now_flag.clear()
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
             # Safety Rule 1: Daily Volume Cap
             if daily_used >= daily_cap:
                 logger.warning(f"Daily action cap reached ({daily_used}/{daily_cap}). Pausing until tomorrow.")
@@ -160,8 +171,13 @@ async def background_automation_loop():
                 is_session_logged_in = False
 
             if not is_session_logged_in:
-                logger.warning("Agent is not logged into X. Please use 'Open Browser for Login' to sign in manually.")
-                await asyncio.sleep(60)
+                logger.warning("Agent is not logged into X. Please click 'Browser Login' above to sign in manually.")
+                # Wait 30 seconds before re-checking or wake immediately if user clicks Scrape Now
+                try:
+                    await asyncio.wait_for(scrape_now_flag.wait(), timeout=30.0)
+                    scrape_now_flag.clear()
+                except asyncio.TimeoutError:
+                    pass
                 continue
 
             logger.info(f"Starting feed scan with query: '{query}'...")
@@ -521,9 +537,26 @@ async def reject_tweet(tweet_id: str, db: Session = Depends(get_db)):
 @app.post("/api/trigger-scrape")
 async def trigger_scrape_now():
     """Wakes up the scraper immediately without waiting for interval."""
+    global is_session_logged_in, is_manual_login_active
+    is_manual_login_active = False
+
+    if not is_session_logged_in:
+        # Check login status directly
+        is_session_logged_in = await browser_worker.check_login_status()
+
+    if not is_session_logged_in:
+        logger.warning("Scrape requested, but agent is not logged into X. Please use 'Browser Login' first.")
+        return {
+            "status": "not_logged_in",
+            "message": "Cannot scan feed: Not logged into X! Please click 'Browser Login' to log in first."
+        }
+
     scrape_now_flag.set()
-    logger.info("Manual scrape cycle triggered via API.")
-    return {"status": "triggered"}
+    logger.info("Manual scrape cycle triggered. Scanning feed...")
+    return {
+        "status": "triggered",
+        "message": "Scrape cycle started! Scanning target feed for tweets..."
+    }
 
 
 @app.post("/api/browser/launch-login")
@@ -532,18 +565,26 @@ async def launch_headful_login():
     Opens a headful Chromium window to x.com/login so the user can log in manually.
     Stores the cookies/session into ./x_browser_profile.
     """
-    logger.info("Opening browser in headful mode for manual bootstrap login...")
-    await browser_worker.open_headful_for_login()
-    return {
-        "status": "browser_opened",
-        "message": "Headful browser launched! Please log in to X in the browser window, then close or return to dashboard."
-    }
+    global is_manual_login_active
+    try:
+        is_manual_login_active = True
+        logger.info("Opening Chromium window in headful mode for manual bootstrap login...")
+        await browser_worker.open_headful_for_login()
+        return {
+            "status": "browser_opened",
+            "message": "Chromium window launched! Please log in to your X account, then return to the dashboard."
+        }
+    except Exception as e:
+        is_manual_login_active = False
+        logger.error(f"Failed to open Chromium browser: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to open browser: {str(e)}")
 
 
 @app.post("/api/browser/check-session")
 async def check_session():
     """Forces an active verification of the X login session."""
-    global is_session_logged_in
+    global is_session_logged_in, is_manual_login_active
+    is_manual_login_active = False
     is_session_logged_in = await browser_worker.check_login_status()
     return {"is_logged_in": is_session_logged_in}
 
