@@ -6,6 +6,7 @@ Also provides fallback support for DeepSeek API if configured.
 
 import os
 import json
+import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
@@ -310,23 +311,45 @@ async def _evaluate_with_gemini(
             max_output_tokens=350
         )
 
-        try:
-            response = await client.aio.models.generate_content(
-                model=clean_model,
-                contents=user_content,
-                config=config
-            )
-        except Exception as first_err:
-            if ("404" in str(first_err) or "NOT_FOUND" in str(first_err)) and clean_model != "gemini-3.8-flash":
-                logger.info(f"Model {clean_model} unavailable for this key; auto-switching to gemini-3.8-flash...")
-                clean_model = "gemini-3.8-flash"
-                response = await client.aio.models.generate_content(
-                    model=clean_model,
-                    contents=user_content,
-                    config=config
+        fallback_candidates = [
+            clean_model,
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite"
+        ]
+        # Deduplicate while preserving order
+        models_to_try = list(dict.fromkeys(fallback_candidates))
+
+        response = None
+        last_err = None
+        for candidate_model in models_to_try:
+            try:
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=candidate_model,
+                        contents=user_content,
+                        config=config
+                    ),
+                    timeout=10.0
                 )
-            else:
-                raise first_err
+                clean_model = candidate_model
+                break
+            except asyncio.TimeoutError as te:
+                last_err = te
+                logger.info(f"Model {candidate_model} timed out (>10s due to high demand); falling back to next Gemini model...")
+                continue
+            except Exception as try_err:
+                last_err = try_err
+                err_str = str(try_err)
+                if any(code in err_str for code in ["404", "NOT_FOUND", "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"]):
+                    logger.info(f"Model {candidate_model} busy/unavailable ({err_str[:80]}); falling back to next Gemini model...")
+                    continue
+                raise try_err
+
+        if response is None and last_err is not None:
+            raise last_err
 
         raw_output = response.text or ""
         logger.info(f"Google Gemini ({clean_model}) response: {raw_output}")
