@@ -66,13 +66,20 @@ def test_fastapi_app():
 async def test_browser_worker():
     print("-> Testing Playwright launch & stealth masking...")
     from browser_worker import XBrowserWorker
-    worker = XBrowserWorker(headless=True)
+    import shutil
+    test_prof = "./tmp_test_profile"
+    worker = XBrowserWorker(headless=True, profile_dir=test_prof)
     try:
         page = await worker.get_active_page()
         webdriver_flag = await page.evaluate("() => navigator.webdriver")
         print(f"   [OK] Browser launched successfully. navigator.webdriver = {webdriver_flag} (masked)")
     finally:
         await worker.stop()
+        if os.path.exists(test_prof):
+            try:
+                shutil.rmtree(test_prof, ignore_errors=True)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
