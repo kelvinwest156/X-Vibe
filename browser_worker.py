@@ -21,10 +21,63 @@ logger = logging.getLogger("x_vibebot.browser")
 DEFAULT_PROFILE_DIR = os.path.abspath(os.getenv("BROWSER_PROFILE_DIR", "./x_browser_profile"))
 
 
+def get_default_chromium_path() -> Optional[str]:
+    """
+    Detects the user's default Chromium-based browser on Windows (e.g. Brave, Chrome, Edge).
+    Returns the executable path, or None to fall back to Playwright's bundled Chromium.
+    """
+    env_browser = os.getenv("BROWSER_EXECUTABLE_PATH")
+    if env_browser and os.path.isfile(env_browser):
+        return env_browser
+
+    if os.name == "nt":
+        import winreg
+        import re
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice"
+            ) as key:
+                prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+
+            with winreg.OpenKey(
+                winreg.HKEY_CLASSES_ROOT,
+                rf"{prog_id}\shell\open\command"
+            ) as cmd_key:
+                raw_cmd, _ = winreg.QueryValueEx(cmd_key, "")
+
+            match = re.search(r'"([^"]+)"', raw_cmd)
+            exe_path = match.group(1) if match else raw_cmd.split()[0]
+            if os.path.isfile(exe_path) and any(b in exe_path.lower() for b in ["brave", "chrome", "msedge", "edge"]):
+                return exe_path
+        except Exception:
+            pass
+
+        candidates = [
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+
+    return None
+
+
 class XBrowserWorker:
-    def __init__(self, profile_dir: str = DEFAULT_PROFILE_DIR, headless: bool = False):
+    def __init__(self, profile_dir: str = DEFAULT_PROFILE_DIR, headless: bool = False, executable_path: Optional[str] = None):
         self.profile_dir = profile_dir
         self.headless = headless
+        self.executable_path = executable_path or get_default_chromium_path()
+        self.browser_name = (
+            "Brave" if "brave" in (self.executable_path or "").lower()
+            else ("Chrome" if "chrome" in (self.executable_path or "").lower()
+            else ("Edge" if "edge" in (self.executable_path or "").lower()
+            else "Chromium"))
+        )
         self._playwright: Optional[Playwright] = None
         self._context: Optional[BrowserContext] = None
         self._lock = asyncio.Lock()  # Ensure strictly no parallel browser contexts
@@ -68,7 +121,7 @@ class XBrowserWorker:
         os.makedirs(self.profile_dir, exist_ok=True)
         use_headless = False if force_headful else self.headless
 
-        logger.info(f"Launching Playwright Chromium (headless={use_headless}, profile={self.profile_dir})")
+        logger.info(f"Launching {self.browser_name} (headless={use_headless}, exe={self.executable_path or 'bundled'}, profile={self.profile_dir})")
         if not self._playwright:
             self._playwright = await async_playwright().start()
 
@@ -81,13 +134,17 @@ class XBrowserWorker:
             "--disable-features=IsolateOrigins,site-per-process",
         ]
 
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=self.profile_dir,
-            headless=use_headless,
-            args=args,
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        )
+        launch_kwargs = {
+            "user_data_dir": self.profile_dir,
+            "headless": use_headless,
+            "args": args,
+            "viewport": {"width": 1280, "height": 800},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        }
+        if self.executable_path:
+            launch_kwargs["executable_path"] = self.executable_path
+
+        self._context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
 
         self._context.on("page", lambda p: asyncio.create_task(self._apply_stealth(p)))
         self._context.on("close", lambda: setattr(self, "_context", None))
