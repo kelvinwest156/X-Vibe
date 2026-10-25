@@ -86,6 +86,9 @@ def get_active_provider(custom_key: Optional[str] = None) -> str:
     return "gemini"
 
 
+_last_working_gemini_model: Optional[str] = None
+
+
 def get_gemini_client(custom_key: Optional[str] = None):
     """Returns a Google GenAI Client or None if unconfigured."""
     api_key = custom_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -93,10 +96,20 @@ def get_gemini_client(custom_key: Optional[str] = None):
         return None
     try:
         from google import genai
-        return genai.Client(api_key=api_key.strip())
-    except Exception as e:
-        logger.error(f"Failed to create Google GenAI client: {e}")
-        return None
+        from google.genai import types
+        return genai.Client(
+            api_key=api_key.strip(),
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(attempts=1)
+            )
+        )
+    except Exception:
+        try:
+            from google import genai
+            return genai.Client(api_key=api_key.strip())
+        except Exception as e:
+            logger.error(f"Failed to create Google GenAI client: {e}")
+            return None
 
 
 def get_deepseek_client(custom_key: Optional[str] = None):
@@ -308,17 +321,21 @@ async def _evaluate_with_gemini(
             system_instruction=build_system_prompt(search_query),
             response_mime_type="application/json",
             temperature=0.7,
-            max_output_tokens=350
+            max_output_tokens=1500
         )
 
-        fallback_candidates = [
+        global _last_working_gemini_model
+        fallback_candidates = []
+        if _last_working_gemini_model:
+            fallback_candidates.append(_last_working_gemini_model)
+        fallback_candidates.extend([
             clean_model,
-            "gemini-3.8-flash",
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
+            "gemini-3.8-flash",
             "gemini-3.5-flash-lite"
-        ]
+        ])
         # Deduplicate while preserving order
         models_to_try = list(dict.fromkeys(fallback_candidates))
 
@@ -332,9 +349,10 @@ async def _evaluate_with_gemini(
                         contents=user_content,
                         config=config
                     ),
-                    timeout=10.0
+                    timeout=8.0
                 )
                 clean_model = candidate_model
+                _last_working_gemini_model = candidate_model
                 break
             except asyncio.TimeoutError as te:
                 last_err = te
