@@ -343,11 +343,10 @@
               </span>
             </label>
             <select id="modelSelect" onchange="onModelSelected()" class="w-full bg-surface-input border border-surface-borderLight rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-accent-cyan">
-              <option value="gemini-2.5-flash">gemini-2.5-flash (Gemini 2.5 Flash — Recommended)</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro (Gemini 2.5 Pro — Deep Reasoning)</option>
+              <option value="gemini-3.8-flash">gemini-3.8-flash (Gemini 3.8 Flash — Recommended)</option>
+              <option value="gemini-3.8-pro">gemini-3.8-pro (Gemini 3.8 Pro — Deep Reasoning)</option>
+              <option value="gemini-2.5-flash">gemini-2.5-flash (Gemini 2.5 Flash)</option>
               <option value="gemini-2.0-flash">gemini-2.0-flash (Gemini 2.0 Flash — Low Latency)</option>
-              <option value="gemini-1.5-flash">gemini-1.5-flash (Gemini 1.5 Flash — High Speed Free)</option>
-              <option value="gemini-1.5-pro">gemini-1.5-pro (Gemini 1.5 Pro — Extended Context)</option>
             </select>
             <p id="modelDescription" class="text-[11px] text-gray-500">
               Optimal for 1–2 sentence sharp commentary and value-adding coding insights.
@@ -736,6 +735,8 @@
           const apiKeyBadge = document.getElementById('apiKeyStatusBadge');
           apiKeyBadge.innerText = 'Verified';
           apiKeyBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded font-semibold bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/30';
+          keyInput.value = '';
+          fetchConfig();
         } else {
           statusText.innerText = 'Authentication Failed';
           statusText.className = 'font-bold text-accent-rose';
@@ -810,18 +811,29 @@
           <span class="hidden sm:inline">Scanning...</span>
         `;
       }
+
+      // Auto-save any unsaved API key or search query before triggering scrape
+      const unsavedKey = document.getElementById('apiKeyInput').value.trim();
+      const currentQuery = document.getElementById('queryInput').value.trim();
+      if (unsavedKey || (currentConfig && currentQuery !== currentConfig.search_query)) {
+        await saveAllSettings();
+      }
+
       showToast('Initiating scrape cycle...');
       try {
         const res = await fetch('/api/trigger-scrape', { method: 'POST' });
         const data = await res.json();
-        if (!res.ok || data.status === 'not_logged_in') {
-          showToast(data.message || 'Cannot scan feed: Not logged into X', true);
+        if (!res.ok || data.status === 'not_logged_in' || data.status === 'missing_api_key') {
+          showToast(data.message || 'Cannot scan feed: Check login & API key', true);
         } else {
-          showToast(data.message || 'Scrape cycle started! Scanning target feed...');
-          setTimeout(() => {
-            fetchStatus();
-            fetchPendingApprovals();
-          }, 2000);
+          showToast(data.message || 'Scrape cycle started! Watch System Logs below for live progress.');
+          [2000, 6000, 12000, 20000, 30000].forEach(ms => {
+            setTimeout(() => {
+              fetchStatus();
+              fetchPendingApprovals();
+              fetchHistory();
+            }, ms);
+          });
         }
       } catch (err) {
         showToast('Failed to trigger cycle', true);

@@ -14,12 +14,18 @@ load_dotenv()
 
 logger = logging.getLogger("x_vibebot.ai")
 
-# System prompt specified in the architecture instructions
-SYSTEM_PROMPT = """You are an expert AI developer and tech commentator on X.
+def build_system_prompt(search_query: Optional[str] = None) -> str:
+    """Builds a topic-aware system prompt based on the user's active search query."""
+    topic_clause = (
+        f"relevant to the topic/search query '{search_query}' (or tech, AI, sports, or culture related to it)"
+        if search_query and search_query.strip()
+        else "relevant to coding, AI, tech development, or the current timeline topic"
+    )
+    return f"""You are a sharp, witty, knowledgeable commentator on X (Twitter).
 Analyze the provided post.
-If it is relevant to coding, AI, or tech development, write a witty, value-adding reply between 1 to 2 sentences.
-Do not use generic spam filler, fake hype, or excessive emojis.
-If it is irrelevant, toxic, or promotional, reply with SKIP.
+If it is {topic_clause} and worth engaging with, write a witty, value-adding, authentic reply between 1 to 2 sentences.
+Do not use generic spam filler, fake hype, ticket-selling spam, or excessive emojis.
+If the post is spam, a ticket scam, toxic, or pure promotion, reply with SKIP.
 
 Respond in JSON format with three keys:
 1. "action": either "reply" or "skip"
@@ -27,31 +33,27 @@ Respond in JSON format with three keys:
 3. "reasoning": brief 1-sentence explanation of your decision
 """
 
+
 KNOWN_GEMINI_MODELS: List[Dict[str, str]] = [
     {
-        "id": "gemini-2.5-flash",
-        "name": "Gemini 2.5 Flash (Recommended)",
-        "description": "Google's next-gen ultra-fast, intelligent model. Ideal for witty, sharp 1–2 sentence tech comments with generous free quotas."
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash (Recommended)",
+        "description": "Google's latest ultra-fast flagship Flash model. Ideal for sharp, witty 1–2 sentence X replies."
     },
     {
-        "id": "gemini-2.5-pro",
-        "name": "Gemini 2.5 Pro",
-        "description": "Google's flagship reasoning model for intricate coding, complex logic, and deep analysis."
+        "id": "gemini-3.8-pro",
+        "name": "Gemini 3.8 Pro",
+        "description": "Google's latest deep reasoning model for complex analysis and nuanced commentary."
+    },
+    {
+        "id": "gemini-2.5-flash",
+        "name": "Gemini 2.5 Flash",
+        "description": "Previous-gen Flash model (available to legacy projects)."
     },
     {
         "id": "gemini-2.0-flash",
         "name": "Gemini 2.0 Flash",
-        "description": "High-frequency multimodal model engineered for low-latency commentary and real-time generation."
-    },
-    {
-        "id": "gemini-1.5-flash",
-        "name": "Gemini 1.5 Flash",
-        "description": "High-speed, cost-efficient model with 1,500 free requests per day on Google AI Studio."
-    },
-    {
-        "id": "gemini-1.5-pro",
-        "name": "Gemini 1.5 Pro",
-        "description": "Balanced reasoning model with deep context understanding for long technical threads."
+        "description": "High-frequency multimodal model engineered for low-latency generation."
     }
 ]
 
@@ -148,22 +150,55 @@ async def _test_gemini_api(custom_key: Optional[str] = None) -> Dict[str, Any]:
         }
 
     try:
-        # Run a fast 1-token test probe with gemini-2.5-flash
         from google.genai import types
-        response = await client.aio.models.generate_content(
-            model="gemini-2.5-flash",
-            contents="ping",
-            config=types.GenerateContentConfig(
-                max_output_tokens=2,
-                temperature=0.0
+        discovered_models: List[Dict[str, str]] = []
+        try:
+            pager = await client.aio.models.list()
+            async for m in pager:
+                m_name = getattr(m, "name", "") or ""
+                short_id = m_name.replace("models/", "")
+                if "gemini" in short_id.lower() and not any(x in short_id.lower() for x in ["embedding", "imagen", "veo", "aqa", "tts", "audio"]):
+                    display = getattr(m, "display_name", short_id) or short_id
+                    discovered_models.append({
+                        "id": short_id,
+                        "name": f"{display} ({short_id})" if short_id not in display else display,
+                        "description": getattr(m, "description", "Google Gemini generative AI model.") or "Google Gemini generative AI model."
+                    })
+        except Exception as list_err:
+            logger.debug(f"Model list fallback notice: {list_err}")
+
+        if not discovered_models:
+            # Probe candidate models in order
+            for candidate in ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]:
+                try:
+                    await client.aio.models.generate_content(
+                        model=candidate,
+                        contents="ping",
+                        config=types.GenerateContentConfig(max_output_tokens=2, temperature=0.0)
+                    )
+                    break
+                except Exception as probe_err:
+                    if "404" in str(probe_err) or "NOT_FOUND" in str(probe_err):
+                        continue
+                    raise probe_err
+
+        # Sort discovered models so 3.8-flash or latest flash is at top
+        if discovered_models:
+            discovered_models.sort(
+                key=lambda x: (
+                    0 if x["id"] == "gemini-3.8-flash" else
+                    (1 if "3.8" in x["id"] and "flash" in x["id"] else
+                    (2 if "flash" in x["id"] else 3))
+                )
             )
-        )
+
+        models_to_return = discovered_models if discovered_models else KNOWN_GEMINI_MODELS
         return {
             "success": True,
             "provider": "gemini",
             "error": None,
-            "hint": "API key is valid and connected to Google Gemini AI!",
-            "models": KNOWN_GEMINI_MODELS
+            "hint": f"API key verified & saved! Connected to Google Gemini ({models_to_return[0]['id']}).",
+            "models": models_to_return
         }
     except Exception as e:
         err_msg = str(e)
@@ -217,18 +252,11 @@ async def evaluate_tweet(
     tweet_text: str,
     tweet_author: Optional[str] = None,
     model_name: Optional[str] = None,
-    custom_key: Optional[str] = None
+    custom_key: Optional[str] = None,
+    search_query: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Evaluates a scraped tweet using Google Gemini (or DeepSeek as fallback).
-
-    Returns:
-        dict: {
-            "should_reply": bool,
-            "reply_text": str or None,
-            "reasoning": str,
-            "raw_response": str
-        }
     """
     provider = get_active_provider(custom_key)
 
@@ -236,23 +264,26 @@ async def evaluate_tweet(
         return await _evaluate_with_gemini(
             tweet_text=tweet_text,
             tweet_author=tweet_author,
-            model_name=model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            custom_key=custom_key
+            model_name=model_name or os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+            custom_key=custom_key,
+            search_query=search_query
         )
     else:
         return await _evaluate_with_deepseek(
             tweet_text=tweet_text,
             tweet_author=tweet_author,
             model_name=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-            custom_key=custom_key
+            custom_key=custom_key,
+            search_query=search_query
         )
 
 
 async def _evaluate_with_gemini(
     tweet_text: str,
     tweet_author: Optional[str] = None,
-    model_name: str = "gemini-2.5-flash",
-    custom_key: Optional[str] = None
+    model_name: str = "gemini-3.8-flash",
+    custom_key: Optional[str] = None,
+    search_query: Optional[str] = None
 ) -> Dict[str, Any]:
     """Generates evaluation and reply using Google Gemini."""
     client = get_gemini_client(custom_key=custom_key)
@@ -265,8 +296,7 @@ async def _evaluate_with_gemini(
             "raw_response": "NO_API_KEY"
         }
 
-    chosen_model = model_name or "gemini-2.5-flash"
-    # Ensure standard model format without duplicate prefix
+    chosen_model = model_name or "gemini-3.8-flash"
     clean_model = chosen_model.replace("models/", "")
     user_content = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
 
@@ -274,17 +304,29 @@ async def _evaluate_with_gemini(
         from google.genai import types
 
         config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=build_system_prompt(search_query),
             response_mime_type="application/json",
             temperature=0.7,
             max_output_tokens=350
         )
 
-        response = await client.aio.models.generate_content(
-            model=clean_model,
-            contents=user_content,
-            config=config
-        )
+        try:
+            response = await client.aio.models.generate_content(
+                model=clean_model,
+                contents=user_content,
+                config=config
+            )
+        except Exception as first_err:
+            if ("404" in str(first_err) or "NOT_FOUND" in str(first_err)) and clean_model != "gemini-3.8-flash":
+                logger.info(f"Model {clean_model} unavailable for this key; auto-switching to gemini-3.8-flash...")
+                clean_model = "gemini-3.8-flash"
+                response = await client.aio.models.generate_content(
+                    model=clean_model,
+                    contents=user_content,
+                    config=config
+                )
+            else:
+                raise first_err
 
         raw_output = response.text or ""
         logger.info(f"Google Gemini ({clean_model}) response: {raw_output}")
@@ -332,7 +374,8 @@ async def _evaluate_with_deepseek(
     tweet_text: str,
     tweet_author: Optional[str] = None,
     model_name: str = "deepseek-chat",
-    custom_key: Optional[str] = None
+    custom_key: Optional[str] = None,
+    search_query: Optional[str] = None
 ) -> Dict[str, Any]:
     """Fallback evaluation with DeepSeek API."""
     client = get_deepseek_client(custom_key=custom_key)
@@ -351,7 +394,7 @@ async def _evaluate_with_deepseek(
         kwargs = {
             "model": chosen_model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": build_system_prompt(search_query)},
                 {"role": "user", "content": user_content}
             ],
             "max_tokens": 300

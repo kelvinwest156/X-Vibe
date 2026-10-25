@@ -73,8 +73,18 @@ def get_db():
 # ==============================================================================
 
 def is_tweet_already_processed(db: Session, tweet_id: str) -> bool:
-    """Returns True if this tweet_id has already been evaluated or replied to."""
-    return db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first() is not None
+    """
+    Returns True if this tweet_id has already been genuinely evaluated or replied to.
+    If it was previously skipped solely due to a missing/invalid API key, allow re-evaluation.
+    """
+    existing = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+    if not existing:
+        return False
+    if existing.status == "skipped" and existing.error_message:
+        err_lower = existing.error_message.lower()
+        if "api key" in err_lower or "error" in err_lower or "not configured" in err_lower:
+            return False
+    return True
 
 
 def record_processed_tweet(

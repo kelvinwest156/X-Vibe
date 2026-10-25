@@ -145,30 +145,26 @@ async def background_automation_loop():
                 db.close()
 
             # Wait condition: If bot is inactive, sleep until manually triggered or checked
-            if not is_active:
+            if not is_active and not scrape_now_flag.is_set():
                 # Check for manual trigger or wait 5 seconds before re-reading config
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=5.0)
-                    scrape_now_flag.clear()
                     logger.info("Manual scrape trigger activated while bot was paused.")
                 except asyncio.TimeoutError:
                     continue
-            else:
-                # If active, check if manual trigger or wait for interval
-                pass
 
             # Check if user is currently logging in via the headful Chromium window
-            if is_manual_login_active:
+            if is_manual_login_active and not scrape_now_flag.is_set():
                 logger.info("Manual login session open. Background scanner waiting for user sign-in...")
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=15.0)
-                    scrape_now_flag.clear()
                 except asyncio.TimeoutError:
                     pass
                 continue
 
             # Safety Rule 1: Daily Volume Cap
             if daily_used >= daily_cap:
+                scrape_now_flag.clear()
                 logger.warning(f"Daily action cap reached ({daily_used}/{daily_cap}). Pausing until tomorrow.")
                 await asyncio.sleep(300)
                 continue
@@ -181,19 +177,22 @@ async def background_automation_loop():
                 is_session_logged_in = False
 
             if not is_session_logged_in:
+                scrape_now_flag.clear()
                 logger.warning("Agent is not logged into X. Please click 'Browser Login' above to sign in manually.")
                 # Wait 30 seconds before re-checking or wake immediately if user clicks Scrape Now
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=30.0)
-                    scrape_now_flag.clear()
                 except asyncio.TimeoutError:
                     pass
                 continue
 
+            # Consume manual scrape trigger right as scan starts
+            scrape_now_flag.clear()
             logger.info(f"Starting feed scan with query: '{query}'...")
             tweets = await browser_worker.scrape_feed(search_query=query, limit=8)
             logger.info(f"Scraped {len(tweets)} tweets for evaluation.")
 
+            new_count = 0
             for t in tweets:
                 db = SessionLocal()
                 try:
@@ -201,13 +200,23 @@ async def background_automation_loop():
                     if is_tweet_already_processed(db, tweet_id):
                         continue
 
+                    new_count += 1
                     logger.info(f"Evaluating tweet {tweet_id} by @{t['author']} using {selected_model}: '{t['text'][:60]}...'")
 
-                    # DeepSeek AI Evaluation
-                    ai_result = await evaluate_tweet(t["text"], t["author"], model_name=selected_model)
+                    # Google Gemini AI Evaluation
+                    ai_result = await evaluate_tweet(
+                        t["text"],
+                        t["author"],
+                        model_name=selected_model,
+                        search_query=query
+                    )
+
+                    if ai_result.get("raw_response") == "NO_API_KEY":
+                        logger.warning("Evaluation paused: Please enter your Google Gemini API key in the sidebar and click 'Test Key' or 'Save Configuration'.")
+                        break
 
                     if not ai_result["should_reply"]:
-                        logger.info(f"DeepSeek skipped tweet {tweet_id}: {ai_result['reasoning']}")
+                        logger.info(f"Gemini skipped tweet {tweet_id}: {ai_result['reasoning']}")
                         record_processed_tweet(
                             db=db,
                             tweet_id=tweet_id,
@@ -221,9 +230,9 @@ async def background_automation_loop():
                         )
                         continue
 
-                    # DeepSeek suggested a reply!
+                    # Gemini suggested a reply!
                     reply_text = ai_result["reply_text"]
-                    logger.info(f"DeepSeek drafted reply: '{reply_text}'")
+                    logger.info(f"Gemini drafted reply: '{reply_text}'")
 
                     if not auto_pilot:
                         # Human-in-the-loop: Save as pending_approval
@@ -291,10 +300,12 @@ async def background_automation_loop():
                 # Stagger evaluations slightly
                 await asyncio.sleep(2)
 
-            # Wait for next interval or manual trigger
+            if new_count == 0 and len(tweets) > 0:
+                logger.info(f"All {len(tweets)} tweets found for '{query}' were already evaluated.")
+
+            # Wait for next interval or manual trigger (do not clear flag here; top of loop consumes it)
             try:
                 await asyncio.wait_for(scrape_now_flag.wait(), timeout=interval_secs)
-                scrape_now_flag.clear()
             except asyncio.TimeoutError:
                 pass
 
@@ -408,7 +419,7 @@ async def get_status(db: Session = Depends(get_db)):
 async def get_config(db: Session = Depends(get_db)):
     """Returns current runtime agent configuration."""
     cfg = get_agent_config(db)
-    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("DEEPSEEK_API_KEY", "")
+    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
         id=cfg.id,
@@ -418,7 +429,7 @@ async def get_config(db: Session = Depends(get_db)):
         daily_action_cap=cfg.daily_action_cap,
         min_cooldown_minutes=cfg.min_cooldown_minutes,
         search_query=cfg.search_query,
-        selected_model=cfg.selected_model or "gemini-2.5-flash",
+        selected_model=cfg.selected_model or "gemini-3.8-flash",
         masked_api_key=masked_key,
         updated_at=cfg.updated_at
     )
@@ -440,7 +451,7 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
     updated = update_agent_config(db, updates)
     logger.info(f"Updated agent configuration: {updates}")
 
-    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("DEEPSEEK_API_KEY", "")
+    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
         id=updated.id,
@@ -450,7 +461,7 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
         daily_action_cap=updated.daily_action_cap,
         min_cooldown_minutes=updated.min_cooldown_minutes,
         search_query=updated.search_query,
-        selected_model=updated.selected_model or "gemini-2.5-flash",
+        selected_model=updated.selected_model or "gemini-3.8-flash",
         masked_api_key=masked_key,
         updated_at=updated.updated_at
     )
@@ -467,10 +478,23 @@ async def get_models_endpoint():
 
 
 @app.post("/api/ai/test-key")
-async def test_key_endpoint(payload: TestKeyPayload):
-    """Tests a provided API key against the AI provider."""
+async def test_key_endpoint(payload: TestKeyPayload, db: Session = Depends(get_db)):
+    """Tests a provided API key against the AI provider and automatically saves it if valid."""
     key = payload.api_key.strip() if payload.api_key else None
-    return await test_ai_api(custom_key=key)
+    result = await test_ai_api(custom_key=key)
+    if result.get("success") and key:
+        if key.startswith("sk-"):
+            update_env_variable("DEEPSEEK_API_KEY", key)
+            logger.info("Verified and auto-saved DEEPSEEK_API_KEY to .env")
+        else:
+            update_env_variable("GEMINI_API_KEY", key)
+            logger.info("Verified and auto-saved GEMINI_API_KEY to .env")
+            models = result.get("models") or []
+            if models:
+                top_model = models[0]["id"]
+                update_agent_config(db, {"selected_model": top_model})
+                logger.info(f"Auto-selected compatible Gemini model: {top_model}")
+    return result
 
 
 @app.get("/api/pending", response_model=List[ProcessedTweetResponse])
@@ -553,6 +577,14 @@ async def trigger_scrape_now():
     """Wakes up the scraper immediately without waiting for interval."""
     global is_session_logged_in, is_manual_login_active
     is_manual_login_active = False
+
+    has_key = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+    if not has_key:
+        logger.warning("Scrape requested, but Google Gemini API key is not configured yet.")
+        return {
+            "status": "missing_api_key",
+            "message": "Please paste your Google Gemini API key in the sidebar and click 'Test Key' (or 'Save Configuration') first!"
+        }
 
     if not is_session_logged_in:
         # Check login status directly
