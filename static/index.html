@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X-VibeBot | Monolith AI Browser Controller</title>
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            },
+            dark: {
+              900: '#090d16',
+              800: '#111827',
+              700: '#1f2937',
+              600: '#374151'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #090d16; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4f46e5; }
+  </style>
+</head>
+<body class="bg-dark-900 text-gray-100 min-h-screen font-sans flex flex-col antialiased">
+
+  <!-- Top Navigation Bar -->
+  <header class="border-b border-dark-700 bg-dark-800/80 backdrop-blur sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-400 flex items-center justify-center shadow-lg shadow-brand-500/20">
+          <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            X-VibeBot <span class="text-xs px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-400 font-mono border border-brand-500/30">Monolith</span>
+          </h1>
+          <p class="text-xs text-gray-400">DeepSeek AI + Playwright Stealth Controller</p>
+        </div>
+      </div>
+
+      <!-- Quick Action Buttons -->
+      <div class="flex items-center space-x-3">
+        <button id="triggerScrapeBtn" onclick="triggerScrapeNow()" class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 border border-gray-600 transition flex items-center gap-1.5 text-gray-200">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Run Scrape Cycle
+        </button>
+
+        <button id="launchLoginBtn" onclick="launchLoginBrowser()" class="px-3.5 py-1.5 text-xs font-medium rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center gap-1.5 shadow-md shadow-indigo-600/20">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
+          Open Browser for Login
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- KPI / Metric Badges -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+      <!-- Bot State -->
+      <div class="bg-dark-800 p-4 rounded-xl border border-dark-700 shadow-sm flex flex-col justify-between">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-400">Agent Status</span>
+          <span id="agentStatusBadge" class="px-2 py-0.5 rounded text-xs font-semibold bg-gray-700 text-gray-300">Checking...</span>
+        </div>
+        <div class="mt-3 flex items-center justify-between">
+          <div>
+            <span class="text-xl font-bold" id="agentStateText">--</span>
+            <p class="text-xs text-gray-500 mt-0.5" id="agentModeSubtext">Manual Approval</p>
+          </div>
+          <button id="toggleActiveBtn" onclick="toggleAgentActive()" class="px-3 py-1 text-xs font-semibold rounded bg-brand-600 hover:bg-brand-500 text-white transition">
+            Toggle
+          </button>
+        </div>
+      </div>
+
+      <!-- X Session Status -->
+      <div class="bg-dark-800 p-4 rounded-xl border border-dark-700 shadow-sm flex flex-col justify-between">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-400">X (Twitter) Session</span>
+          <span id="sessionStatusDot" class="w-2.5 h-2.5 rounded-full bg-yellow-500"></span>
+        </div>
+        <div class="mt-3 flex items-center justify-between">
+          <div>
+            <span class="text-xl font-bold" id="sessionStatusText">Checking...</span>
+            <p class="text-xs text-gray-500 mt-0.5">Persistent profile</p>
+          </div>
+          <button onclick="checkSessionStatus()" title="Refresh Session Check" class="p-1.5 rounded bg-dark-700 hover:bg-dark-600 text-gray-300 transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Daily Volume Cap -->
+      <div class="bg-dark-800 p-4 rounded-xl border border-dark-700 shadow-sm flex flex-col justify-between">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-400">Daily Safety Cap</span>
+          <span class="text-xs text-emerald-400 font-mono" id="dailyCapRatio">0 / 15</span>
+        </div>
+        <div class="mt-3">
+          <div class="w-full bg-dark-700 h-2 rounded-full overflow-hidden">
+            <div id="dailyCapBar" class="bg-emerald-500 h-full w-0 transition-all duration-500"></div>
+          </div>
+          <p class="text-xs text-gray-500 mt-2">Suspension safety limit</p>
+        </div>
+      </div>
+
+      <!-- Cooldown Gap -->
+      <div class="bg-dark-800 p-4 rounded-xl border border-dark-700 shadow-sm flex flex-col justify-between">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-medium text-gray-400">Action Cooldown</span>
+          <span id="cooldownBadge" class="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/20 text-emerald-400">Ready</span>
+        </div>
+        <div class="mt-3">
+          <span class="text-xl font-bold font-mono" id="cooldownTimer">Ready</span>
+          <p class="text-xs text-gray-500 mt-0.5">Min 15-30m gap rule</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Configuration Strip -->
+    <div class="bg-dark-800 p-4 rounded-xl border border-dark-700 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex flex-wrap items-center gap-6">
+
+        <!-- Autopilot Toggle -->
+        <label class="flex items-center cursor-pointer space-x-3">
+          <div class="relative">
+            <input type="checkbox" id="autopilotToggle" onchange="toggleAutopilot()" class="sr-only">
+            <div id="autopilotBg" class="block bg-dark-600 w-10 h-6 rounded-full transition"></div>
+            <div id="autopilotDot" class="dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition transform"></div>
+          </div>
+          <div>
+            <span class="text-sm font-semibold text-gray-200">Full Autopilot</span>
+            <p class="text-xs text-gray-400">If off, requires manual approval</p>
+          </div>
+        </label>
+
+        <div class="h-8 w-px bg-dark-700 hidden sm:block"></div>
+
+        <!-- Polling Interval -->
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-400 font-medium">Interval (min):</label>
+          <input type="number" id="intervalInput" min="1" max="180" value="15" onchange="saveConfigSettings()"
+            class="w-16 bg-dark-900 border border-dark-600 rounded px-2 py-1 text-xs text-center text-white focus:outline-none focus:border-brand-500">
+        </div>
+
+        <!-- Daily Cap Input -->
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-400 font-medium">Daily Cap:</label>
+          <input type="number" id="capInput" min="1" max="50" value="15" onchange="saveConfigSettings()"
+            class="w-16 bg-dark-900 border border-dark-600 rounded px-2 py-1 text-xs text-center text-white focus:outline-none focus:border-brand-500">
+        </div>
+
+        <!-- Search Query Input -->
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-400 font-medium">Feed Search:</label>
+          <input type="text" id="queryInput" value="buildinpublic OR #ai" onchange="saveConfigSettings()"
+            class="w-48 sm:w-64 bg-dark-900 border border-dark-600 rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-brand-500">
+        </div>
+
+      </div>
+
+      <div class="text-xs text-gray-400 flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        AI Model: <span class="font-mono text-gray-200 font-semibold">DeepSeek-V3</span>
+      </div>
+    </div>
+
+    <!-- Main Workspace Split: Approval Queue (Left) & Live Log / History (Right) -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- LEFT: Pending Approvals (7 cols) -->
+      <section class="lg:col-span-7 space-y-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <h2 class="text-base font-bold text-white">Manual Review Queue</h2>
+            <span id="pendingCountBadge" class="px-2 py-0.5 rounded-full text-xs font-semibold bg-brand-500/20 text-brand-300 border border-brand-500/30">0</span>
+          </div>
+          <p class="text-xs text-gray-400">Review and edit DeepSeek replies before posting</p>
+        </div>
+
+        <!-- Cards Container -->
+        <div id="pendingCardsList" class="space-y-4">
+          <!-- Empty State Default -->
+          <div class="bg-dark-800 rounded-xl p-8 border border-dark-700 text-center text-gray-400">
+            <svg class="w-10 h-10 mx-auto text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <p class="text-sm font-medium text-gray-300">No tweets pending approval</p>
+            <p class="text-xs text-gray-500 mt-1">When the agent scrapes relevant tweets, they will appear here for your review.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: Terminal Logs & Audit (5 cols) -->
+      <section class="lg:col-span-5 space-y-4 flex flex-col">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base font-bold text-white flex items-center gap-2">
+            Live Agent Logs
+            <span class="w-2 h-2 rounded-full bg-brand-500 animate-ping"></span>
+          </h2>
+          <span class="text-xs text-gray-500 font-mono">auto-refreshing</span>
+        </div>
+
+        <!-- Terminal Output Window -->
+        <div class="bg-black/80 rounded-xl p-3 border border-dark-700 font-mono text-xs flex-1 min-h-[360px] max-h-[460px] overflow-y-auto flex flex-col-reverse" id="terminalWindow">
+          <div id="terminalContent" class="space-y-1">
+            <div class="text-gray-500">[System] Initializing dashboard stream...</div>
+          </div>
+        </div>
+
+        <!-- Recent Audit History Mini List -->
+        <div class="bg-dark-800 rounded-xl p-4 border border-dark-700 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-semibold text-gray-300 uppercase tracking-wider">Recent Interactions Audit</h3>
+            <span class="text-xs text-gray-500" id="totalProcessedCounter">Total: 0</span>
+          </div>
+          <div class="divide-y divide-dark-700 max-h-48 overflow-y-auto pr-1" id="historyList">
+            <div class="text-xs text-gray-500 py-2 text-center">No past records yet.</div>
+          </div>
+        </div>
+
+      </section>
+    </div>
+
+  </main>
+
+  <!-- Notification Toast -->
+  <div id="toast" class="fixed bottom-5 right-5 px-4 py-2.5 rounded-lg bg-brand-600 text-white text-xs font-medium shadow-xl transform transition-all duration-300 translate-y-20 opacity-0 pointer-events-none z-50">
+    Notification
+  </div>
+
+  <!-- Client-side Logic Script -->
+  <script>
+    let currentConfig = null;
+
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.innerText = msg;
+      toast.className = `fixed bottom-5 right-5 px-4 py-2.5 rounded-lg text-xs font-medium shadow-xl transform transition-all duration-300 z-50 ${isError ? 'bg-red-600 text-white' : 'bg-brand-600 text-white'}`;
+      toast.style.transform = 'translateY(0)';
+      toast.style.opacity = '1';
+      setTimeout(() => {
+        toast.style.transform = 'translateY(20px)';
+        toast.style.opacity = '0';
+      }, 3500);
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update Agent Status
+        const badge = document.getElementById('agentStatusBadge');
+        const stateText = document.getElementById('agentStateText');
+        const modeSub = document.getElementById('agentModeSubtext');
+        const toggleBtn = document.getElementById('toggleActiveBtn');
+
+        if (data.is_active) {
+          badge.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+          badge.innerText = 'ACTIVE';
+          stateText.innerText = 'Running';
+          toggleBtn.innerText = 'Pause';
+          toggleBtn.className = 'px-3 py-1 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-500 text-white transition';
+        } else {
+          badge.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-gray-700 text-gray-300';
+          badge.innerText = 'PAUSED';
+          stateText.innerText = 'Paused';
+          toggleBtn.innerText = 'Start';
+          toggleBtn.className = 'px-3 py-1 text-xs font-semibold rounded bg-brand-600 hover:bg-brand-500 text-white transition';
+        }
+
+        modeSub.innerText = data.auto_pilot_mode ? 'Mode: Full Autopilot' : 'Mode: Manual Review';
+
+        // Update Session Status
+        const dot = document.getElementById('sessionStatusDot');
+        const sessionText = document.getElementById('sessionStatusText');
+        if (data.is_logged_in) {
+          dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+          sessionText.innerText = 'Logged In';
+          sessionText.className = 'text-xl font-bold text-emerald-400';
+        } else {
+          dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+          sessionText.innerText = 'Not Logged In';
+          sessionText.className = 'text-xl font-bold text-amber-400';
+        }
+
+        // Daily Cap Bar
+        document.getElementById('dailyCapRatio').innerText = `${data.daily_actions_used} / ${data.daily_action_cap}`;
+        const pct = Math.min(100, Math.round((data.daily_actions_used / Math.max(1, data.daily_action_cap)) * 100));
+        const bar = document.getElementById('dailyCapBar');
+        bar.style.width = `${pct}%`;
+        if (pct >= 90) bar.className = 'bg-red-500 h-full transition-all duration-500';
+        else if (pct >= 60) bar.className = 'bg-amber-500 h-full transition-all duration-500';
+        else bar.className = 'bg-emerald-500 h-full transition-all duration-500';
+
+        // Cooldown
+        const cdBadge = document.getElementById('cooldownBadge');
+        const cdTimer = document.getElementById('cooldownTimer');
+        if (data.cooldown_active && data.cooldown_seconds_remaining > 0) {
+          const mins = Math.floor(data.cooldown_seconds_remaining / 60);
+          const secs = data.cooldown_seconds_remaining % 60;
+          cdBadge.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/20 text-amber-400';
+          cdBadge.innerText = 'Cooldown';
+          cdTimer.innerText = `${mins}m ${secs}s`;
+        } else {
+          cdBadge.className = 'px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/20 text-emerald-400';
+          cdBadge.innerText = 'Ready';
+          cdTimer.innerText = 'Ready';
+        }
+
+        // Counts
+        document.getElementById('pendingCountBadge').innerText = data.pending_approvals_count;
+        document.getElementById('totalProcessedCounter').innerText = `Total: ${data.total_processed_count}`;
+
+        // Logs
+        renderLogs(data.recent_logs);
+
+      } catch (err) {
+        console.error('Error fetching status:', err);
+      }
+    }
+
+    async function fetchConfig() {
+      try {
+        const res = await fetch('/api/config');
+        if (!res.ok) return;
+        currentConfig = await res.json();
+
+        // Update inputs
+        document.getElementById('intervalInput').value = currentConfig.polling_interval_minutes;
+        document.getElementById('capInput').value = currentConfig.daily_action_cap;
+        document.getElementById('queryInput').value = currentConfig.search_query;
+
+        // Autopilot switch
+        const toggle = document.getElementById('autopilotToggle');
+        toggle.checked = currentConfig.auto_pilot_mode;
+        updateAutopilotSwitchUI(currentConfig.auto_pilot_mode);
+      } catch (err) {
+        console.error('Error fetching config:', err);
+      }
+    }
+
+    function updateAutopilotSwitchUI(isOn) {
+      const bg = document.getElementById('autopilotBg');
+      const dot = document.getElementById('autopilotDot');
+      if (isOn) {
+        bg.className = 'block bg-emerald-500 w-10 h-6 rounded-full transition';
+        dot.style.transform = 'translateX(16px)';
+      } else {
+        bg.className = 'block bg-dark-600 w-10 h-6 rounded-full transition';
+        dot.style.transform = 'translateX(0)';
+      }
+    }
+
+    async function toggleAgentActive() {
+      if (!currentConfig) return;
+      const newState = !currentConfig.is_active;
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ is_active: newState })
+        });
+        if (res.ok) {
+          currentConfig = await res.json();
+          showToast(newState ? 'Agent Started' : 'Agent Paused');
+          fetchStatus();
+        }
+      } catch (err) {
+        showToast('Failed to toggle agent state', true);
+      }
+    }
+
+    async function toggleAutopilot() {
+      const toggle = document.getElementById('autopilotToggle');
+      const newState = toggle.checked;
+      updateAutopilotSwitchUI(newState);
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_pilot_mode: newState })
+        });
+        if (res.ok) {
+          currentConfig = await res.json();
+          showToast(newState ? 'Autopilot Enabled' : 'Manual Approval Mode Enabled');
+          fetchStatus();
+        }
+      } catch (err) {
+        showToast('Failed to update mode', true);
+      }
+    }
+
+    async function saveConfigSettings() {
+      const interval = parseInt(document.getElementById('intervalInput').value);
+      const cap = parseInt(document.getElementById('capInput').value);
+      const query = document.getElementById('queryInput').value.trim();
+
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            polling_interval_minutes: interval,
+            daily_action_cap: cap,
+            search_query: query
+          })
+        });
+        if (res.ok) {
+          currentConfig = await res.json();
+          showToast('Settings saved successfully');
+          fetchStatus();
+        }
+      } catch (err) {
+        showToast('Error saving settings', true);
+      }
+    }
+
+    async function triggerScrapeNow() {
+      showToast('Triggering scrape cycle...');
+      try {
+        const res = await fetch('/api/trigger-scrape', { method: 'POST' });
+        if (res.ok) {
+          showToast('Scrape cycle started!');
+          setTimeout(fetchStatus, 1500);
+        }
+      } catch (err) {
+        showToast('Failed to trigger cycle', true);
+      }
+    }
+
+    async function launchLoginBrowser() {
+      showToast('Launching browser window for manual login...');
+      try {
+        const res = await fetch('/api/browser/launch-login', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Browser launched!');
+      } catch (err) {
+        showToast('Error launching browser', true);
+      }
+    }
+
+    async function checkSessionStatus() {
+      showToast('Checking X session credentials...');
+      try {
+        const res = await fetch('/api/browser/check-session', { method: 'POST' });
+        const data = await res.json();
+        if (data.is_logged_in) {
+          showToast('X Session confirmed logged in!');
+        } else {
+          showToast('Not logged in. Please use "Open Browser for Login"', true);
+        }
+        fetchStatus();
+      } catch (err) {
+        showToast('Failed to verify session', true);
+      }
+    }
+
+    async function fetchPendingApprovals() {
+      try {
+        const res = await fetch('/api/pending');
+        if (!res.ok) return;
+        const items = await res.json();
+        const container = document.getElementById('pendingCardsList');
+
+        if (items.length === 0) {
+          container.innerHTML = `
+            <div class="bg-dark-800 rounded-xl p-8 border border-dark-700 text-center text-gray-400">
+              <svg class="w-10 h-10 mx-auto text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+              <p class="text-sm font-medium text-gray-300">No tweets pending approval</p>
+              <p class="text-xs text-gray-500 mt-1">When the agent scrapes relevant tweets, they will appear here for your review.</p>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = items.map(item => `
+          <div class="bg-dark-800 rounded-xl p-5 border border-dark-700 shadow-md space-y-3" id="card-${item.tweet_id}">
+            <!-- Header: Author & Link -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <span class="w-7 h-7 rounded-full bg-brand-600/30 text-brand-300 flex items-center justify-center font-bold text-xs">@</span>
+                <span class="font-bold text-sm text-white">@${escapeHtml(item.tweet_author || 'unknown')}</span>
+              </div>
+              <a href="${item.tweet_url || '#'}" target="_blank" class="text-xs text-brand-400 hover:text-brand-300 flex items-center gap-1">
+                View on X
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+              </a>
+            </div>
+
+            <!-- Original Tweet Text -->
+            <div class="bg-dark-900/60 p-3 rounded-lg border border-dark-700 text-xs text-gray-300">
+              <p class="text-gray-400 font-semibold mb-1 text-[11px] uppercase tracking-wider">Original Tweet:</p>
+              <p class="whitespace-pre-wrap">${escapeHtml(item.tweet_text || '')}</p>
+            </div>
+
+            <!-- DeepSeek Draft Response (Editable Textarea) -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-[11px] uppercase tracking-wider font-semibold text-brand-400 flex items-center gap-1">
+                  <span>DeepSeek AI Draft Response:</span>
+                </label>
+                <span class="text-[10px] text-gray-500">Edit text before submitting</span>
+              </div>
+              <textarea id="replyText-${item.tweet_id}" rows="2"
+                class="w-full bg-dark-900 border border-brand-500/40 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-brand-500 resize-none font-sans">${escapeHtml(item.generated_text || '')}</textarea>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex items-center justify-end space-x-3 pt-1">
+              <button onclick="rejectTweet('${item.tweet_id}')"
+                class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-dark-700 hover:bg-red-500/20 text-gray-300 hover:text-red-400 border border-dark-600 transition">
+                Reject & Skip
+              </button>
+              <button onclick="approveTweet('${item.tweet_id}')"
+                class="px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition flex items-center gap-1.5 shadow-md shadow-emerald-600/20">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                Approve & Post to X
+              </button>
+            </div>
+          </div>
+        `).join('');
+
+      } catch (err) {
+        console.error('Error fetching pending approvals:', err);
+      }
+    }
+
+    async function approveTweet(tweetId) {
+      const textarea = document.getElementById(`replyText-${tweetId}`);
+      const customText = textarea ? textarea.value.trim() : null;
+
+      if (!customText) {
+        showToast('Reply text cannot be empty', true);
+        return;
+      }
+
+      showToast(`Submitting reply to tweet ${tweetId}...`);
+      try {
+        const res = await fetch(`/api/approve/${tweetId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ custom_text: customText })
+        });
+
+        if (res.ok) {
+          showToast('Reply successfully posted to X!');
+          fetchPendingApprovals();
+          fetchStatus();
+          fetchHistory();
+        } else {
+          const err = await res.json();
+          showToast(err.detail || 'Failed to post reply', true);
+        }
+      } catch (e) {
+        showToast('Network error during approval', true);
+      }
+    }
+
+    async function rejectTweet(tweetId) {
+      try {
+        const res = await fetch(`/api/reject/${tweetId}`, { method: 'POST' });
+        if (res.ok) {
+          showToast('Tweet draft skipped');
+          fetchPendingApprovals();
+          fetchStatus();
+          fetchHistory();
+        }
+      } catch (e) {
+        showToast('Failed to reject draft', true);
+      }
+    }
+
+    async function fetchHistory() {
+      try {
+        const res = await fetch('/api/history?limit=15');
+        if (!res.ok) return;
+        const items = await res.json();
+        const list = document.getElementById('historyList');
+
+        if (items.length === 0) {
+          list.innerHTML = `<div class="text-xs text-gray-500 py-2 text-center">No past records yet.</div>`;
+          return;
+        }
+
+        list.innerHTML = items.map(item => {
+          let statusBadge = '';
+          if (item.status === 'posted') statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-semibold">Posted</span>';
+          else if (item.status === 'skipped') statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-400 font-semibold">Skipped</span>';
+          else if (item.status === 'failed') statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 font-semibold">Failed</span>';
+          else statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 font-semibold">Pending</span>';
+
+          const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
+
+          return `
+            <div class="py-2 flex items-center justify-between text-xs">
+              <div class="truncate max-w-[210px]">
+                <div class="flex items-center gap-1.5">
+                  <span class="font-medium text-gray-200">@${escapeHtml(item.tweet_author || 'unknown')}</span>
+                  <span class="text-[10px] text-gray-500 font-mono">${timeStr}</span>
+                </div>
+                <p class="text-gray-400 truncate text-[11px]">${escapeHtml(item.generated_text || item.tweet_text || item.error_message || '')}</p>
+              </div>
+              <div>${statusBadge}</div>
+            </div>
+          `;
+        }).join('');
+
+      } catch (err) {
+        console.error('Error fetching history:', err);
+      }
+    }
+
+    function renderLogs(logs) {
+      if (!logs || logs.length === 0) return;
+      const container = document.getElementById('terminalContent');
+      container.innerHTML = logs.map(l => {
+        let colorClass = 'text-gray-400';
+        if (l.level === 'WARNING') colorClass = 'text-amber-400';
+        if (l.level === 'ERROR') colorClass = 'text-red-400 font-semibold';
+        if (l.message.includes('DeepSeek')) colorClass = 'text-indigo-400';
+        if (l.message.includes('Successfully')) colorClass = 'text-emerald-400 font-medium';
+
+        return `<div class="leading-relaxed"><span class="text-gray-600">[${l.timestamp}]</span> <span class="${colorClass}">${escapeHtml(l.message)}</span></div>`;
+      }).join('');
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    // Startup & Polling loop
+    fetchConfig();
+    fetchStatus();
+    fetchPendingApprovals();
+    fetchHistory();
+
+    // Refresh every 4 seconds
+    setInterval(() => {
+      fetchStatus();
+      fetchPendingApprovals();
+      fetchHistory();
+    }, 4000);
+
+  </script>
+</body>
+</html>
