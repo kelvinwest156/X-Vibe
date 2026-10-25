@@ -2,11 +2,16 @@
 X (Twitter) Manual Login Assistant for X-VibeBot.
 Launches your default browser (Brave, Chrome, or Edge) with your bot profile so you can log into X.
 """
-import os
 import sys
+import asyncio
+
+# Critical fix for Windows: Playwright subprocesses require ProactorEventLoop
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+import os
 import time
 import subprocess
-import asyncio
 from browser_worker import get_default_chromium_path
 
 async def main():

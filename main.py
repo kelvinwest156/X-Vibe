@@ -4,10 +4,15 @@ Coordinates the SQLite database, DeepSeek AI engine, Playwright browser worker,
 and real-time web dashboard.
 """
 
-import os
 import sys
-import time
 import asyncio
+
+# Critical fix for Windows: Playwright subprocesses require ProactorEventLoop
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+import os
+import time
 import logging
 from collections import deque
 from datetime import datetime
@@ -626,4 +631,6 @@ async def check_session():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, loop="asyncio", reload=True)

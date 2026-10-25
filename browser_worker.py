@@ -9,10 +9,17 @@ Features:
 """
 
 import os
+import sys
 import re
 import random
 import asyncio
 import logging
+
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
 from typing import List, Dict, Optional, Any
 from playwright.async_api import async_playwright, BrowserContext, Page, Playwright
 
