@@ -1,511 +1,300 @@
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>X-VibeBot — Autonomous X Automation & Editorial Terminal</title>
-  
-  <!-- Typography: Plus Jakarta Sans & JetBrains Mono -->
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X-VibeBot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- Tailwind CSS via CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script>
     tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
           fontFamily: {
-            sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
-            mono: ['"JetBrains Mono"', 'monospace'],
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
           },
           colors: {
             surface: {
-              base: '#0B0E14',
-              card: '#121722',
-              cardHover: '#182030',
-              input: '#0E131D',
-              border: '#1E2638',
-              borderLight: '#2A364E',
-            },
-            accent: {
-              cyan: '#00D2FF',
-              blue: '#0070F3',
-              emerald: '#00E599',
-              amber: '#FFB020',
-              rose: '#FF4D6D',
+              base: '#090b10',
+              card: '#11151f',
+              input: '#0c0f17',
+              border: '#1e2536',
             }
           }
         }
       }
     }
   </script>
-
   <style>
-    body {
-      background-color: #0B0E14;
-      color: #E6EDF8;
-      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
-    }
-    
-    /* Fine-grained tactical scrollbars */
+    body { background-color: #090b10; color: #e2e8f0; }
     ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: #0B0E14; }
-    ::-webkit-scrollbar-thumb { background: #1E2638; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #00D2FF; }
-
-    /* Custom switch styling */
-    .switch-checkbox:checked + .switch-label .switch-dot {
-      transform: translateX(18px);
-      background-color: #00E599;
-    }
-    .switch-checkbox:checked + .switch-label {
-      background-color: rgba(0, 229, 153, 0.2);
-      border-color: rgba(0, 229, 153, 0.5);
-    }
+    ::-webkit-scrollbar-track { background: #090b10; }
+    ::-webkit-scrollbar-thumb { background: #1e2536; border-radius: 3px; }
   </style>
 </head>
+<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500/20 selection:text-cyan-300">
 
-<body class="min-h-screen flex flex-col selection:bg-accent-cyan selection:text-black">
+  <!-- Toast -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 hidden transition-all duration-200">
+    <div id="toastInner" class="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border shadow-xl text-xs font-medium bg-surface-card border-surface-border text-gray-100">
+      <span id="toastDot" class="w-2 h-2 rounded-full bg-cyan-400"></span>
+      <span id="toastMsg">Saved</span>
+    </div>
+  </div>
 
-  <!-- ========================================================================= -->
-  <!-- COMMAND HEADER                                                            -->
-  <!-- ========================================================================= -->
-  <header class="border-b border-surface-border bg-surface-card/90 backdrop-blur sticky top-0 z-40">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
-      
-      <!-- Brand & Status Pill -->
-      <div class="flex items-center gap-4">
-        <div class="flex items-center gap-2.5">
-          <div class="w-8 h-8 rounded-lg bg-surface-input border border-surface-borderLight flex items-center justify-center text-accent-cyan">
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-            </svg>
-          </div>
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="font-bold text-sm tracking-tight text-white">X-VibeBot</span>
-              <span id="headerStateBadge" class="text-[10px] font-mono px-2 py-0.5 rounded font-semibold bg-surface-border text-gray-400">
-                OFFLINE
-              </span>
-            </div>
-            <p class="text-[11px] text-gray-400 font-mono">Monolith Browser Agent</p>
-          </div>
-        </div>
+  <!-- Cloud Cookie Modal (Hidden by default) -->
+  <div id="cookieModal" class="fixed inset-0 z-50 hidden bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-surface-card border border-surface-border rounded-xl max-w-lg w-full p-5 space-y-3 shadow-2xl">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-white">X Session Cookies (Cloud Sync)</h3>
+        <button onclick="closeCookieModal()" class="text-gray-400 hover:text-white text-xs">✕</button>
+      </div>
+      <p class="text-xs text-gray-400">Copy cookies from your local machine or paste them here when deploying on Render.</p>
+      <textarea id="cookieJsonBox" rows="6" placeholder='[{"name": "auth_token", ...}]' class="w-full bg-surface-input border border-surface-border rounded-lg p-2.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-cyan-500"></textarea>
+      <div class="flex items-center justify-end gap-2 pt-1">
+        <button onclick="exportCookies()" class="px-3 py-1.5 rounded-lg bg-surface-input hover:bg-surface-border border border-surface-border text-xs text-gray-300">Export Current</button>
+        <button onclick="importCookies()" class="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs">Import & Verify</button>
+      </div>
+    </div>
+  </div>
 
-        <div class="h-6 w-px bg-surface-border hidden sm:block"></div>
+  <!-- Minimal Top Header -->
+  <header class="sticky top-0 z-30 bg-surface-base/90 backdrop-blur-md border-b border-surface-border px-4 lg:px-6 h-14 flex items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-mono font-bold text-sm">X</div>
+      <span class="font-semibold text-sm text-white tracking-tight">VibeBot</span>
 
-        <!-- Active Model Indicator -->
-        <div class="hidden md:flex items-center gap-2 text-xs">
-          <span class="text-gray-400">Model:</span>
-          <span id="headerModelPill" class="font-mono text-accent-cyan font-medium px-2 py-0.5 rounded bg-accent-cyan/10 border border-accent-cyan/20">
-            gemini-2.5-flash
-          </span>
-        </div>
+      <!-- Agent Status Pill -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-card border border-surface-border text-xs">
+        <span id="statusDot" class="w-2 h-2 rounded-full bg-gray-500"></span>
+        <span id="statusText" class="font-medium text-gray-300">Paused</span>
       </div>
 
-      <!-- Live Controls -->
-      <div class="flex items-center gap-2.5">
-        
-        <!-- Scrape Trigger with Tooltip -->
-        <div class="relative group">
-          <button id="triggerScrapeBtn" onclick="triggerScrapeNow()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-surface-card hover:bg-surface-cardHover border border-surface-borderLight transition flex items-center gap-1.5 text-gray-200">
-            <svg class="w-3.5 h-3.5 text-accent-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-            </svg>
-            <span class="hidden sm:inline">Scrape Now</span>
-          </button>
-          <div class="pointer-events-none absolute top-full right-0 mt-2 hidden group-hover:block z-50 w-52 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed">
-            Immediately scans your target feed and evaluates new posts without waiting for the next scheduled interval.
-          </div>
-        </div>
-
-        <!-- Manual Login Browser with Tooltip -->
-        <div class="relative group">
-          <button id="launchLoginBtn" onclick="launchLoginBrowser()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-surface-borderLight hover:bg-surface-border text-white border border-surface-borderLight transition flex items-center gap-1.5">
-            <svg class="w-3.5 h-3.5 text-accent-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/>
-            </svg>
-            <span>Browser Login</span>
-          </button>
-          <div class="pointer-events-none absolute top-full right-0 mt-2 hidden group-hover:block z-50 w-64 p-3 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed">
-            Opens a Chromium window to sign into X manually. You can also double-click <span class="font-mono text-accent-amber font-semibold">login_browser.bat</span> in your project folder to open the browser on your screen!
-          </div>
-        </div>
-
-        <!-- Master Switch -->
-        <button id="masterToggleBtn" onclick="toggleAgentActive()" class="px-4 py-1.5 text-xs font-bold rounded-lg bg-accent-blue hover:bg-blue-600 text-white transition flex items-center gap-1.5 shadow-sm shadow-blue-500/20">
-          <span id="masterToggleIcon" class="w-2 h-2 rounded-full bg-white"></span>
-          <span id="masterToggleLabel">Start Agent</span>
-        </button>
-
+      <!-- Linked X Account Badge -->
+      <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-card border border-surface-border text-xs">
+        <span id="xSessionDot" class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+        <span id="linkedAccountText" class="font-mono text-gray-300">Not Linked</span>
+        <button onclick="checkSessionStatus()" title="Verify X Session" class="text-gray-500 hover:text-gray-200 ml-0.5">↻</button>
       </div>
+    </div>
+
+    <!-- Compact Metrics & Actions -->
+    <div class="flex items-center gap-2 sm:gap-3">
+      <div class="hidden md:flex items-center gap-3 text-xs font-mono text-gray-400 pr-2 border-r border-surface-border">
+        <span title="Replies posted today">Today: <strong id="dailyCounter" class="text-white">0/15</strong></span>
+        <span title="Replies scheduled for random times">Scheduled: <strong id="scheduledCounter" class="text-cyan-400">0</strong></span>
+        <span id="cooldownText" class="text-emerald-400">Ready</span>
+      </div>
+
+      <button onclick="launchLoginBrowser()" id="launchLoginBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-medium text-gray-200 transition">
+        Login
+      </button>
+
+      <button onclick="openCookieModal()" title="Export/Import Cookies for Cloud Deploy" class="px-2 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs text-gray-400 hover:text-white transition">
+        Cookies
+      </button>
+
+      <button onclick="triggerScrapeNow()" id="triggerScrapeBtn" class="px-3 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-cyan-500/30 text-xs font-medium text-cyan-300 transition flex items-center gap-1.5">
+        <span>Scan Now</span>
+      </button>
+
+      <button onclick="toggleAgentActive()" id="masterToggleBtn" class="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition">
+        <span id="masterToggleLabel">Start</span>
+      </button>
     </div>
   </header>
 
-  <!-- ========================================================================= -->
-  <!-- MAIN WORKSPACE                                                            -->
-  <!-- ========================================================================= -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+  <!-- Main Workspace -->
+  <main class="flex-1 max-w-6xl w-full mx-auto px-4 lg:px-6 py-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
 
-    <!-- KPI STRIP -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3.5">
-      
-      <!-- X Session Authentication -->
-      <div class="bg-surface-card p-4 rounded-xl border border-surface-border flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs text-gray-400">
-          <span>X Session</span>
-          <button onclick="checkSessionStatus()" title="Refresh Session Verification" class="text-gray-400 hover:text-accent-cyan transition">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-            </svg>
-          </button>
-        </div>
-        <div class="mt-3 flex items-center gap-2">
-          <span id="sessionStatusDot" class="w-2.5 h-2.5 rounded-full bg-gray-500"></span>
-          <span id="sessionStatusText" class="text-sm font-semibold text-gray-300">Checking...</span>
-        </div>
-        <span class="text-[11px] text-gray-500 font-mono mt-1">./x_browser_profile</span>
-      </div>
+    <!-- Left Sidebar: Minimal Config (4 cols) -->
+    <aside class="lg:col-span-4 space-y-4">
+      <div class="bg-surface-card rounded-xl border border-surface-border p-4 space-y-4">
 
-      <!-- Action Mode -->
-      <div class="bg-surface-card p-4 rounded-xl border border-surface-border flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs text-gray-400">
-          <span>Operating Mode</span>
-          <span id="modeStatusDot" class="w-2 h-2 rounded-full bg-accent-amber"></span>
-        </div>
-        <div class="mt-3">
-          <span id="modeStatusText" class="text-sm font-semibold text-white">Manual Review</span>
-        </div>
-        <span id="modeDescriptionText" class="text-[11px] text-gray-500 mt-1">Replies wait for approval</span>
-      </div>
-
-      <!-- Daily Action Quota -->
-      <div class="bg-surface-card p-4 rounded-xl border border-surface-border flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs text-gray-400">
-          <span>Daily Quota</span>
-          <span id="dailyCapRatio" class="font-mono text-accent-emerald text-xs font-semibold">0 / 15</span>
-        </div>
-        <div class="mt-3">
-          <div class="w-full bg-surface-input h-1.5 rounded-full overflow-hidden border border-surface-border">
-            <div id="dailyCapBar" class="bg-accent-emerald h-full w-0 transition-all duration-500"></div>
+        <!-- Gemini API Key -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-xs">
+            <label class="font-medium text-gray-300">Gemini API Key</label>
+            <span id="apiKeyStatusBadge" class="font-mono text-[11px] text-gray-400">Checking...</span>
           </div>
-        </div>
-        <span class="text-[11px] text-gray-500 font-mono mt-1">Anti-suspension cap</span>
-      </div>
-
-      <!-- Cooldown Safety Gap -->
-      <div class="bg-surface-card p-4 rounded-xl border border-surface-border flex flex-col justify-between">
-        <div class="flex items-center justify-between text-xs text-gray-400">
-          <span>Action Cooldown</span>
-          <span id="cooldownBadge" class="text-[10px] font-mono px-1.5 py-0.5 rounded font-semibold bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/20">READY</span>
-        </div>
-        <div class="mt-3">
-          <span id="cooldownTimer" class="text-sm font-mono font-bold text-white">Ready to interact</span>
-        </div>
-        <span class="text-[11px] text-gray-500 font-mono mt-1">Pacing protection</span>
-      </div>
-
-    </div>
-
-    <!-- WORKSPACE SPLIT: EDITORIAL QUEUE (LEFT) & COCKPIT CONTROLS (RIGHT) -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-      
-      <!-- =================================================================== -->
-      <!-- LEFT COLUMN: MANUAL EDITORIAL REVIEW QUEUE (7 COLS)                 -->
-      <!-- =================================================================== -->
-      <div class="lg:col-span-7 space-y-4">
-        
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2.5">
-            <h2 class="text-sm font-bold uppercase tracking-wider text-white">Review & Approval Queue</h2>
-            <span id="pendingCountBadge" class="px-2 py-0.5 text-xs font-mono font-bold rounded-full bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/30">
-              0
-            </span>
-          </div>
-          <span class="text-xs text-gray-400">Review, edit, or reject AI drafts</span>
-        </div>
-
-        <!-- Pending Items Container -->
-        <div id="pendingCardsList" class="space-y-4">
-          <!-- Empty State -->
-          <div class="bg-surface-card rounded-xl p-10 border border-surface-border text-center space-y-3">
-            <div class="w-12 h-12 rounded-xl bg-surface-input border border-surface-border flex items-center justify-center mx-auto text-gray-500">
-              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
-              </svg>
-            </div>
-            <div>
-              <p class="text-sm font-semibold text-gray-300">Editorial Queue is Empty</p>
-              <p class="text-xs text-gray-500 max-w-sm mx-auto mt-1">
-                When X-VibeBot scans your target feed and finds relevant developer discussions, drafts will arrive here for human verification.
-              </p>
-            </div>
-            <button onclick="triggerScrapeNow()" class="text-xs font-semibold text-accent-cyan hover:underline inline-flex items-center gap-1">
-              Trigger a feed scan now &rarr;
+          <div class="flex gap-1.5">
+            <input type="password" id="apiKeyInput" placeholder="Paste key from aistudio.google.com"
+              class="flex-1 bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+            <button onclick="testApiKey()" id="testKeyBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-input hover:bg-surface-border border border-surface-border text-xs font-medium text-cyan-400 transition">
+              Verify
             </button>
           </div>
+          <p id="apiHintText" class="text-[11px] text-gray-500 hidden"></p>
         </div>
 
-        <!-- Recent Audit History -->
-        <div class="bg-surface-card rounded-xl border border-surface-border p-4 space-y-3 mt-6">
-          <div class="flex items-center justify-between border-b border-surface-border pb-2.5">
-            <h3 class="text-xs font-bold uppercase tracking-wider text-gray-300">Action Ledger</h3>
-            <span class="text-[11px] font-mono text-gray-500" id="totalProcessedCounter">Total Logged: 0</span>
+        <!-- Model -->
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-gray-300">Model</label>
+          <select id="modelSelect" class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500">
+            <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+            <option value="gemini-3.7-flash">gemini-3.7-flash</option>
+            <option value="gemini-3.6-flash">gemini-3.6-flash</option>
+            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+          </select>
+        </div>
+
+        <!-- Search Topic -->
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-gray-300">Target Feed / Search Query</label>
+          <input type="text" id="queryInput" placeholder="#elclassico OR buildinpublic"
+            class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500" />
+        </div>
+
+        <!-- Persona / Voice -->
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-gray-300">My Voice / Style</label>
+          <input type="text" id="personaInput" placeholder="Casual, dry humor, lowercase okay, short sentences"
+            class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500" />
+        </div>
+
+        <!-- Random Timing & Safety Grid -->
+        <div class="grid grid-cols-2 gap-2.5 pt-2 border-t border-surface-border">
+          <div>
+            <label class="text-[11px] text-gray-400 block mb-1">Daily Cap</label>
+            <input type="number" id="capInput" min="1" max="100"
+              class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
           </div>
-          <div id="historyList" class="divide-y divide-surface-border/60 max-h-56 overflow-y-auto pr-1">
-            <div class="text-xs text-gray-500 py-3 text-center">No interactions recorded yet.</div>
+          <div>
+            <label class="text-[11px] text-gray-400 block mb-1">Scan Interval (m)</label>
+            <input type="number" id="intervalInput" min="2" max="360"
+              class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+          </div>
+          <div>
+            <label class="text-[11px] text-gray-400 block mb-1" title="Minimum & Maximum minutes for random scheduling">Random Delay (m)</label>
+            <div class="flex items-center gap-1">
+              <input type="number" id="minCooldownInput" min="1" max="180" placeholder="Min"
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+              <span class="text-gray-500 text-xs">-</span>
+              <input type="number" id="maxCooldownInput" min="2" max="360" placeholder="Max"
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+            </div>
+          </div>
+          <div>
+            <label class="text-[11px] text-gray-400 block mb-1" title="Local hours (0-23) when bot is awake">Active Hours</label>
+            <div class="flex items-center gap-1">
+              <input type="number" id="startHourInput" min="0" max="23" placeholder="8"
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+              <span class="text-gray-500 text-xs">to</span>
+              <input type="number" id="endHourInput" min="0" max="23" placeholder="23"
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+            </div>
           </div>
         </div>
 
+        <!-- Autopilot Toggle -->
+        <div class="flex items-center justify-between pt-2 border-t border-surface-border">
+          <div>
+            <span class="text-xs font-medium text-gray-200 block">Autopilot (Random Schedule)</span>
+            <span class="text-[11px] text-gray-500">Auto-queue replies at random times</span>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="autopilotToggle" class="sr-only peer">
+            <div class="w-9 h-5 bg-surface-input border border-surface-border rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 peer-checked:after:bg-slate-950 after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-400"></div>
+          </label>
+        </div>
+
+        <button onclick="saveAllSettings()" class="w-full py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs transition">
+          Save Settings
+        </button>
       </div>
+    </aside>
 
-      <!-- =================================================================== -->
-      <!-- RIGHT COLUMN: CONFIGURATION, AI ENGINE & TELEMETRY (5 COLS)         -->
-      <!-- =================================================================== -->
-      <div class="lg:col-span-5 space-y-5">
-        
-        <!-- SETTINGS PANEL -->
-        <div class="bg-surface-card rounded-xl border border-surface-border p-5 space-y-5 shadow-sm">
-          
-          <div class="flex items-center justify-between border-b border-surface-border pb-3">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full bg-accent-cyan"></span>
-              Cockpit Configuration
-            </h2>
-            <span class="text-[11px] text-gray-500 font-mono">Real-time sync</span>
-          </div>
+    <!-- Right Content: Queue, History & Logs (8 cols) -->
+    <section class="lg:col-span-8 flex flex-col gap-4">
 
-          <!-- Google Gemini API Key & Connection -->
-          <div class="space-y-2.5">
-            <div class="flex items-center justify-between">
-              <label class="text-xs font-semibold text-gray-300 flex items-center">
-                <span>Google Gemini API Key</span>
-                <span class="group relative inline-flex items-center ml-1">
-                  <svg class="w-3.5 h-3.5 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                  </svg>
-                  <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-64 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                    Free API key from Google AI Studio. Allows Gemini to evaluate posts and draft witty replies with 1,500 free requests/day.
-                  </span>
-                </span>
-              </label>
-              <span id="apiKeyStatusBadge" class="text-[10px] font-mono px-2 py-0.5 rounded font-semibold bg-surface-input border border-surface-border text-gray-400">
-                Checking...
-              </span>
-            </div>
-
-            <div class="relative">
-              <input type="password" id="apiKeyInput" placeholder="Enter Gemini key (AIzaSy...) to update"
-                class="w-full bg-surface-input border border-surface-borderLight rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-gray-600 focus:outline-none focus:border-accent-cyan pr-10">
-              <button type="button" onclick="togglePasswordVisibility('apiKeyInput')" class="absolute right-3 top-2.5 text-gray-500 hover:text-gray-300 text-xs">
-                👁️
-              </button>
-            </div>
-
-            <div class="flex items-center justify-between text-[11px]">
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-accent-cyan hover:underline inline-flex items-center gap-1 font-medium">
-                Get free key at Google AI Studio &nearr;
-              </a>
-              <span class="text-gray-500 text-[10px]">Free Tier: 15 RPM / 1,500 RPD</span>
-            </div>
-
-            <button onclick="testApiKey()" id="testKeyBtn" class="w-full px-3 py-2 text-xs font-semibold rounded-lg bg-surface-cardHover hover:bg-surface-border border border-surface-borderLight text-gray-200 transition flex items-center justify-center gap-2">
-              <svg class="w-3.5 h-3.5 text-accent-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-              </svg>
-              <span>Verify Key & Fetch Models</span>
-            </button>
-
-            <!-- Test Feedback Card -->
-            <div id="apiTestFeedback" class="text-[11px] p-2.5 rounded-lg border border-surface-border bg-surface-input text-gray-400 space-y-0.5">
-              <div class="flex items-center gap-1.5">
-                <span class="font-medium text-gray-300">Status:</span>
-                <span id="apiStatusText">Ready for validation</span>
-              </div>
-              <p id="apiHintText" class="text-gray-500 text-[10px]">Get your free key at aistudio.google.com/app/apikey</p>
-            </div>
-          </div>
-
-          <!-- Model Selector -->
-          <div class="space-y-1.5 pt-1 border-t border-surface-border/60">
-            <label class="text-xs font-semibold text-gray-300 flex items-center">
-              <span>Active Intelligence Model</span>
-              <span class="group relative inline-flex items-center ml-1">
-                <svg class="w-3.5 h-3.5 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-60 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                  <strong>gemini-2.5-flash</strong> is Google's ultra-fast, intelligent model. <strong>gemini-2.5-pro</strong> provides deep reasoning.
-                </span>
-              </span>
-            </label>
-            <select id="modelSelect" onchange="onModelSelected()" class="w-full bg-surface-input border border-surface-borderLight rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-accent-cyan">
-              <option value="gemini-3.8-flash">gemini-3.8-flash (Gemini 3.8 Flash — Recommended)</option>
-              <option value="gemini-3.8-pro">gemini-3.8-pro (Gemini 3.8 Pro — Deep Reasoning)</option>
-              <option value="gemini-2.5-flash">gemini-2.5-flash (Gemini 2.5 Flash)</option>
-              <option value="gemini-2.0-flash">gemini-2.0-flash (Gemini 2.0 Flash — Low Latency)</option>
-            </select>
-            <p id="modelDescription" class="text-[11px] text-gray-500">
-              Optimal for 1–2 sentence sharp commentary and value-adding coding insights.
-            </p>
-          </div>
-
-          <!-- Autopilot Switch -->
-          <div class="pt-3 border-t border-surface-border/60 flex items-center justify-between">
-            <div>
-              <span class="text-xs font-semibold text-gray-200 flex items-center">
-                <span>Autopilot Mode</span>
-                <span class="group relative inline-flex items-center ml-1">
-                  <svg class="w-3.5 h-3.5 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                  </svg>
-                  <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-56 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                    When OFF, AI drafts sit in your Review Queue for manual approval. When ON, replies publish autonomously.
-                  </span>
-                </span>
-              </span>
-              <p class="text-[11px] text-gray-500">Skip manual queue and publish automatically</p>
-            </div>
-            <div class="flex items-center">
-              <input type="checkbox" id="autopilotToggle" onchange="onAutopilotToggleChange()" class="sr-only switch-checkbox">
-              <label for="autopilotToggle" class="switch-label cursor-pointer w-11 h-6 bg-surface-input border border-surface-borderLight rounded-full flex items-center p-1 transition">
-                <div class="switch-dot w-4 h-4 rounded-full bg-gray-500 transition transform"></div>
-              </label>
-            </div>
-          </div>
-
-          <!-- Numerical Parameter Inputs -->
-          <div class="grid grid-cols-3 gap-2.5 pt-2 border-t border-surface-border/60">
-            <div>
-              <label class="text-[11px] text-gray-400 block mb-1">
-                <span>Interval (m)</span>
-                <span class="group relative inline-flex items-center align-middle ml-0.5">
-                  <svg class="w-3 h-3 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                  </svg>
-                  <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-48 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                    Delay in minutes between automated feed scans on X (e.g. every 15 min).
-                  </span>
-                </span>
-              </label>
-              <input type="number" id="intervalInput" min="1" max="180" value="15"
-                class="w-full bg-surface-input border border-surface-borderLight rounded px-2.5 py-1.5 text-xs text-center font-mono text-white focus:outline-none focus:border-accent-cyan">
-            </div>
-            <div>
-              <label class="text-[11px] text-gray-400 block mb-1">
-                <span>Daily Cap</span>
-                <span class="group relative inline-flex items-center align-middle ml-0.5">
-                  <svg class="w-3 h-3 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                  </svg>
-                  <span class="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50 w-52 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                    Maximum automated actions allowed per 24 hours to protect your account from X's spam filters.
-                  </span>
-                </span>
-              </label>
-              <input type="number" id="capInput" min="1" max="50" value="15"
-                class="w-full bg-surface-input border border-surface-borderLight rounded px-2.5 py-1.5 text-xs text-center font-mono text-white focus:outline-none focus:border-accent-cyan">
-            </div>
-            <div>
-              <label class="text-[11px] text-gray-400 block mb-1">
-                <span>Cooldown (m)</span>
-                <span class="group relative inline-flex items-center align-middle ml-0.5">
-                  <svg class="w-3 h-3 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                  </svg>
-                  <span class="pointer-events-none absolute bottom-full right-0 mb-2 hidden group-hover:block z-50 w-52 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                    Mandatory resting time between individual replies (15–30m) so actions appear natural.
-                  </span>
-                </span>
-              </label>
-              <input type="number" id="cooldownInput" min="1" max="120" value="15"
-                class="w-full bg-surface-input border border-surface-borderLight rounded px-2.5 py-1.5 text-xs text-center font-mono text-white focus:outline-none focus:border-accent-cyan">
-            </div>
-          </div>
-
-          <!-- Search Query Input -->
-          <div class="space-y-1 pt-1">
-            <label class="text-xs font-semibold text-gray-300 flex items-center">
-              <span>Feed Search Query</span>
-              <span class="group relative inline-flex items-center ml-1">
-                <svg class="w-3.5 h-3.5 text-gray-500 hover:text-accent-cyan cursor-help transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                <span class="pointer-events-none absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-60 p-2.5 rounded-lg bg-surface-base border border-surface-border text-[11px] text-gray-300 shadow-2xl leading-relaxed text-left font-normal font-sans">
-                  The keywords, hashtags, or topics the agent monitors on X (e.g. <code>buildinpublic OR #ai</code>).
-                </span>
-              </span>
-            </label>
-            <input type="text" id="queryInput" value="buildinpublic OR #ai OR #python"
-              class="w-full bg-surface-input border border-surface-borderLight rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-accent-cyan">
-            <p class="text-[10px] text-gray-500">Search operator filter passed to X.</p>
-          </div>
-
-          <!-- Save All Button -->
-          <button onclick="saveAllSettings()" class="w-full py-2.5 text-xs font-bold rounded-lg bg-accent-cyan hover:bg-cyan-400 text-black transition flex items-center justify-center gap-2 shadow-sm shadow-cyan-500/20">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-            </svg>
-            <span>Save Configuration Changes</span>
+      <!-- Tabs -->
+      <div class="flex items-center justify-between border-b border-surface-border pb-2.5">
+        <div class="flex items-center gap-2">
+          <button onclick="switchTab('pending')" id="tabPending" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5">
+            <span>Queue</span>
+            <span id="pendingCountBadge" class="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyan-500/20 text-cyan-300">0</span>
           </button>
-
+          <button onclick="switchTab('history')" id="tabHistory" class="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200">
+            History
+          </button>
         </div>
-
-        <!-- LIVE EVENT TELEMETRY LOG -->
-        <div class="bg-surface-card rounded-xl border border-surface-border p-4 space-y-3">
-          <div class="flex items-center justify-between border-b border-surface-border pb-2.5">
-            <h3 class="text-xs font-bold uppercase tracking-wider text-gray-300 flex items-center gap-2">
-              <span class="w-1.5 h-1.5 rounded-full bg-accent-emerald animate-ping"></span>
-              Live Telemetry Stream
-            </h3>
-            <span class="text-[10px] font-mono text-gray-500">Real-time</span>
-          </div>
-
-          <!-- Terminal Window -->
-          <div class="bg-surface-base rounded-lg p-3 border border-surface-border font-mono text-[11px] h-60 overflow-y-auto flex flex-col-reverse" id="terminalWindow">
-            <div id="terminalContent" class="space-y-1">
-              <div class="text-gray-500">[System] Initializing telemetry stream...</div>
-            </div>
-          </div>
-        </div>
-
+        <span id="totalProcessedCounter" class="text-[11px] font-mono text-gray-500">0 processed</span>
       </div>
 
-    </div>
+      <!-- Queue View -->
+      <div id="viewPending" class="space-y-3">
+        <div id="pendingCardsList" class="space-y-3"></div>
+      </div>
 
+      <!-- History View -->
+      <div id="viewHistory" class="hidden">
+        <div class="bg-surface-card rounded-xl border border-surface-border overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-surface-border text-[10px] font-mono uppercase text-gray-500 bg-surface-input/60">
+                  <th class="py-2.5 px-3">Status</th>
+                  <th class="py-2.5 px-3">Post</th>
+                  <th class="py-2.5 px-3">Reply / Reason</th>
+                  <th class="py-2.5 px-3 text-right">Time</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody" class="divide-y divide-surface-border text-xs"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Compact Live Logs -->
+      <div class="bg-surface-card rounded-xl border border-surface-border overflow-hidden mt-auto">
+        <div class="px-3.5 py-2 border-b border-surface-border flex items-center justify-between bg-surface-input/50">
+          <span class="text-[11px] font-mono text-gray-400">Live Logs</span>
+          <span class="text-[10px] font-mono text-gray-600" id="activeHoursBadge">Active Window</span>
+        </div>
+        <div id="logTerminal" class="p-3 h-36 overflow-y-auto font-mono text-[11px] space-y-1 bg-[#07090e] text-gray-300"></div>
+      </div>
+
+    </section>
   </main>
 
-  <!-- Notification Toast -->
-  <div id="toast" class="fixed bottom-5 right-5 px-4 py-2.5 rounded-lg text-xs font-semibold shadow-2xl transform transition-all duration-300 translate-y-20 opacity-0 pointer-events-none z-50">
-    Notification
-  </div>
-
-  <!-- ========================================================================= -->
-  <!-- JAVASCRIPT CONTROLLER                                                     -->
-  <!-- ========================================================================= -->
   <script>
     let currentConfig = null;
+    let variantsMap = {};
 
     function showToast(msg, isError = false) {
       const toast = document.getElementById('toast');
-      toast.innerText = msg;
-      toast.className = `fixed bottom-5 right-5 px-4 py-2.5 rounded-lg text-xs font-semibold shadow-2xl transform transition-all duration-300 z-50 ${
-        isError ? 'bg-accent-rose text-white border border-rose-400' : 'bg-surface-card border border-accent-cyan text-white'
-      }`;
-      toast.style.transform = 'translateY(0)';
-      toast.style.opacity = '1';
-      setTimeout(() => {
-        toast.style.transform = 'translateY(20px)';
-        toast.style.opacity = '0';
-      }, 3500);
+      const dot = document.getElementById('toastDot');
+      document.getElementById('toastMsg').innerText = msg;
+      dot.className = `w-2 h-2 rounded-full ${isError ? 'bg-rose-400' : 'bg-cyan-400'}`;
+      toast.classList.remove('hidden');
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => toast.classList.add('hidden'), 3500);
     }
 
-    function togglePasswordVisibility(inputId) {
-      const input = document.getElementById(inputId);
-      input.type = input.type === 'password' ? 'text' : 'password';
+    function switchTab(tab) {
+      const pView = document.getElementById('viewPending');
+      const hView = document.getElementById('viewHistory');
+      const pBtn = document.getElementById('tabPending');
+      const hBtn = document.getElementById('tabHistory');
+
+      if (tab === 'pending') {
+        pView.classList.remove('hidden');
+        hView.classList.add('hidden');
+        pBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5';
+        hBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200';
+        fetchPendingApprovals();
+      } else {
+        hView.classList.remove('hidden');
+        pView.classList.add('hidden');
+        hBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30';
+        pBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 flex items-center gap-1.5';
+        fetchHistory();
+      }
     }
 
     async function fetchStatus() {
@@ -514,90 +303,63 @@
         if (!res.ok) return;
         const data = await res.json();
 
-        // 1. Header & Master Button
-        const headerBadge = document.getElementById('headerStateBadge');
-        const masterBtn = document.getElementById('masterToggleBtn');
-        const masterLabel = document.getElementById('masterToggleLabel');
-        const masterIcon = document.getElementById('masterToggleIcon');
+        const dot = document.getElementById('statusDot');
+        const txt = document.getElementById('statusText');
+        const toggleBtn = document.getElementById('masterToggleBtn');
+        const toggleLbl = document.getElementById('masterToggleLabel');
 
         if (data.is_active) {
-          headerBadge.innerText = 'ONLINE';
-          headerBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/30';
-          masterBtn.className = 'px-4 py-1.5 text-xs font-bold rounded-lg bg-surface-cardHover hover:bg-surface-border text-accent-amber border border-accent-amber/40 transition flex items-center gap-1.5';
-          masterLabel.innerText = 'Pause Agent';
-          masterIcon.className = 'w-2 h-2 rounded-full bg-accent-amber animate-pulse';
+          if (!data.within_active_hours) {
+            dot.className = 'w-2 h-2 rounded-full bg-amber-400';
+            txt.innerText = 'Sleeping';
+          } else {
+            dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+            txt.innerText = 'Running';
+          }
+          toggleBtn.className = 'px-3.5 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-semibold text-xs transition';
+          toggleLbl.innerText = 'Pause';
         } else {
-          headerBadge.innerText = 'PAUSED';
-          headerBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-surface-border text-gray-400';
-          masterBtn.className = 'px-4 py-1.5 text-xs font-bold rounded-lg bg-accent-blue hover:bg-blue-600 text-white transition flex items-center gap-1.5 shadow-sm shadow-blue-500/20';
-          masterLabel.innerText = 'Start Agent';
-          masterIcon.className = 'w-2 h-2 rounded-full bg-white';
+          dot.className = 'w-2 h-2 rounded-full bg-gray-500';
+          txt.innerText = 'Paused';
+          toggleBtn.className = 'px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition';
+          toggleLbl.innerText = 'Start';
         }
 
-        // 2. Active Model Pill
-        if (data.selected_model) {
-          document.getElementById('headerModelPill').innerText = data.selected_model;
-        }
-
-        // 3. Operating Mode KPI
-        const modeText = document.getElementById('modeStatusText');
-        const modeDesc = document.getElementById('modeDescriptionText');
-        const modeDot = document.getElementById('modeStatusDot');
-        if (data.auto_pilot_mode) {
-          modeText.innerText = 'Full Autopilot';
-          modeDesc.innerText = 'Replies post automatically';
-          modeDot.className = 'w-2 h-2 rounded-full bg-accent-emerald';
-        } else {
-          modeText.innerText = 'Manual Review';
-          modeDesc.innerText = 'Replies wait for approval';
-          modeDot.className = 'w-2 h-2 rounded-full bg-accent-amber';
-        }
-
-        // 4. Session Status KPI
-        const sessionDot = document.getElementById('sessionStatusDot');
-        const sessionText = document.getElementById('sessionStatusText');
+        // X Account Handle
+        const xDot = document.getElementById('xSessionDot');
+        const xTxt = document.getElementById('linkedAccountText');
         if (data.is_logged_in) {
-          sessionDot.className = 'w-2.5 h-2.5 rounded-full bg-accent-emerald';
-          sessionText.innerText = 'Authenticated';
-          sessionText.className = 'text-sm font-semibold text-accent-emerald';
+          xDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400';
+          xTxt.innerText = data.linked_username || 'Linked';
+          xTxt.className = 'font-mono text-emerald-300 font-medium';
         } else {
-          sessionDot.className = 'w-2.5 h-2.5 rounded-full bg-accent-amber';
-          sessionText.innerText = 'Not Logged In';
-          sessionText.className = 'text-sm font-semibold text-accent-amber';
+          xDot.className = 'w-1.5 h-1.5 rounded-full bg-rose-400';
+          xTxt.innerText = 'Not Linked';
+          xTxt.className = 'font-mono text-gray-400';
         }
 
-        // 5. Daily Cap Progress
-        document.getElementById('dailyCapRatio').innerText = `${data.daily_actions_used} / ${data.daily_action_cap}`;
-        const pct = Math.min(100, Math.round((data.daily_actions_used / Math.max(1, data.daily_action_cap)) * 100));
-        const bar = document.getElementById('dailyCapBar');
-        bar.style.width = `${pct}%`;
-        if (pct >= 90) bar.className = 'bg-accent-rose h-full transition-all duration-500';
-        else if (pct >= 60) bar.className = 'bg-accent-amber h-full transition-all duration-500';
-        else bar.className = 'bg-accent-emerald h-full transition-all duration-500';
-
-        // 6. Action Cooldown
-        const cdBadge = document.getElementById('cooldownBadge');
-        const cdTimer = document.getElementById('cooldownTimer');
-        if (data.cooldown_active && data.cooldown_seconds_remaining > 0) {
-          const mins = Math.floor(data.cooldown_seconds_remaining / 60);
-          const secs = data.cooldown_seconds_remaining % 60;
-          cdBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded font-semibold bg-accent-amber/10 text-accent-amber border border-accent-amber/20';
-          cdBadge.innerText = 'WAITING';
-          cdTimer.innerText = `${mins}m ${secs}s left`;
-        } else {
-          cdBadge.className = 'text-[10px] font-mono px-1.5 py-0.5 rounded font-semibold bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/20';
-          cdBadge.innerText = 'READY';
-          cdTimer.innerText = 'Ready to interact';
-        }
-
-        // 7. Counters & Logs
+        document.getElementById('dailyCounter').innerText = `${data.daily_actions_used}/${data.daily_action_cap}`;
+        document.getElementById('scheduledCounter').innerText = data.scheduled_count || 0;
         document.getElementById('pendingCountBadge').innerText = data.pending_approvals_count;
-        document.getElementById('totalProcessedCounter').innerText = `Total Logged: ${data.total_processed_count}`;
-        renderLogs(data.recent_logs);
+        document.getElementById('totalProcessedCounter').innerText = `${data.total_processed_count} processed`;
 
-      } catch (err) {
-        console.error('Error fetching status:', err);
-      }
+        const cdText = document.getElementById('cooldownText');
+        if (data.cooldown_active && data.cooldown_seconds_remaining > 0) {
+          const m = Math.floor(data.cooldown_seconds_remaining / 60);
+          const s = data.cooldown_seconds_remaining % 60;
+          cdText.innerText = `Cooldown ${m}m ${s}s`;
+          cdText.className = 'text-amber-400';
+        } else {
+          cdText.innerText = 'Ready';
+          cdText.className = 'text-emerald-400';
+        }
+
+        const ahBadge = document.getElementById('activeHoursBadge');
+        ahBadge.innerText = data.within_active_hours ? 'Awake Window' : 'Sleep Window';
+        ahBadge.className = `text-[10px] font-mono ${data.within_active_hours ? 'text-emerald-400' : 'text-amber-400'}`;
+
+        renderLogs(data.recent_logs);
+      } catch (e) {}
     }
 
     async function fetchConfig() {
@@ -606,108 +368,59 @@
         if (!res.ok) return;
         currentConfig = await res.json();
 
-        // Populate Numerical Inputs
         document.getElementById('intervalInput').value = currentConfig.polling_interval_minutes;
         document.getElementById('capInput').value = currentConfig.daily_action_cap;
-        document.getElementById('cooldownInput').value = currentConfig.min_cooldown_minutes;
-        document.getElementById('queryInput').value = currentConfig.search_query;
+        document.getElementById('minCooldownInput').value = currentConfig.min_cooldown_minutes;
+        document.getElementById('maxCooldownInput').value = currentConfig.max_cooldown_minutes;
+        document.getElementById('startHourInput').value = currentConfig.active_hours_start;
+        document.getElementById('endHourInput').value = currentConfig.active_hours_end;
+        document.getElementById('queryInput').value = currentConfig.search_query || '';
+        document.getElementById('personaInput').value = currentConfig.persona_prompt || '';
+        document.getElementById('autopilotToggle').checked = currentConfig.auto_pilot_mode;
 
-        // Model Selector
-        const modelSelect = document.getElementById('modelSelect');
         if (currentConfig.selected_model) {
-          modelSelect.value = currentConfig.selected_model;
-          document.getElementById('headerModelPill').innerText = currentConfig.selected_model;
-          onModelSelected();
+          document.getElementById('modelSelect').value = currentConfig.selected_model;
         }
 
-        // API Key status pill
-        const apiKeyBadge = document.getElementById('apiKeyStatusBadge');
+        const badge = document.getElementById('apiKeyStatusBadge');
         if (currentConfig.masked_api_key) {
-          apiKeyBadge.innerText = `Active (${currentConfig.masked_api_key})`;
-          apiKeyBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded font-semibold bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/30';
+          badge.innerText = currentConfig.masked_api_key;
+          badge.className = 'font-mono text-[11px] text-emerald-400';
         } else {
-          apiKeyBadge.innerText = 'Missing';
-          apiKeyBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded font-semibold bg-accent-rose/10 text-accent-rose border border-accent-rose/30';
+          badge.innerText = 'Missing';
+          badge.className = 'font-mono text-[11px] text-rose-400';
         }
-
-        // Autopilot switch
-        const toggle = document.getElementById('autopilotToggle');
-        toggle.checked = currentConfig.auto_pilot_mode;
-
-      } catch (err) {
-        console.error('Error fetching config:', err);
-      }
-    }
-
-    function onAutopilotToggleChange() {
-      const toggle = document.getElementById('autopilotToggle');
-      showToast(toggle.checked ? 'Autopilot mode selected. Remember to save changes.' : 'Manual review mode selected.');
-    }
-
-    function onModelSelected() {
-      const select = document.getElementById('modelSelect');
-      const desc = document.getElementById('modelDescription');
-      const val = (select.value || '').toLowerCase();
-      if (val.includes('pro')) {
-        desc.innerText = 'Deep contextual intelligence and extended reasoning for complex tech topics.';
-      } else if (val.includes('2.5-flash')) {
-        desc.innerText = 'Optimal for sharp 1–2 sentence developer commentary, high speed, and generous free limits.';
-      } else if (val.includes('reasoner')) {
-        desc.innerText = 'Chain-of-thought analysis for complex technical logic.';
-      } else {
-        desc.innerText = 'Fast and lightweight model ideal for frequent timeline scanning.';
-      }
+      } catch (e) {}
     }
 
     async function toggleAgentActive() {
       const btn = document.getElementById('masterToggleBtn');
-      const label = document.getElementById('masterToggleLabel');
-      const isCurrentlyActive = label ? label.innerText.toLowerCase().includes('pause') : (currentConfig ? currentConfig.is_active : false);
-      const newState = !isCurrentlyActive;
-
-      if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = `
-          <svg class="w-3.5 h-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-          </svg>
-          <span>Updating...</span>
-        `;
-      }
-
+      const lbl = document.getElementById('masterToggleLabel');
+      const nextState = lbl.innerText.toLowerCase().includes('start');
+      btn.disabled = true;
       try {
         const res = await fetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ is_active: newState })
+          body: JSON.stringify({ is_active: nextState })
         });
         if (res.ok) {
           currentConfig = await res.json();
-          showToast(newState ? 'Agent Online — background worker activated' : 'Agent Paused');
-        } else {
-          showToast('Failed to toggle agent state', true);
+          showToast(nextState ? 'Agent started' : 'Agent paused');
         }
-      } catch (err) {
-        showToast('Network error toggling agent', true);
       } finally {
-        if (btn) btn.disabled = false;
-        await fetchStatus();
+        btn.disabled = false;
+        fetchStatus();
       }
     }
 
     async function testApiKey() {
       const keyInput = document.getElementById('apiKeyInput');
       const testKey = keyInput.value.trim();
-
       const btn = document.getElementById('testKeyBtn');
-      const origHtml = btn.innerHTML;
-      btn.innerHTML = `<span>Validating with Google Gemini...</span>`;
+      const hint = document.getElementById('apiHintText');
+      btn.innerText = '...';
       btn.disabled = true;
-
-      const statusText = document.getElementById('apiStatusText');
-      const hintText = document.getElementById('apiHintText');
-      const feedbackBox = document.getElementById('apiTestFeedback');
 
       try {
         const res = await fetch('/api/ai/test-key', {
@@ -716,187 +429,159 @@
           body: JSON.stringify({ api_key: testKey || null })
         });
         const data = await res.json();
-
+        hint.classList.remove('hidden');
         if (data.success) {
-          statusText.innerText = 'Connected & Authenticated';
-          statusText.className = 'font-bold text-accent-emerald';
-          hintText.innerText = data.hint || `Verified with Google Gemini. ${data.models.length} models accessible.`;
-          feedbackBox.className = 'text-[11px] p-2.5 rounded-lg border border-accent-emerald/40 bg-accent-emerald/10 text-emerald-200 space-y-0.5';
-          showToast('Google Gemini credentials verified successfully!');
-
-          // Populate model selector
-          const select = document.getElementById('modelSelect');
-          select.innerHTML = data.models.map(m => `
-            <option value="${m.id}" ${currentConfig && currentConfig.selected_model === m.id ? 'selected' : ''}>
-              ${m.name || m.id}
-            </option>
-          `).join('');
-
-          const apiKeyBadge = document.getElementById('apiKeyStatusBadge');
-          apiKeyBadge.innerText = 'Verified';
-          apiKeyBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded font-semibold bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/30';
+          hint.innerText = data.hint || 'Verified & saved';
+          hint.className = 'text-[11px] text-emerald-400';
           keyInput.value = '';
+          const select = document.getElementById('modelSelect');
+          if (data.models && data.models.length) {
+            select.innerHTML = data.models.map(m => `<option value="${m.id}">${m.id}</option>`).join('');
+          }
+          showToast('Gemini key verified & saved');
           fetchConfig();
         } else {
-          statusText.innerText = 'Authentication Failed';
-          statusText.className = 'font-bold text-accent-rose';
-          hintText.innerText = data.hint || data.error || 'Please ensure key is valid from aistudio.google.com';
-          feedbackBox.className = 'text-[11px] p-2.5 rounded-lg border border-accent-rose/40 bg-accent-rose/10 text-rose-200 space-y-0.5';
-          showToast('AI authentication failed', true);
+          hint.innerText = data.hint || data.error || 'Invalid key';
+          hint.className = 'text-[11px] text-rose-400';
+          showToast('Key verification failed', true);
         }
-      } catch (err) {
-        statusText.innerText = 'Network Error';
-        statusText.className = 'font-bold text-accent-rose';
-        hintText.innerText = 'Could not reach server endpoint.';
-        showToast('Network error while testing key', true);
+      } catch (e) {
+        showToast('Network error verifying key', true);
       } finally {
-        btn.innerHTML = origHtml;
+        btn.innerText = 'Verify';
         btn.disabled = false;
       }
     }
 
     async function saveAllSettings() {
-      const apiKeyVal = document.getElementById('apiKeyInput').value.trim();
-      const selectedModel = document.getElementById('modelSelect').value;
-      const autoPilot = document.getElementById('autopilotToggle').checked;
-      const interval = parseInt(document.getElementById('intervalInput').value);
-      const cap = parseInt(document.getElementById('capInput').value);
-      const cooldown = parseInt(document.getElementById('cooldownInput').value);
-      const query = document.getElementById('queryInput').value.trim();
-
       const payload = {
-        auto_pilot_mode: autoPilot,
-        polling_interval_minutes: interval,
-        daily_action_cap: cap,
-        min_cooldown_minutes: cooldown,
-        search_query: query,
-        selected_model: selectedModel
+        auto_pilot_mode: document.getElementById('autopilotToggle').checked,
+        polling_interval_minutes: parseInt(document.getElementById('intervalInput').value) || 20,
+        daily_action_cap: parseInt(document.getElementById('capInput').value) || 15,
+        min_cooldown_minutes: parseInt(document.getElementById('minCooldownInput').value) || 10,
+        max_cooldown_minutes: parseInt(document.getElementById('maxCooldownInput').value) || 45,
+        active_hours_start: parseInt(document.getElementById('startHourInput').value) || 0,
+        active_hours_end: parseInt(document.getElementById('endHourInput').value) || 23,
+        search_query: document.getElementById('queryInput').value.trim(),
+        persona_prompt: document.getElementById('personaInput').value.trim(),
+        selected_model: document.getElementById('modelSelect').value
       };
+      const apiKeyVal = document.getElementById('apiKeyInput').value.trim();
+      if (apiKeyVal) payload.api_key = apiKeyVal;
 
-      if (apiKeyVal) {
-        payload.api_key = apiKeyVal;
-      }
-
-      try {
-        const res = await fetch('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        if (res.ok) {
-          currentConfig = await res.json();
-          document.getElementById('apiKeyInput').value = '';
-          showToast('Configuration saved successfully');
-          fetchConfig();
-          fetchStatus();
-        } else {
-          showToast('Error saving settings', true);
-        }
-      } catch (err) {
-        showToast('Network error saving settings', true);
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        currentConfig = await res.json();
+        document.getElementById('apiKeyInput').value = '';
+        showToast('Settings saved');
+        fetchConfig();
+        fetchStatus();
+      } else {
+        showToast('Failed to save settings', true);
       }
     }
 
     async function triggerScrapeNow() {
       const btn = document.getElementById('triggerScrapeBtn');
-      const origHtml = btn ? btn.innerHTML : null;
-      if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = `
-          <svg class="w-3.5 h-3.5 text-accent-cyan animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-          </svg>
-          <span class="hidden sm:inline">Scanning...</span>
-        `;
-      }
+      btn.disabled = true;
+      btn.innerText = 'Scanning...';
 
-      // Auto-save any unsaved API key or search query before triggering scrape
       const unsavedKey = document.getElementById('apiKeyInput').value.trim();
       const currentQuery = document.getElementById('queryInput').value.trim();
-      if (unsavedKey || (currentConfig && currentQuery !== currentConfig.search_query)) {
+      const currentPersona = document.getElementById('personaInput').value.trim();
+      if (unsavedKey || (currentConfig && (currentQuery !== currentConfig.search_query || currentPersona !== currentConfig.persona_prompt))) {
         await saveAllSettings();
       }
 
-      showToast('Initiating scrape cycle...');
       try {
         const res = await fetch('/api/trigger-scrape', { method: 'POST' });
         const data = await res.json();
         if (!res.ok || data.status === 'not_logged_in' || data.status === 'missing_api_key') {
-          showToast(data.message || 'Cannot scan feed: Check login & API key', true);
+          showToast(data.message || 'Check login & API key', true);
         } else {
-          showToast(data.message || 'Scrape cycle started! Watch System Logs below for live progress.');
-          [2000, 6000, 12000, 20000, 30000].forEach(ms => {
+          showToast('Scanning feed...');
+          [2500, 6000, 12000, 20000, 30000].forEach(ms => {
             setTimeout(() => {
               fetchStatus();
               fetchPendingApprovals();
-              fetchHistory();
             }, ms);
           });
         }
-      } catch (err) {
-        showToast('Failed to trigger cycle', true);
       } finally {
-        if (btn && origHtml) {
-          btn.innerHTML = origHtml;
-          btn.disabled = false;
-        }
+        btn.disabled = false;
+        btn.innerText = 'Scan Now';
       }
     }
 
     async function launchLoginBrowser() {
       const btn = document.getElementById('launchLoginBtn');
-      const origHtml = btn ? btn.innerHTML : null;
-      if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = `
-          <svg class="w-3.5 h-3.5 text-accent-amber animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-          </svg>
-          <span>Launching...</span>
-        `;
-      }
-      showToast('Launching Chromium for manual login...');
+      btn.disabled = true;
+      btn.innerText = 'Opening...';
       try {
         const res = await fetch('/api/browser/launch-login', { method: 'POST' });
         const data = await res.json();
-        if (res.ok) {
-          if (data.is_default_desktop === false) {
-            showToast('Server is in background mode — use login_browser.bat on desktop', true);
-            alert("To open the browser on your screen:\n\nDouble-click 'login_browser.bat' in your project folder!\n\n(Because this server is running in a background sandbox, Windows requires launching through your desktop batch file. Both use the exact same ./x_browser_profile!)");
-          } else {
-            showToast(data.message || 'Browser launched! Sign into X, then return here.');
-          }
-        } else {
-          showToast(data.detail || data.message || 'Failed to launch browser', true);
-        }
-      } catch (err) {
-        showToast('Error launching browser window', true);
+        showToast(data.message || 'Browser launched');
+      } catch (e) {
+        showToast('Run login_browser.bat in project folder', true);
       } finally {
-        if (btn && origHtml) {
-          btn.innerHTML = origHtml;
-          btn.disabled = false;
-        }
+        btn.disabled = false;
+        btn.innerText = 'Login';
         setTimeout(fetchStatus, 3000);
       }
     }
 
     async function checkSessionStatus() {
-      showToast('Verifying X session status...');
-      try {
-        const res = await fetch('/api/browser/check-session', { method: 'POST' });
-        const data = await res.json();
-        if (data.is_logged_in) {
-          showToast('X Session authenticated!');
-        } else {
-          showToast('X Session logged out. Please click "Browser Login" to sign in.', true);
-        }
-        await fetchStatus();
-      } catch (err) {
-        showToast('Failed to verify session', true);
+      showToast('Checking X session...');
+      const res = await fetch('/api/browser/check-session', { method: 'POST' });
+      const data = await res.json();
+      if (data.is_logged_in) {
+        showToast(`Connected as ${data.linked_username || 'active user'}`);
+      } else {
+        showToast('Not logged in', true);
       }
+      fetchStatus();
+    }
+
+    function selectVariant(tweetId, key) {
+      const v = variantsMap[tweetId];
+      if (v && v[key]) {
+        const box = document.getElementById(`draft_${tweetId}`);
+        if (box) box.value = v[key];
+      }
+    }
+
+    async function regenerateDraft(tweetId) {
+      const btn = document.getElementById(`regen_${tweetId}`);
+      if (btn) {
+        btn.innerText = '...';
+        btn.disabled = true;
+      }
+      try {
+        const res = await fetch(`/api/regenerate/${tweetId}`, { method: 'POST' });
+        if (res.ok) {
+          showToast('Generated fresh angles');
+          await fetchPendingApprovals();
+        } else {
+          showToast('Regenerate failed', true);
+        }
+      } finally {
+        if (btn) {
+          btn.innerText = '↻';
+          btn.disabled = false;
+        }
+      }
+    }
+
+    function formatScheduledBadge(isoStr) {
+      if (!isoStr) return '';
+      const schedDate = new Date(isoStr.endsWith('Z') ? isoStr : isoStr + 'Z');
+      const diffMins = Math.max(1, Math.round((schedDate - new Date()) / 60000));
+      const timeStr = schedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `Scheduled ${timeStr} (~${diffMins}m)`;
     }
 
     async function fetchPendingApprovals() {
@@ -908,226 +593,206 @@
 
         if (items.length === 0) {
           container.innerHTML = `
-            <div class="bg-surface-card rounded-xl p-10 border border-surface-border text-center space-y-3">
-              <div class="w-12 h-12 rounded-xl bg-surface-input border border-surface-border flex items-center justify-center mx-auto text-gray-500">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
-                </svg>
-              </div>
-              <div>
-                <p class="text-sm font-semibold text-gray-300">Editorial Queue is Empty</p>
-                <p class="text-xs text-gray-500 max-w-sm mx-auto mt-1">
-                  When X-VibeBot scans your target feed and finds relevant developer discussions, drafts will arrive here for human verification.
-                </p>
-              </div>
-              <button onclick="triggerScrapeNow()" class="text-xs font-semibold text-accent-cyan hover:underline inline-flex items-center gap-1">
-                Trigger a feed scan now &rarr;
-              </button>
+            <div class="bg-surface-card rounded-xl p-8 border border-surface-border text-center text-xs text-gray-500">
+              Queue is empty. Click <strong class="text-gray-300">Scan Now</strong> to find posts.
             </div>
           `;
           return;
         }
 
         container.innerHTML = items.map(item => {
-          const draftText = item.generated_text || '';
-          const charCount = draftText.length;
+          let variants = {};
+          try {
+            if (item.variants_json) variants = JSON.parse(item.variants_json);
+          } catch (e) {}
+          variantsMap[item.tweet_id] = variants;
+
+          const hasVariants = Object.keys(variants).length > 0;
+          const isScheduled = item.status === 'scheduled';
 
           return `
-            <div class="bg-surface-card rounded-xl border border-surface-border p-5 space-y-4 shadow-sm" id="card-${item.tweet_id}">
-              
-              <!-- Author Header -->
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2.5">
-                  <div class="w-7 h-7 rounded-full bg-accent-cyan/10 border border-accent-cyan/20 text-accent-cyan flex items-center justify-center font-mono text-xs font-bold">
-                    @
-                  </div>
-                  <div>
-                    <span class="font-bold text-xs text-white">@${escapeHtml(item.tweet_author || 'unknown')}</span>
-                    <span class="text-[10px] font-mono text-gray-500 ml-1.5">ID: ${item.tweet_id}</span>
-                  </div>
+            <div id="card_${item.tweet_id}" class="bg-surface-card rounded-xl p-4 border ${isScheduled ? 'border-cyan-500/40' : 'border-surface-border'} space-y-3">
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-xs font-semibold text-white">@${escapeHtml(item.tweet_author || 'user')}</span>
+                  ${item.tweet_metrics ? `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-input text-gray-400 border border-surface-border">${escapeHtml(item.tweet_metrics)}</span>` : ''}
+                  ${isScheduled ? `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">${formatScheduledBadge(item.scheduled_for)}</span>` : ''}
                 </div>
-                <a href="${item.tweet_url || '#'}" target="_blank" class="text-xs font-mono text-accent-cyan hover:underline flex items-center gap-1">
-                  View post &rarr;
-                </a>
+                <a href="${item.tweet_url || '#'}" target="_blank" class="text-[11px] font-mono text-gray-400 hover:text-cyan-400">View ↗</a>
               </div>
 
-              <!-- Context Quote -->
-              <div class="bg-surface-input p-3.5 rounded-lg border-l-2 border-accent-cyan/40 text-xs text-gray-300 leading-relaxed font-sans">
-                <span class="text-[10px] font-mono uppercase tracking-wider text-gray-500 block mb-1">Original Post</span>
-                <p class="whitespace-pre-wrap">${escapeHtml(item.tweet_text || '')}</p>
-              </div>
+              <p class="text-xs text-gray-300 bg-surface-input p-3 rounded-lg border border-surface-border whitespace-pre-line">${escapeHtml(item.tweet_text || '')}</p>
 
-              <!-- Draft Textarea with Live Character Counter -->
               <div class="space-y-1.5">
                 <div class="flex items-center justify-between">
-                  <label class="text-[11px] font-mono uppercase tracking-wider text-gray-400">
-                    DeepSeek Draft Reply
-                  </label>
-                  <span id="charCount-${item.tweet_id}" class="text-[11px] font-mono text-gray-500">
-                    ${charCount} / 280
-                  </span>
+                  <div class="flex items-center gap-1.5">
+                    ${hasVariants ? Object.keys(variants).map(k => `
+                      <button onclick="selectVariant('${item.tweet_id}', '${k}')" class="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-input hover:bg-surface-border text-gray-300 border border-surface-border capitalize">${k}</button>
+                    `).join('') : '<span class="text-[10px] font-mono text-gray-500">Draft</span>'}
+                  </div>
+                  <button onclick="regenerateDraft('${item.tweet_id}')" id="regen_${item.tweet_id}" title="Generate fresh reply angles" class="text-xs font-mono px-2 py-0.5 rounded bg-surface-input hover:bg-surface-border text-gray-400 hover:text-white border border-surface-border">↻</button>
                 </div>
-                <textarea id="replyText-${item.tweet_id}" rows="2"
-                  oninput="updateCharCount('${item.tweet_id}')"
-                  class="w-full bg-surface-input border border-surface-borderLight rounded-lg p-3 text-xs text-white focus:outline-none focus:border-accent-cyan resize-none leading-relaxed">${escapeHtml(draftText)}</textarea>
+
+                <textarea id="draft_${item.tweet_id}" rows="2"
+                  class="w-full bg-surface-input border border-surface-border rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-cyan-500">${escapeHtml(item.generated_text || '')}</textarea>
               </div>
 
-              <!-- Action Bar -->
-              <div class="flex items-center justify-end gap-2.5 pt-1">
-                <button onclick="rejectTweet('${item.tweet_id}')"
-                  class="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-gray-400 hover:text-accent-rose hover:bg-accent-rose/10 border border-surface-border transition">
-                  Reject &amp; Dismiss
+              <div class="flex items-center justify-end gap-2 pt-1">
+                <button onclick="rejectDraft('${item.tweet_id}')" class="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-rose-400 hover:bg-surface-input transition">
+                  Skip
                 </button>
-                <button onclick="approveTweet('${item.tweet_id}')"
-                  class="px-4 py-1.5 rounded-lg text-xs font-bold bg-accent-emerald hover:bg-emerald-400 text-black transition flex items-center gap-1.5 shadow-sm shadow-emerald-500/20">
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                  </svg>
-                  <span>Approve &amp; Post to X</span>
+                <button onclick="approveDraft('${item.tweet_id}', true)" id="schedBtn_${item.tweet_id}" class="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-medium text-xs transition">
+                  Queue Random Time
+                </button>
+                <button onclick="approveDraft('${item.tweet_id}', false)" id="postBtn_${item.tweet_id}" class="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition">
+                  Post Now
                 </button>
               </div>
-
             </div>
           `;
         }).join('');
-
-      } catch (err) {
-        console.error('Error fetching pending approvals:', err);
-      }
+      } catch (e) {}
     }
 
-    function updateCharCount(tweetId) {
-      const textarea = document.getElementById(`replyText-${tweetId}`);
-      const counter = document.getElementById(`charCount-${tweetId}`);
-      if (textarea && counter) {
-        const len = textarea.value.length;
-        counter.innerText = `${len} / 280`;
-        counter.className = len > 280 ? 'text-[11px] font-mono text-accent-rose font-bold' : 'text-[11px] font-mono text-gray-500';
-      }
-    }
-
-    async function approveTweet(tweetId) {
-      const textarea = document.getElementById(`replyText-${tweetId}`);
-      const customText = textarea ? textarea.value.trim() : null;
-
-      if (!customText) {
-        showToast('Reply text cannot be empty', true);
-        return;
+    async function approveDraft(tweetId, scheduleRandom = false) {
+      const box = document.getElementById(`draft_${tweetId}`);
+      const customText = box ? box.value.trim() : '';
+      const btn = document.getElementById(scheduleRandom ? `schedBtn_${tweetId}` : `postBtn_${tweetId}`);
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = scheduleRandom ? 'Scheduling...' : 'Posting...';
       }
 
-      showToast(`Dispatching reply to tweet ${tweetId}...`);
       try {
         const res = await fetch(`/api/approve/${tweetId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ custom_text: customText })
+          body: JSON.stringify({ custom_text: customText, schedule_random: scheduleRandom })
         });
-
+        const data = await res.json();
         if (res.ok) {
-          showToast('Reply successfully published to X!');
+          if (scheduleRandom) {
+            showToast(`Queued for random time (~${data.minutes_from_now}m)`);
+          } else {
+            showToast('Reply posted!');
+          }
           fetchPendingApprovals();
           fetchStatus();
-          fetchHistory();
         } else {
-          const err = await res.json();
-          showToast(err.detail || 'Posting failed', true);
+          showToast(data.detail || 'Action failed', true);
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = scheduleRandom ? 'Queue Random Time' : 'Post Now';
+          }
         }
       } catch (e) {
-        showToast('Network error during submission', true);
+        showToast('Network error', true);
       }
     }
 
-    async function rejectTweet(tweetId) {
-      try {
-        const res = await fetch(`/api/reject/${tweetId}`, { method: 'POST' });
-        if (res.ok) {
-          showToast('Draft dismissed');
-          fetchPendingApprovals();
-          fetchStatus();
-          fetchHistory();
-        }
-      } catch (e) {
-        showToast('Failed to reject draft', true);
-      }
+    async function rejectDraft(tweetId) {
+      await fetch(`/api/reject/${tweetId}`, { method: 'POST' });
+      const card = document.getElementById(`card_${tweetId}`);
+      if (card) card.remove();
+      fetchStatus();
+      fetchPendingApprovals();
     }
 
     async function fetchHistory() {
       try {
-        const res = await fetch('/api/history?limit=15');
+        const res = await fetch('/api/history?limit=40');
         if (!res.ok) return;
         const items = await res.json();
-        const list = document.getElementById('historyList');
+        const tbody = document.getElementById('historyTableBody');
 
         if (items.length === 0) {
-          list.innerHTML = `<div class="text-xs text-gray-500 py-3 text-center">No interactions recorded yet.</div>`;
+          tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-gray-500">No history yet.</td></tr>`;
           return;
         }
 
-        list.innerHTML = items.map(item => {
-          let statusBadge = '';
-          if (item.status === 'posted') statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-accent-emerald/10 text-accent-emerald border border-accent-emerald/20">POSTED</span>';
-          else if (item.status === 'skipped') statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-gray-800 text-gray-400">SKIPPED</span>';
-          else if (item.status === 'failed') statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-accent-rose/10 text-accent-rose border border-accent-rose/20">FAILED</span>';
-          else statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-accent-amber/10 text-accent-amber border border-accent-amber/20">PENDING</span>';
+        const badgeMap = {
+          posted: 'text-emerald-400',
+          scheduled: 'text-cyan-400',
+          pending_approval: 'text-amber-400',
+          skipped: 'text-gray-500',
+          failed: 'text-rose-400'
+        };
 
-          const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
-
+        tbody.innerHTML = items.map(item => {
+          const cls = badgeMap[item.status] || 'text-gray-400';
+          const out = item.generated_text || item.error_message || '-';
+          const t = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           return `
-            <div class="py-2.5 flex items-center justify-between text-xs gap-3">
-              <div class="truncate flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="font-bold text-gray-200">@${escapeHtml(item.tweet_author || 'unknown')}</span>
-                  <span class="text-[10px] text-gray-500 font-mono">${timeStr}</span>
-                </div>
-                <p class="text-gray-400 truncate text-[11px] mt-0.5">${escapeHtml(item.generated_text || item.tweet_text || item.error_message || '')}</p>
-              </div>
-              <div class="flex-shrink-0">${statusBadge}</div>
-            </div>
+            <tr class="hover:bg-surface-input/40">
+              <td class="py-2.5 px-3 font-mono text-[11px] ${cls}">${item.status.replace('_', ' ')}</td>
+              <td class="py-2.5 px-3 max-w-xs">
+                <a href="${item.tweet_url || '#'}" target="_blank" class="font-medium text-gray-200 hover:text-cyan-400">@${escapeHtml(item.tweet_author || 'user')}</a>
+                <p class="text-gray-400 truncate">${escapeHtml(item.tweet_text || '')}</p>
+              </td>
+              <td class="py-2.5 px-3 max-w-xs text-gray-300 truncate">${escapeHtml(out)}</td>
+              <td class="py-2.5 px-3 text-right font-mono text-[11px] text-gray-500">${t}</td>
+            </tr>
           `;
         }).join('');
-
-      } catch (err) {
-        console.error('Error fetching history:', err);
-      }
+      } catch (e) {}
     }
 
     function renderLogs(logs) {
-      if (!logs || logs.length === 0) return;
-      const container = document.getElementById('terminalContent');
-      container.innerHTML = logs.map(l => {
-        let colorClass = 'text-gray-400';
-        if (l.level === 'WARNING') colorClass = 'text-accent-amber';
-        if (l.level === 'ERROR') colorClass = 'text-accent-rose font-semibold';
-        if (l.message.includes('DeepSeek')) colorClass = 'text-accent-cyan';
-        if (l.message.includes('Successfully')) colorClass = 'text-accent-emerald font-semibold';
-
-        return `<div class="leading-relaxed"><span class="text-gray-600">[${l.timestamp}]</span> <span class="${colorClass}">${escapeHtml(l.message)}</span></div>`;
+      const term = document.getElementById('logTerminal');
+      if (!logs || !logs.length) return;
+      term.innerHTML = logs.map(l => {
+        const c = l.level === 'ERROR' ? 'text-rose-400' : (l.level === 'WARNING' ? 'text-amber-400' : 'text-gray-300');
+        return `<div class="${c}"><span class="text-gray-600">[${l.timestamp}]</span> ${escapeHtml(l.message)}</div>`;
       }).join('');
+      term.scrollTop = term.scrollHeight;
     }
 
-    function escapeHtml(text) {
-      if (!text) return '';
-      return text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+    function openCookieModal() {
+      document.getElementById('cookieModal').classList.remove('hidden');
+    }
+    function closeCookieModal() {
+      document.getElementById('cookieModal').classList.add('hidden');
+    }
+    async function exportCookies() {
+      const res = await fetch('/api/browser/cookies');
+      const data = await res.json();
+      document.getElementById('cookieJsonBox').value = JSON.stringify(data.cookies || [], null, 2);
+      showToast(`Exported ${data.count || 0} cookies`);
+    }
+    async function importCookies() {
+      try {
+        const raw = document.getElementById('cookieJsonBox').value.trim();
+        const parsed = JSON.parse(raw);
+        const res = await fetch('/api/browser/cookies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cookies: parsed })
+        });
+        const data = await res.json();
+        if (data.is_logged_in) {
+          showToast(`Logged in as ${data.linked_username || 'active user'}!`);
+          closeCookieModal();
+          fetchStatus();
+        } else {
+          showToast('Cookies imported, but session not logged in', true);
+        }
+      } catch (e) {
+        showToast('Invalid JSON format', true);
+      }
     }
 
-    // Startup & Polling loop
-    fetchConfig();
-    fetchStatus();
-    fetchPendingApprovals();
-    fetchHistory();
+    function escapeHtml(s) {
+      if (!s) return '';
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
 
-    // Regular polling every 4 seconds
-    setInterval(() => {
+    window.addEventListener('DOMContentLoaded', () => {
+      fetchConfig();
       fetchStatus();
       fetchPendingApprovals();
-      fetchHistory();
-    }, 4000);
-
+      setInterval(fetchStatus, 5000);
+      setInterval(fetchPendingApprovals, 10000);
+    });
   </script>
 </body>
 </html>

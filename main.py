@@ -1,7 +1,7 @@
 """
 X-VibeBot Monolith FastAPI Controller.
-Coordinates the SQLite database, DeepSeek AI engine, Playwright browser worker,
-and real-time web dashboard.
+Coordinates the SQLite database, Google Gemini AI engine, Playwright browser worker,
+randomized human-like scheduling queue, and minimal web dashboard.
 """
 
 import sys
@@ -18,17 +18,20 @@ if sys.platform == "win32":
 
 import os
 import time
+import json
+import random
 import logging
 from collections import deque
 from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from models import (
     Base,
@@ -49,14 +52,17 @@ from database import (
     update_tweet_status,
     get_daily_actions_count,
     get_pending_tweets,
+    get_due_scheduled_tweets,
+    get_scheduled_count,
     get_recent_tweets,
     get_agent_config,
     update_agent_config,
+    is_within_active_hours,
+    compute_random_schedule_time,
     SessionLocal
 )
 from ai_engine import evaluate_tweet, test_ai_api, KNOWN_GEMINI_MODELS
 from browser_worker import XBrowserWorker
-from pydantic import BaseModel
 
 load_dotenv()
 
@@ -67,19 +73,20 @@ load_dotenv()
 MAX_LOGS = 100
 log_buffer = deque(maxlen=MAX_LOGS)
 
+
 class DashboardLogHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = self.format(record)
             log_buffer.append({
-                "timestamp": datetime.utcnow().strftime("%H:%M:%S"),
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
                 "level": record.levelname,
                 "message": msg
             })
         except Exception:
             pass
 
-# Configure root logger
+
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 stream_handler = logging.StreamHandler(sys.stdout)
@@ -92,40 +99,122 @@ root_logger.addHandler(dashboard_handler)
 logger = logging.getLogger("x_vibebot.main")
 
 # ==============================================================================
-# Global Worker State & Locks
+# Global Worker State
 # ==============================================================================
 
 HEADLESS = os.getenv("HEADLESS", "false").lower() in ("true", "1", "yes")
 browser_worker = XBrowserWorker(headless=HEADLESS)
 
-last_interaction_timestamp: float = 0.0  # Unix timestamp of last reply/post
+last_interaction_timestamp: float = 0.0
+current_random_cooldown_seconds: int = 0
 is_session_logged_in: bool = False
 is_manual_login_active: bool = False
 bg_worker_task: Optional[asyncio.Task] = None
+scheduler_worker_task: Optional[asyncio.Task] = None
 scrape_now_flag = asyncio.Event()
 
 
-def get_cooldown_remaining(min_cooldown_minutes: int) -> int:
-    """Returns seconds remaining before next action is permitted."""
-    cooldown_seconds = min_cooldown_minutes * 60
+def get_cooldown_remaining() -> int:
+    """Returns seconds remaining in the current randomized cooldown window."""
+    if last_interaction_timestamp <= 0 or current_random_cooldown_seconds <= 0:
+        return 0
     elapsed = time.time() - last_interaction_timestamp
-    remaining = int(cooldown_seconds - elapsed)
-    return max(0, remaining)
+    return max(0, int(current_random_cooldown_seconds - elapsed))
+
+
+def set_new_random_cooldown(min_mins: int, max_mins: int):
+    """Sets a randomized cooldown duration after a post to avoid robotic intervals."""
+    global last_interaction_timestamp, current_random_cooldown_seconds
+    last_interaction_timestamp = time.time()
+    low = max(1, min_mins) * 60
+    high = max(low + 60, max_mins * 60)
+    current_random_cooldown_seconds = random.randint(low, high)
+
+
+def sync_detected_username(db: Session):
+    """Saves browser_worker.logged_in_username to AgentConfig if newly detected."""
+    if browser_worker.logged_in_username:
+        cfg = get_agent_config(db)
+        if cfg.linked_username != browser_worker.logged_in_username:
+            cfg.linked_username = browser_worker.logged_in_username
+            db.commit()
 
 
 # ==============================================================================
-# Autonomous Scraper & Execution Background Loop
+# Randomized Scheduled Queue Dispatcher Loop
+# ==============================================================================
+
+async def scheduled_queue_dispatcher_loop():
+    """
+    Continuously checks for scheduled replies whose randomized `scheduled_for`
+    timestamp has arrived and dispatches them organically.
+    """
+    logger.info("Random schedule dispatcher initialized.")
+    await asyncio.sleep(5)
+
+    while True:
+        try:
+            if is_manual_login_active:
+                await asyncio.sleep(10)
+                continue
+
+            db = SessionLocal()
+            try:
+                config = get_agent_config(db)
+                within_hours = is_within_active_hours(
+                    config.active_hours_start or 8,
+                    config.active_hours_end or 23
+                )
+                daily_used = get_daily_actions_count(db)
+                daily_cap = config.daily_action_cap or 15
+                min_cd = config.min_cooldown_minutes or 10
+                max_cd = config.max_cooldown_minutes or 45
+                due_items = get_due_scheduled_tweets(db) if within_hours else []
+            finally:
+                db.close()
+
+            if due_items and daily_used < daily_cap:
+                target = due_items[0]
+                logger.info(f"Scheduled time reached for @{target.tweet_author} ({target.tweet_id}). Posting now...")
+                success = await browser_worker.post_reply(
+                    target.tweet_id,
+                    target.generated_text,
+                    target.tweet_url
+                )
+                db = SessionLocal()
+                try:
+                    sync_detected_username(db)
+                    if success:
+                        set_new_random_cooldown(min_cd, max_cd)
+                        update_tweet_status(db, target.tweet_id, status="posted")
+                        logger.info(f"Successfully posted scheduled reply to @{target.tweet_author}!")
+                    else:
+                        update_tweet_status(
+                            db,
+                            target.tweet_id,
+                            status="failed",
+                            error_message="Browser failed while posting scheduled reply"
+                        )
+                finally:
+                    db.close()
+
+            await asyncio.sleep(10)
+        except Exception as e:
+            logger.error(f"Error in scheduled dispatcher loop: {e}")
+            await asyncio.sleep(15)
+
+
+# ==============================================================================
+# Autonomous Scraper & Evaluation Background Loop
 # ==============================================================================
 
 async def background_automation_loop():
     """
-    Continuous background loop that monitors feeds, feeds tweets to DeepSeek,
-    and submits replies safely based on auto-pilot or manual approval rules.
+    Continuous background loop with randomized jitter, active hours sleep window,
+    and automatic random scheduling when Autopilot is enabled.
     """
-    global last_interaction_timestamp, is_session_logged_in
+    global is_session_logged_in
     logger.info("Background automation worker loop initialized.")
-
-    # Give the app a couple of seconds to boot
     await asyncio.sleep(3)
 
     while True:
@@ -135,51 +224,63 @@ async def background_automation_loop():
                 config = get_agent_config(db)
                 is_active = config.is_active
                 auto_pilot = config.auto_pilot_mode
-                interval_secs = max(1, config.polling_interval_minutes) * 60
+                base_interval_secs = max(1, config.polling_interval_minutes) * 60
                 daily_cap = config.daily_action_cap
-                min_cooldown = config.min_cooldown_minutes
                 query = config.search_query
-                selected_model = config.selected_model or "gemini-2.5-flash"
+                persona = config.persona_prompt
+                selected_model = config.selected_model or "gemini-3.8-flash"
+                start_hr = config.active_hours_start if config.active_hours_start is not None else 8
+                end_hr = config.active_hours_end if config.active_hours_end is not None else 23
                 daily_used = get_daily_actions_count(db)
             finally:
                 db.close()
 
-            # Wait condition: If bot is inactive, sleep until manually triggered or checked
-            if not is_active and not scrape_now_flag.is_set():
-                # Check for manual trigger or wait 5 seconds before re-reading config
+            manual_triggered = scrape_now_flag.is_set()
+
+            if not is_active and not manual_triggered:
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=5.0)
-                    logger.info("Manual scrape trigger activated while bot was paused.")
+                    logger.info("Manual scrape triggered.")
                 except asyncio.TimeoutError:
                     continue
 
-            # Check if user is currently logging in via the headful Chromium window
             if is_manual_login_active and not scrape_now_flag.is_set():
-                logger.info("Manual login session open. Background scanner waiting for user sign-in...")
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=15.0)
                 except asyncio.TimeoutError:
                     pass
                 continue
 
-            # Safety Rule 1: Daily Volume Cap
-            if daily_used >= daily_cap:
-                scrape_now_flag.clear()
+            # Respect Active Waking Hours (unless user explicitly clicked Scrape Now)
+            if not scrape_now_flag.is_set() and not is_within_active_hours(start_hr, end_hr):
+                logger.info(f"Outside active hours ({start_hr:02d}:00-{end_hr:02d}:00). Sleeping...")
+                try:
+                    await asyncio.wait_for(scrape_now_flag.wait(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
+            if daily_used >= daily_cap and not scrape_now_flag.is_set():
                 logger.warning(f"Daily action cap reached ({daily_used}/{daily_cap}). Pausing until tomorrow.")
                 await asyncio.sleep(300)
                 continue
 
-            # Check X Login
+            # Verify X Login
             try:
                 is_session_logged_in = await browser_worker.check_login_status()
+                if is_session_logged_in:
+                    db = SessionLocal()
+                    try:
+                        sync_detected_username(db)
+                    finally:
+                        db.close()
             except Exception as e:
                 logger.error(f"Failed to check login status: {e}")
                 is_session_logged_in = False
 
             if not is_session_logged_in:
                 scrape_now_flag.clear()
-                logger.warning("Agent is not logged into X. Please click 'Browser Login' above to sign in manually.")
-                # Wait 30 seconds before re-checking or wake immediately if user clicks Scrape Now
+                logger.warning("Not logged into X. Use 'Login' in the top bar or run login_browser.bat.")
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=30.0)
                 except asyncio.TimeoutError:
@@ -188,35 +289,49 @@ async def background_automation_loop():
 
             # Consume manual scrape trigger right as scan starts
             scrape_now_flag.clear()
-            logger.info(f"Starting feed scan with query: '{query}'...")
+            logger.info(f"Scanning X feed for '{query}'...")
             tweets = await browser_worker.scrape_feed(search_query=query, limit=8)
-            logger.info(f"Scraped {len(tweets)} tweets for evaluation.")
+            logger.info(f"Collected {len(tweets)} candidate posts.")
+
+            db = SessionLocal()
+            try:
+                sync_detected_username(db)
+            finally:
+                db.close()
 
             new_count = 0
             for t in tweets:
+                tweet_id = t["tweet_id"]
+
                 db = SessionLocal()
                 try:
-                    tweet_id = t["tweet_id"]
-                    if is_tweet_already_processed(db, tweet_id):
-                        continue
+                    already_done = is_tweet_already_processed(db, tweet_id)
+                finally:
+                    db.close()
 
-                    new_count += 1
-                    logger.info(f"Evaluating tweet {tweet_id} by @{t['author']} using {selected_model}: '{t['text'][:60]}...'")
+                if already_done:
+                    continue
 
-                    # Google Gemini AI Evaluation
-                    ai_result = await evaluate_tweet(
-                        t["text"],
-                        t["author"],
-                        model_name=selected_model,
-                        search_query=query
-                    )
+                new_count += 1
+                logger.info(f"Evaluating @{t['author']} ({t.get('metrics', '')}): '{t['text'][:55]}...'")
 
-                    if ai_result.get("raw_response") == "NO_API_KEY":
-                        logger.warning("Evaluation paused: Please enter your Google Gemini API key in the sidebar and click 'Test Key' or 'Save Configuration'.")
-                        break
+                ai_result = await evaluate_tweet(
+                    tweet_text=t["text"],
+                    tweet_author=t["author"],
+                    model_name=selected_model,
+                    search_query=query,
+                    persona_prompt=persona,
+                    extra_context=t.get("extra_context")
+                )
 
+                if ai_result.get("raw_response") == "NO_API_KEY":
+                    logger.warning("Paused: Paste your Google Gemini API key in the sidebar first.")
+                    break
+
+                db = SessionLocal()
+                try:
                     if not ai_result["should_reply"]:
-                        logger.info(f"Gemini skipped tweet {tweet_id}: {ai_result['reasoning']}")
+                        logger.info(f"Skipped @{t['author']}: {ai_result['reasoning']}")
                         record_processed_tweet(
                             db=db,
                             tweet_id=tweet_id,
@@ -225,18 +340,18 @@ async def background_automation_loop():
                             tweet_author=t["author"],
                             tweet_url=t["url"],
                             generated_text=None,
+                            variants_json=None,
+                            tweet_metrics=t.get("metrics"),
                             status="skipped",
                             error_message=ai_result["reasoning"]
                         )
                         continue
 
-                    # Gemini suggested a reply!
                     reply_text = ai_result["reply_text"]
-                    logger.info(f"Gemini drafted reply: '{reply_text}'")
+                    variants_json = ai_result.get("variants_json")
+                    logger.info(f"Drafted for @{t['author']}: '{reply_text}'")
 
                     if not auto_pilot:
-                        # Human-in-the-loop: Save as pending_approval
-                        logger.info(f"Saving tweet {tweet_id} to manual approval queue.")
                         record_processed_tweet(
                             db=db,
                             tweet_id=tweet_id,
@@ -245,67 +360,43 @@ async def background_automation_loop():
                             tweet_author=t["author"],
                             tweet_url=t["url"],
                             generated_text=reply_text,
-                            status="pending_approval"
+                            variants_json=variants_json,
+                            tweet_metrics=t.get("metrics"),
+                            status="pending_approval",
+                            error_message=ai_result["reasoning"]
                         )
                     else:
-                        # Full Autopilot Mode: Check cooldown before firing
-                        cooldown_left = get_cooldown_remaining(min_cooldown)
-                        if cooldown_left > 0:
-                            logger.info(f"Auto-pilot waiting for cooldown ({cooldown_left}s remaining)...")
-                            # Save as pending temporarily so it isn't lost
-                            record_processed_tweet(
-                                db=db,
-                                tweet_id=tweet_id,
-                                action_type="reply",
-                                tweet_text=t["text"],
-                                tweet_author=t["author"],
-                                tweet_url=t["url"],
-                                generated_text=reply_text,
-                                status="pending_approval"
-                            )
-                            continue
-
-                        # Execute posting immediately
-                        logger.info(f"Auto-pilot posting reply to {tweet_id}...")
-                        success = await browser_worker.post_reply(tweet_id, reply_text, t["url"])
-                        if success:
-                            last_interaction_timestamp = time.time()
-                            record_processed_tweet(
-                                db=db,
-                                tweet_id=tweet_id,
-                                action_type="reply",
-                                tweet_text=t["text"],
-                                tweet_author=t["author"],
-                                tweet_url=t["url"],
-                                generated_text=reply_text,
-                                status="posted"
-                            )
-                            logger.info(f"Successfully auto-posted reply to tweet {tweet_id}!")
-                        else:
-                            record_processed_tweet(
-                                db=db,
-                                tweet_id=tweet_id,
-                                action_type="reply",
-                                tweet_text=t["text"],
-                                tweet_author=t["author"],
-                                tweet_url=t["url"],
-                                generated_text=reply_text,
-                                status="failed",
-                                error_message="Playwright failed to post reply."
-                            )
-
+                        # Autopilot schedules replies at completely random future timestamps
+                        cfg = get_agent_config(db)
+                        sched_utc = compute_random_schedule_time(db, cfg)
+                        mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
+                        logger.info(f"Autopilot scheduled reply to @{t['author']} in ~{mins_away}m (random time).")
+                        record_processed_tweet(
+                            db=db,
+                            tweet_id=tweet_id,
+                            action_type="reply",
+                            tweet_text=t["text"],
+                            tweet_author=t["author"],
+                            tweet_url=t["url"],
+                            generated_text=reply_text,
+                            variants_json=variants_json,
+                            tweet_metrics=t.get("metrics"),
+                            status="scheduled",
+                            scheduled_for=sched_utc,
+                            error_message=ai_result["reasoning"]
+                        )
                 finally:
                     db.close()
 
-                # Stagger evaluations slightly
-                await asyncio.sleep(2)
+                await asyncio.sleep(random.uniform(1.2, 2.5))
 
             if new_count == 0 and len(tweets) > 0:
-                logger.info(f"All {len(tweets)} tweets found for '{query}' were already evaluated.")
+                logger.info(f"All {len(tweets)} visible posts for '{query}' were already evaluated.")
 
-            # Wait for next interval or manual trigger (do not clear flag here; top of loop consumes it)
+            # Randomized jitter between scans (0.65x to 1.45x of polling interval + random seconds)
+            jittered_wait = int(base_interval_secs * random.uniform(0.65, 1.45)) + random.randint(3, 58)
             try:
-                await asyncio.wait_for(scrape_now_flag.wait(), timeout=interval_secs)
+                await asyncio.wait_for(scrape_now_flag.wait(), timeout=jittered_wait)
             except asyncio.TimeoutError:
                 pass
 
@@ -315,50 +406,45 @@ async def background_automation_loop():
 
 
 # ==============================================================================
-# FastAPI Lifespan (Startup & Shutdown)
+# FastAPI Lifespan & App Initialization
 # ==============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite tables
+    global bg_worker_task, scheduler_worker_task
     init_db()
-    logger.info("SQLite database tables verified.")
-
-    # Start background automation worker
-    global bg_worker_task
+    logger.info("Database verified.")
     bg_worker_task = asyncio.create_task(background_automation_loop())
-
+    scheduler_worker_task = asyncio.create_task(scheduled_queue_dispatcher_loop())
     yield
-
-    # Teardown
-    if bg_worker_task:
-        bg_worker_task.cancel()
+    logger.info("Shutting down X-VibeBot...")
+    for task in (bg_worker_task, scheduler_worker_task):
+        if task:
+            task.cancel()
     await browser_worker.stop()
-    logger.info("X-VibeBot shutdown complete.")
 
 
 app = FastAPI(
-    title="X-VibeBot Monolith Controller",
-    description="Browser-Agent for X Automation with DeepSeek AI & Playwright",
+    title="X-VibeBot",
+    description="Minimal AI Browser-Agent for X (Twitter)",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# Ensure static directory exists
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # ==============================================================================
-# Web Routes
+# API Endpoints
 # ==============================================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serves the single-page Tailwind control dashboard."""
-    index_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    index_path = os.path.join("static", "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return HTMLResponse("<h1>Static dashboard not found. Please verify static/index.html</h1>", status_code=404)
+    return HTMLResponse("<h1>Static dashboard not found.</h1>", status_code=404)
 
 
 def update_env_variable(key: str, value: str):
@@ -384,12 +470,20 @@ def update_env_variable(key: str, value: str):
 
 @app.get("/api/status", response_model=AgentStatusResponse)
 async def get_status(db: Session = Depends(get_db)):
-    """Returns the comprehensive run state for the UI."""
     config = get_agent_config(db)
+    if browser_worker.logged_in_username and config.linked_username != browser_worker.logged_in_username:
+        config.linked_username = browser_worker.logged_in_username
+        db.commit()
+
     daily_used = get_daily_actions_count(db)
-    cooldown_rem = get_cooldown_remaining(config.min_cooldown_minutes)
+    cooldown_rem = get_cooldown_remaining()
     pending_items = get_pending_tweets(db)
+    sched_count = get_scheduled_count(db)
     total_processed = db.query(ProcessedTweet).count()
+    within_hours = is_within_active_hours(
+        config.active_hours_start if config.active_hours_start is not None else 8,
+        config.active_hours_end if config.active_hours_end is not None else 23
+    )
 
     return AgentStatusResponse(
         is_active=config.is_active,
@@ -399,11 +493,14 @@ async def get_status(db: Session = Depends(get_db)):
         daily_actions_used=daily_used,
         cooldown_active=cooldown_rem > 0,
         cooldown_seconds_remaining=cooldown_rem,
+        within_active_hours=within_hours,
+        scheduled_count=sched_count,
         browser_connected=browser_worker.is_running,
-        is_logged_in=is_session_logged_in,
+        is_logged_in=is_session_logged_in or bool(config.linked_username),
+        linked_username=browser_worker.logged_in_username or config.linked_username,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
-        selected_model=config.selected_model or "gemini-2.5-flash",
+        selected_model=config.selected_model or "gemini-3.8-flash",
         recent_logs=[
             SystemLogEntry(
                 timestamp=entry["timestamp"],
@@ -417,7 +514,6 @@ async def get_status(db: Session = Depends(get_db)):
 
 @app.get("/api/config", response_model=AgentConfigResponse)
 async def get_config(db: Session = Depends(get_db)):
-    """Returns current runtime agent configuration."""
     cfg = get_agent_config(db)
     current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
@@ -427,9 +523,14 @@ async def get_config(db: Session = Depends(get_db)):
         auto_pilot_mode=cfg.auto_pilot_mode,
         polling_interval_minutes=cfg.polling_interval_minutes,
         daily_action_cap=cfg.daily_action_cap,
-        min_cooldown_minutes=cfg.min_cooldown_minutes,
+        min_cooldown_minutes=cfg.min_cooldown_minutes or 10,
+        max_cooldown_minutes=cfg.max_cooldown_minutes or 45,
+        active_hours_start=cfg.active_hours_start if cfg.active_hours_start is not None else 8,
+        active_hours_end=cfg.active_hours_end if cfg.active_hours_end is not None else 23,
         search_query=cfg.search_query,
+        persona_prompt=cfg.persona_prompt or "",
         selected_model=cfg.selected_model or "gemini-3.8-flash",
+        linked_username=browser_worker.logged_in_username or cfg.linked_username,
         masked_api_key=masked_key,
         updated_at=cfg.updated_at
     )
@@ -437,19 +538,16 @@ async def get_config(db: Session = Depends(get_db)):
 
 @app.post("/api/config", response_model=AgentConfigResponse)
 async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depends(get_db)):
-    """Updates runtime agent toggles and AI settings."""
     if payload.api_key is not None and payload.api_key.strip():
         clean_key = payload.api_key.strip()
         if clean_key.startswith("sk-"):
             update_env_variable("DEEPSEEK_API_KEY", clean_key)
-            logger.info("Updated DEEPSEEK_API_KEY in environment and .env")
         else:
             update_env_variable("GEMINI_API_KEY", clean_key)
-            logger.info("Updated GEMINI_API_KEY in environment and .env")
 
     updates = payload.model_dump(exclude_unset=True, exclude={"api_key"})
     updated = update_agent_config(db, updates)
-    logger.info(f"Updated agent configuration: {updates}")
+    logger.info("Settings updated.")
 
     current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
@@ -459,9 +557,14 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
         auto_pilot_mode=updated.auto_pilot_mode,
         polling_interval_minutes=updated.polling_interval_minutes,
         daily_action_cap=updated.daily_action_cap,
-        min_cooldown_minutes=updated.min_cooldown_minutes,
+        min_cooldown_minutes=updated.min_cooldown_minutes or 10,
+        max_cooldown_minutes=updated.max_cooldown_minutes or 45,
+        active_hours_start=updated.active_hours_start if updated.active_hours_start is not None else 8,
+        active_hours_end=updated.active_hours_end if updated.active_hours_end is not None else 23,
         search_query=updated.search_query,
+        persona_prompt=updated.persona_prompt or "",
         selected_model=updated.selected_model or "gemini-3.8-flash",
+        linked_username=browser_worker.logged_in_username or updated.linked_username,
         masked_api_key=masked_key,
         updated_at=updated.updated_at
     )
@@ -473,39 +576,31 @@ class TestKeyPayload(BaseModel):
 
 @app.get("/api/ai/models")
 async def get_models_endpoint():
-    """Returns available AI models and live connectivity status."""
     return await test_ai_api()
 
 
 @app.post("/api/ai/test-key")
 async def test_key_endpoint(payload: TestKeyPayload, db: Session = Depends(get_db)):
-    """Tests a provided API key against the AI provider and automatically saves it if valid."""
     key = payload.api_key.strip() if payload.api_key else None
     result = await test_ai_api(custom_key=key)
     if result.get("success") and key:
         if key.startswith("sk-"):
             update_env_variable("DEEPSEEK_API_KEY", key)
-            logger.info("Verified and auto-saved DEEPSEEK_API_KEY to .env")
         else:
             update_env_variable("GEMINI_API_KEY", key)
-            logger.info("Verified and auto-saved GEMINI_API_KEY to .env")
             models = result.get("models") or []
             if models:
-                top_model = models[0]["id"]
-                update_agent_config(db, {"selected_model": top_model})
-                logger.info(f"Auto-selected compatible Gemini model: {top_model}")
+                update_agent_config(db, {"selected_model": models[0]["id"]})
     return result
 
 
 @app.get("/api/pending", response_model=List[ProcessedTweetResponse])
 async def get_pending_approvals_endpoint(db: Session = Depends(get_db)):
-    """Returns all tweets waiting for human approval."""
     return get_pending_tweets(db)
 
 
 @app.get("/api/history", response_model=List[ProcessedTweetResponse])
 async def get_history_endpoint(limit: int = 50, db: Session = Depends(get_db)):
-    """Returns recent tweet interactions and audit log."""
     return get_recent_tweets(db, limit=limit)
 
 
@@ -513,15 +608,13 @@ async def get_history_endpoint(limit: int = 50, db: Session = Depends(get_db)):
 async def approve_tweet(
     tweet_id: str,
     payload: Optional[ApproveDraftRequest] = None,
-    background_tasks: BackgroundTasks = None,
     db: Session = Depends(get_db)
 ):
     """
-    Approves a draft reply, triggers Playwright to type and submit it,
-    and updates the database status.
+    Approves a draft reply.
+    - If payload.schedule_random is True: schedules it for a completely random future time.
+    - Otherwise: dispatches Playwright to post it immediately.
     """
-    global last_interaction_timestamp
-
     tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
@@ -531,23 +624,39 @@ async def approve_tweet(
     if daily_used >= config.daily_action_cap:
         raise HTTPException(
             status_code=429,
-            detail=f"Daily action cap ({config.daily_action_cap}) reached! Wait until tomorrow or increase cap."
+            detail=f"Daily action cap ({config.daily_action_cap}) reached!"
         )
 
-    # Use edited text if provided by user in UI
-    text_to_post = payload.custom_text if (payload and payload.custom_text) else tweet.generated_text
+    text_to_post = payload.custom_text.strip() if (payload and payload.custom_text) else tweet.generated_text
     if not text_to_post:
         raise HTTPException(status_code=400, detail="Cannot post an empty reply.")
 
-    logger.info(f"Manual approval received for tweet {tweet_id}. Dispatching browser worker...")
+    if payload and payload.schedule_random:
+        sched_utc = compute_random_schedule_time(db, config)
+        update_tweet_status(
+            db,
+            tweet_id,
+            status="scheduled",
+            generated_text=text_to_post,
+            scheduled_for=sched_utc
+        )
+        mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
+        logger.info(f"Scheduled reply to @{tweet.tweet_author} for random time (~{mins_away}m from now).")
+        return {
+            "status": "scheduled",
+            "tweet_id": tweet_id,
+            "scheduled_for": sched_utc.isoformat(),
+            "minutes_from_now": mins_away
+        }
 
-    # Execute posting via browser worker
+    logger.info(f"Posting approved reply to @{tweet.tweet_author} ({tweet_id})...")
     success = await browser_worker.post_reply(tweet_id, text_to_post, tweet.tweet_url)
+    sync_detected_username(db)
 
     if success:
-        last_interaction_timestamp = time.time()
+        set_new_random_cooldown(config.min_cooldown_minutes or 10, config.max_cooldown_minutes or 45)
         update_tweet_status(db, tweet_id, status="posted", generated_text=text_to_post)
-        logger.info(f"Draft approved and successfully posted to tweet {tweet_id}!")
+        logger.info(f"Successfully posted reply to @{tweet.tweet_author}!")
         return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
     else:
         update_tweet_status(
@@ -555,60 +664,92 @@ async def approve_tweet(
             tweet_id,
             status="failed",
             generated_text=text_to_post,
-            error_message="Playwright failed during post interaction"
+            error_message="Browser failed during reply submission"
         )
-        raise HTTPException(status_code=500, detail="Failed to post reply via browser automation.")
+        raise HTTPException(status_code=500, detail="Failed to post reply via browser.")
 
 
-@app.post("/api/reject/{tweet_id}")
-async def reject_tweet(tweet_id: str, db: Session = Depends(get_db)):
-    """Rejects/skips a pending draft."""
+@app.post("/api/regenerate/{tweet_id}")
+async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
+    """Regenerates 3 fresh anti-robotic reply variants for a specific tweet."""
     tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
-    update_tweet_status(db, tweet_id, status="skipped", error_message="Rejected by user review")
-    logger.info(f"User rejected draft for tweet {tweet_id}.")
+    cfg = get_agent_config(db)
+    ai_result = await evaluate_tweet(
+        tweet_text=tweet.tweet_text or "",
+        tweet_author=tweet.tweet_author,
+        model_name=cfg.selected_model or "gemini-3.8-flash",
+        search_query=cfg.search_query,
+        persona_prompt=(cfg.persona_prompt or "") + " | Write a completely fresh, different angle.",
+        extra_context=f"Engagement: {tweet.tweet_metrics or ''}",
+        temperature=0.9
+    )
+
+    if not ai_result.get("reply_text"):
+        raise HTTPException(status_code=500, detail=ai_result.get("reasoning") or "Failed to regenerate draft")
+
+    updated = update_tweet_status(
+        db,
+        tweet_id,
+        status="pending_approval",
+        generated_text=ai_result["reply_text"],
+        variants_json=ai_result.get("variants_json"),
+        error_message=ai_result.get("reasoning")
+    )
+    logger.info(f"Regenerated fresh variants for @{tweet.tweet_author}")
+    return {
+        "tweet_id": tweet_id,
+        "generated_text": updated.generated_text,
+        "variants_json": updated.variants_json
+    }
+
+
+@app.post("/api/reject/{tweet_id}")
+async def reject_tweet(tweet_id: str, db: Session = Depends(get_db)):
+    tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+    if not tweet:
+        raise HTTPException(status_code=404, detail="Tweet not found")
+
+    update_tweet_status(db, tweet_id, status="skipped", error_message="Skipped by user")
     return {"status": "skipped", "tweet_id": tweet_id}
 
 
 @app.post("/api/trigger-scrape")
-async def trigger_scrape_now():
-    """Wakes up the scraper immediately without waiting for interval."""
+async def trigger_scrape_now(db: Session = Depends(get_db)):
     global is_session_logged_in, is_manual_login_active
     is_manual_login_active = False
 
     has_key = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
     if not has_key:
-        logger.warning("Scrape requested, but Google Gemini API key is not configured yet.")
         return {
             "status": "missing_api_key",
-            "message": "Please paste your Google Gemini API key in the sidebar and click 'Test Key' (or 'Save Configuration') first!"
+            "message": "Paste your Google Gemini API key in the sidebar first!"
         }
 
     if not is_session_logged_in:
-        # Check login status directly
         is_session_logged_in = await browser_worker.check_login_status()
+        if is_session_logged_in:
+            sync_detected_username(db)
 
     if not is_session_logged_in:
-        logger.warning("Scrape requested, but agent is not logged into X. Please use 'Browser Login' first.")
         return {
             "status": "not_logged_in",
-            "message": "Cannot scan feed: Not logged into X! Please click 'Browser Login' to log in first."
+            "message": "Not logged into X! Click 'Login' or run login_browser.bat."
         }
 
     scrape_now_flag.set()
-    logger.info("Manual scrape cycle triggered. Scanning feed...")
+    logger.info("Manual feed scan started.")
     return {
         "status": "triggered",
-        "message": "Scrape cycle started! Scanning target feed for tweets..."
+        "message": "Scanning feed & generating drafts..."
     }
 
 
 def is_on_default_desktop() -> bool:
-    """Checks whether the process is attached to the interactive user desktop."""
     if os.name != "nt":
-        return True
+        return False
     try:
         import ctypes
         from ctypes import wintypes
@@ -627,25 +768,16 @@ def is_on_default_desktop() -> bool:
 
 @app.post("/api/browser/launch-login")
 async def launch_headful_login():
-    """
-    Opens a headful Chromium window to x.com/login so the user can log in manually.
-    Stores the cookies/session into ./x_browser_profile.
-    """
     global is_manual_login_active
     try:
         is_manual_login_active = True
-        logger.info("Opening Chromium window in headful mode for manual bootstrap login...")
         await browser_worker.open_headful_for_login()
-
         on_default = is_on_default_desktop()
-        if not on_default:
-            msg = (
-                "Notice: Server is running in background sandbox. "
-                "To see the browser window directly on your monitor, double-click 'login_browser.bat' in the project folder!"
-            )
-        else:
-            msg = "Chromium window launched! Please log in to your X account on your desktop."
-
+        msg = (
+            "Browser window opened! Sign into X on your desktop."
+            if on_default else
+            "Run 'login_browser.bat' in your project folder (or import cookies for cloud deploy)."
+        )
         return {
             "status": "browser_opened",
             "is_default_desktop": on_default,
@@ -653,30 +785,54 @@ async def launch_headful_login():
         }
     except Exception as e:
         is_manual_login_active = False
-        logger.error(f"Failed to open Chromium browser: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to open browser: {str(e)}")
 
 
 @app.post("/api/browser/release")
 async def release_browser_profile():
-    """
-    Releases the browser context and pauses background checks so an external login script
-    (login.py / login_browser.bat) can use ./x_browser_profile without a lock conflict.
-    """
     global is_manual_login_active
     is_manual_login_active = True
-    logger.info("Releasing browser profile lock for external login assistant...")
     await browser_worker.stop()
     return {"status": "released"}
 
 
 @app.post("/api/browser/check-session")
-async def check_session():
-    """Forces an active verification of the X login session."""
+async def check_session(db: Session = Depends(get_db)):
     global is_session_logged_in, is_manual_login_active
     is_manual_login_active = False
     is_session_logged_in = await browser_worker.check_login_status()
-    return {"is_logged_in": is_session_logged_in}
+    if is_session_logged_in:
+        sync_detected_username(db)
+    cfg = get_agent_config(db)
+    return {
+        "is_logged_in": is_session_logged_in,
+        "linked_username": browser_worker.logged_in_username or cfg.linked_username
+    }
+
+
+class CookiesImportPayload(BaseModel):
+    cookies: List[Dict[str, Any]]
+
+
+@app.get("/api/browser/cookies")
+async def export_cookies_endpoint():
+    """Exports session cookies as JSON so they can be imported onto a cloud instance (Render)."""
+    cookies = await browser_worker.export_cookies()
+    return JSONResponse(content={"cookies": cookies, "count": len(cookies)})
+
+
+@app.post("/api/browser/cookies")
+async def import_cookies_endpoint(payload: CookiesImportPayload, db: Session = Depends(get_db)):
+    """Imports session cookies on a headless cloud instance (Render) and verifies login."""
+    global is_session_logged_in
+    is_session_logged_in = await browser_worker.import_cookies(payload.cookies)
+    if is_session_logged_in:
+        sync_detected_username(db)
+    cfg = get_agent_config(db)
+    return {
+        "is_logged_in": is_session_logged_in,
+        "linked_username": browser_worker.logged_in_username or cfg.linked_username
+    }
 
 
 if __name__ == "__main__":
@@ -688,4 +844,6 @@ if __name__ == "__main__":
             uvicorn.loops.asyncio.asyncio_setup = lambda use_subprocess=False: None
         except Exception:
             pass
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port)

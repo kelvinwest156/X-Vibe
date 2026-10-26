@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: x-vibebot
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: HEADLESS
+        value: "true"
+      - key: BROWSER_PROFILE_DIR
+        value: /data/x_browser_profile
+      - key: DATABASE_URL
+        value: sqlite:////data/vibebot.db
+      - key: PORT
+        value: "8000"
+    disk:
+      name: vibebot-data
+      mountPath: /data
+      sizeGB: 1

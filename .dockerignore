@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.git/
+.env
+vibebot.db
+x_browser_profile/
+tmp_test_profile/
+.agents/
