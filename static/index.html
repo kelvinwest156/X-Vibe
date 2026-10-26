@@ -7,14 +7,14 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700&family=JetBrains+Mono:wght@300;400;600&display=swap" rel="stylesheet">
   <script>
     tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
           fontFamily: {
-            sans: ['Inter', 'sans-serif'],
+            sans: ['Outfit', 'sans-serif'],
             mono: ['JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -30,17 +30,26 @@
     }
   </script>
   <style>
-    body { background-color: #090b10; color: #e2e8f0; }
+    body {
+      background-color: #090b10;
+      color: #e2e8f0;
+      font-weight: 300;
+      letter-spacing: 0.015em;
+    }
+    input, select, textarea, button {
+      font-weight: 300;
+      letter-spacing: 0.015em;
+    }
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: #090b10; }
     ::-webkit-scrollbar-thumb { background: #1e2536; border-radius: 3px; }
   </style>
 </head>
-<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500/20 selection:text-cyan-300">
+<body class="min-h-screen flex flex-col font-sans font-light antialiased selection:bg-cyan-500/20 selection:text-cyan-300">
 
   <!-- Toast -->
   <div id="toast" class="fixed bottom-5 right-5 z-50 hidden transition-all duration-200">
-    <div id="toastInner" class="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border shadow-xl text-xs font-medium bg-surface-card border-surface-border text-gray-100">
+    <div id="toastInner" class="flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg border shadow-xl text-xs font-light bg-surface-card border-surface-border text-gray-100">
       <span id="toastDot" class="w-2 h-2 rounded-full bg-cyan-400"></span>
       <span id="toastMsg">Saved</span>
     </div>
@@ -50,13 +59,13 @@
   <div id="cookieModal" class="fixed inset-0 z-50 hidden bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-surface-card border border-surface-border rounded-xl max-w-lg w-full p-5 space-y-3 shadow-2xl">
       <div class="flex items-center justify-between">
-        <h3 class="text-sm font-semibold text-white">X Session Cookies (Cloud Sync)</h3>
-        <button onclick="closeCookieModal()" class="text-gray-400 hover:text-white text-xs">✕</button>
+        <h3 class="text-sm font-semibold text-white tracking-tight">X Session Cookies (Cloud Sync)</h3>
+        <button onclick="closeCookieModal()" class="text-gray-400 hover:text-white text-xs font-light">✕</button>
       </div>
-      <p class="text-xs text-gray-400">Copy cookies from your local machine or paste them here when deploying on Render.</p>
-      <textarea id="cookieJsonBox" rows="6" placeholder='[{"name": "auth_token", ...}]' class="w-full bg-surface-input border border-surface-border rounded-lg p-2.5 text-xs font-mono text-gray-200 focus:outline-none focus:border-cyan-500"></textarea>
+      <p class="text-xs font-extralight text-gray-400">Copy cookies from your local machine or paste them here when deploying on Render.</p>
+      <textarea id="cookieJsonBox" rows="6" placeholder='[{"name": "auth_token", ...}]' class="w-full bg-surface-input border border-surface-border rounded-lg p-2.5 text-xs font-mono font-light text-gray-200 focus:outline-none focus:border-cyan-500"></textarea>
       <div class="flex items-center justify-end gap-2 pt-1">
-        <button onclick="exportCookies()" class="px-3 py-1.5 rounded-lg bg-surface-input hover:bg-surface-border border border-surface-border text-xs text-gray-300">Export Current</button>
+        <button onclick="exportCookies()" class="px-3 py-1.5 rounded-lg bg-surface-input hover:bg-surface-border border border-surface-border text-xs font-light text-gray-300">Export Current</button>
         <button onclick="importCookies()" class="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs">Import & Verify</button>
       </div>
     </div>
@@ -65,45 +74,45 @@
   <!-- Minimal Top Header -->
   <header class="sticky top-0 z-30 bg-surface-base/90 backdrop-blur-md border-b border-surface-border px-4 lg:px-6 h-14 flex items-center justify-between gap-3">
     <div class="flex items-center gap-3">
-      <div class="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-mono font-bold text-sm">X</div>
-      <span class="font-semibold text-sm text-white tracking-tight">VibeBot</span>
+      <div class="w-7 h-7 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 font-mono font-semibold text-sm">X</div>
+      <span class="text-sm text-white tracking-tight"><strong class="font-semibold">Vibe</strong><span class="font-extralight text-gray-300">Bot</span></span>
 
       <!-- Agent Status Pill -->
       <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-card border border-surface-border text-xs">
         <span id="statusDot" class="w-2 h-2 rounded-full bg-gray-500"></span>
-        <span id="statusText" class="font-medium text-gray-300">Paused</span>
+        <span id="statusText" class="font-light text-gray-300">Paused</span>
       </div>
 
       <!-- Linked X Account Badge -->
       <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-card border border-surface-border text-xs">
         <span id="xSessionDot" class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
-        <span id="linkedAccountText" class="font-mono text-gray-300">Not Linked</span>
-        <button onclick="checkSessionStatus()" title="Verify X Session" class="text-gray-500 hover:text-gray-200 ml-0.5">↻</button>
+        <span id="linkedAccountText" class="font-mono font-light text-gray-300">Not Linked</span>
+        <button onclick="checkSessionStatus()" title="Verify X Session" class="text-gray-500 hover:text-gray-200 ml-0.5 font-light">↻</button>
       </div>
     </div>
 
     <!-- Compact Metrics & Actions -->
     <div class="flex items-center gap-2 sm:gap-3">
-      <div class="hidden md:flex items-center gap-3 text-xs font-mono text-gray-400 pr-2 border-r border-surface-border">
-        <span title="Replies posted today">Today: <strong id="dailyCounter" class="text-white">0/15</strong></span>
-        <span title="Replies scheduled for random times">Scheduled: <strong id="scheduledCounter" class="text-cyan-400">0</strong></span>
-        <span id="cooldownText" class="text-emerald-400">Ready</span>
+      <div class="hidden md:flex items-center gap-3 text-xs font-mono font-light text-gray-400 pr-2 border-r border-surface-border">
+        <span title="Replies posted today">Today: <strong id="dailyCounter" class="font-semibold text-white">0/15</strong></span>
+        <span title="Replies scheduled for random times">Scheduled: <strong id="scheduledCounter" class="font-semibold text-cyan-400">0</strong></span>
+        <span id="cooldownText" class="font-light text-emerald-400">Ready</span>
       </div>
 
-      <button onclick="launchLoginBrowser()" id="launchLoginBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-medium text-gray-200 transition">
+      <button onclick="launchLoginBrowser()" id="launchLoginBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-light text-gray-200 transition">
         Login
       </button>
 
-      <button onclick="openCookieModal()" title="Export/Import Cookies for Cloud Deploy" class="px-2 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs text-gray-400 hover:text-white transition">
+      <button onclick="openCookieModal()" title="Export/Import Cookies for Cloud Deploy" class="px-2 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-light text-gray-400 hover:text-white transition">
         Cookies
       </button>
 
-      <button onclick="triggerScrapeNow()" id="triggerScrapeBtn" class="px-3 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-cyan-500/30 text-xs font-medium text-cyan-300 transition flex items-center gap-1.5">
+      <button onclick="triggerScrapeNow()" id="triggerScrapeBtn" class="px-3 py-1.5 rounded-lg bg-surface-card hover:bg-surface-border border border-cyan-500/30 text-xs font-light text-cyan-300 transition flex items-center gap-1.5">
         <span>Scan Now</span>
       </button>
 
       <button onclick="toggleAgentActive()" id="masterToggleBtn" class="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition">
-        <span id="masterToggleLabel">Start</span>
+        <span id="masterToggleLabel" class="font-semibold">Start</span>
       </button>
     </div>
   </header>
@@ -118,23 +127,23 @@
         <!-- Gemini API Key -->
         <div class="space-y-1.5">
           <div class="flex items-center justify-between text-xs">
-            <label class="font-medium text-gray-300">Gemini API Key</label>
-            <span id="apiKeyStatusBadge" class="font-mono text-[11px] text-gray-400">Checking...</span>
+            <label class="font-light text-gray-400">Gemini API Key</label>
+            <span id="apiKeyStatusBadge" class="font-mono font-light text-[11px] text-gray-400">Checking...</span>
           </div>
           <div class="flex gap-1.5">
             <input type="password" id="apiKeyInput" placeholder="Paste key from aistudio.google.com"
-              class="flex-1 bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
-            <button onclick="testApiKey()" id="testKeyBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-input hover:bg-surface-border border border-surface-border text-xs font-medium text-cyan-400 transition">
+              class="flex-1 bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
+            <button onclick="testApiKey()" id="testKeyBtn" class="px-2.5 py-1.5 rounded-lg bg-surface-input hover:bg-surface-border border border-surface-border text-xs font-light text-cyan-400 transition">
               Verify
             </button>
           </div>
-          <p id="apiHintText" class="text-[11px] text-gray-500 hidden"></p>
+          <p id="apiHintText" class="text-[11px] font-extralight text-gray-500 hidden"></p>
         </div>
 
         <!-- Model -->
         <div class="space-y-1">
-          <label class="text-xs font-medium text-gray-300">Model</label>
-          <select id="modelSelect" class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500">
+          <label class="text-xs font-light text-gray-400">Model</label>
+          <select id="modelSelect" class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500">
             <option value="gemini-3.8-flash">gemini-3.8-flash</option>
             <option value="gemini-3.7-flash">gemini-3.7-flash</option>
             <option value="gemini-3.6-flash">gemini-3.6-flash</option>
@@ -145,48 +154,48 @@
 
         <!-- Search Topic -->
         <div class="space-y-1">
-          <label class="text-xs font-medium text-gray-300">Target Feed / Search Query</label>
+          <label class="text-xs font-light text-gray-400">Target Feed / Search Query</label>
           <input type="text" id="queryInput" placeholder="#elclassico OR buildinpublic"
-            class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500" />
+            class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-light text-white focus:outline-none focus:border-cyan-500" />
         </div>
 
         <!-- Persona / Voice -->
         <div class="space-y-1">
-          <label class="text-xs font-medium text-gray-300">My Voice / Style</label>
+          <label class="text-xs font-light text-gray-400">My Voice / Style</label>
           <input type="text" id="personaInput" placeholder="Casual, dry humor, lowercase okay, short sentences"
-            class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-500" />
+            class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-light text-white focus:outline-none focus:border-cyan-500" />
         </div>
 
         <!-- Random Timing & Safety Grid -->
         <div class="grid grid-cols-2 gap-2.5 pt-2 border-t border-surface-border">
           <div>
-            <label class="text-[11px] text-gray-400 block mb-1">Daily Cap</label>
+            <label class="text-[11px] font-extralight text-gray-400 block mb-1">Daily Cap</label>
             <input type="number" id="capInput" min="1" max="100"
-              class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+              class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
           </div>
           <div>
-            <label class="text-[11px] text-gray-400 block mb-1">Scan Interval (m)</label>
+            <label class="text-[11px] font-extralight text-gray-400 block mb-1">Scan Interval (m)</label>
             <input type="number" id="intervalInput" min="2" max="360"
-              class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+              class="w-full bg-surface-input border border-surface-border rounded-lg px-2.5 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
           </div>
           <div>
-            <label class="text-[11px] text-gray-400 block mb-1" title="Minimum & Maximum minutes for random scheduling">Random Delay (m)</label>
+            <label class="text-[11px] font-extralight text-gray-400 block mb-1" title="Minimum & Maximum minutes for random scheduling">Random Delay (m)</label>
             <div class="flex items-center gap-1">
               <input type="number" id="minCooldownInput" min="1" max="180" placeholder="Min"
-                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
-              <span class="text-gray-500 text-xs">-</span>
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
+              <span class="text-gray-500 text-xs font-extralight">-</span>
               <input type="number" id="maxCooldownInput" min="2" max="360" placeholder="Max"
-                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
             </div>
           </div>
           <div>
-            <label class="text-[11px] text-gray-400 block mb-1" title="Local hours (0-23) when bot is awake">Active Hours</label>
+            <label class="text-[11px] font-extralight text-gray-400 block mb-1" title="Local hours (0-23) when bot is awake">Active Hours</label>
             <div class="flex items-center gap-1">
               <input type="number" id="startHourInput" min="0" max="23" placeholder="8"
-                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
-              <span class="text-gray-500 text-xs">to</span>
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
+              <span class="text-gray-500 text-xs font-extralight">to</span>
               <input type="number" id="endHourInput" min="0" max="23" placeholder="23"
-                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-cyan-500" />
+                class="w-full bg-surface-input border border-surface-border rounded-lg px-2 py-1.5 text-xs font-mono font-light text-white focus:outline-none focus:border-cyan-500" />
             </div>
           </div>
         </div>
@@ -194,8 +203,8 @@
         <!-- Autopilot Toggle -->
         <div class="flex items-center justify-between pt-2 border-t border-surface-border">
           <div>
-            <span class="text-xs font-medium text-gray-200 block">Autopilot (Random Schedule)</span>
-            <span class="text-[11px] text-gray-500">Auto-queue replies at random times</span>
+            <span class="text-xs font-normal text-gray-200 block">Autopilot (Random Schedule)</span>
+            <span class="text-[11px] font-extralight text-gray-500">Auto-queue replies at random times</span>
           </div>
           <label class="relative inline-flex items-center cursor-pointer">
             <input type="checkbox" id="autopilotToggle" class="sr-only peer">
@@ -217,21 +226,21 @@
         <div class="flex items-center gap-2">
           <button onclick="switchTab('pending')" id="tabPending" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5">
             <span>Queue</span>
-            <span id="pendingCountBadge" class="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-cyan-500/20 text-cyan-300">0</span>
+            <span id="pendingCountBadge" class="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-semibold bg-cyan-500/20 text-cyan-300">0</span>
           </button>
-          <button onclick="switchTab('history')" id="tabHistory" class="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200">
+          <button onclick="switchTab('history')" id="tabHistory" class="px-3 py-1.5 rounded-lg text-xs font-light text-gray-400 hover:text-gray-200">
             History
           </button>
         </div>
 
         <div class="flex items-center gap-2">
-          <button onclick="generateOriginal('post')" id="genPostBtn" class="px-2.5 py-1 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-medium text-gray-200 transition">
+          <button onclick="generateOriginal('post')" id="genPostBtn" class="px-2.5 py-1 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-light text-gray-200 transition">
             + New Post
           </button>
-          <button onclick="generateOriginal('thread')" id="genThreadBtn" class="px-2.5 py-1 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-medium text-cyan-300 transition">
+          <button onclick="generateOriginal('thread')" id="genThreadBtn" class="px-2.5 py-1 rounded-lg bg-surface-card hover:bg-surface-border border border-surface-border text-xs font-light text-cyan-300 transition">
             + New Thread
           </button>
-          <span id="totalProcessedCounter" class="text-[11px] font-mono text-gray-500 hidden sm:inline pl-1">0 processed</span>
+          <span id="totalProcessedCounter" class="text-[11px] font-mono font-light text-gray-500 hidden sm:inline pl-1">0 processed</span>
         </div>
       </div>
 
@@ -246,14 +255,14 @@
           <div class="overflow-x-auto">
             <table class="w-full text-left border-collapse">
               <thead>
-                <tr class="border-b border-surface-border text-[10px] font-mono uppercase text-gray-500 bg-surface-input/60">
-                  <th class="py-2.5 px-3">Status</th>
-                  <th class="py-2.5 px-3">Post</th>
-                  <th class="py-2.5 px-3">Reply / Reason</th>
-                  <th class="py-2.5 px-3 text-right">Time</th>
+                <tr class="border-b border-surface-border text-[10px] font-mono font-light uppercase text-gray-500 bg-surface-input/60">
+                  <th class="py-2.5 px-3 font-normal">Status</th>
+                  <th class="py-2.5 px-3 font-normal">Post</th>
+                  <th class="py-2.5 px-3 font-normal">Reply / Reason</th>
+                  <th class="py-2.5 px-3 text-right font-normal">Time</th>
                 </tr>
               </thead>
-              <tbody id="historyTableBody" class="divide-y divide-surface-border text-xs"></tbody>
+              <tbody id="historyTableBody" class="divide-y divide-surface-border text-xs font-light"></tbody>
             </table>
           </div>
         </div>
@@ -262,10 +271,10 @@
       <!-- Compact Live Logs -->
       <div class="bg-surface-card rounded-xl border border-surface-border overflow-hidden mt-auto">
         <div class="px-3.5 py-2 border-b border-surface-border flex items-center justify-between bg-surface-input/50">
-          <span class="text-[11px] font-mono text-gray-400">Live Logs</span>
-          <span class="text-[10px] font-mono text-gray-600" id="activeHoursBadge">Active Window</span>
+          <span class="text-[11px] font-mono font-light text-gray-400">Live Logs</span>
+          <span class="text-[10px] font-mono font-light text-gray-600" id="activeHoursBadge">Active Window</span>
         </div>
-        <div id="logTerminal" class="p-3 h-36 overflow-y-auto font-mono text-[11px] space-y-1 bg-[#07090e] text-gray-300"></div>
+        <div id="logTerminal" class="p-3 h-36 overflow-y-auto font-mono font-light text-[11px] space-y-1 bg-[#07090e] text-gray-300"></div>
       </div>
 
     </section>
@@ -295,13 +304,13 @@
         pView.classList.remove('hidden');
         hView.classList.add('hidden');
         pBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5';
-        hBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200';
+        hBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-light text-gray-400 hover:text-gray-200';
         fetchPendingApprovals();
       } else {
         hView.classList.remove('hidden');
         pView.classList.add('hidden');
         hBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30';
-        pBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 flex items-center gap-1.5';
+        pBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-light text-gray-400 hover:text-gray-200 flex items-center gap-1.5';
         fetchHistory();
       }
     }
@@ -341,12 +350,12 @@
         if (data.is_logged_in) {
           xDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400';
           xTxt.innerText = data.linked_username || 'Linked';
-          xTxt.className = 'font-mono text-emerald-300 font-medium';
+          xTxt.className = 'font-mono text-emerald-300 font-semibold';
           if (loginBtn) loginBtn.classList.add('hidden');
         } else {
           xDot.className = 'w-1.5 h-1.5 rounded-full bg-rose-400';
           xTxt.innerText = 'Not Linked';
-          xTxt.className = 'font-mono text-gray-400';
+          xTxt.className = 'font-mono font-light text-gray-400';
           if (loginBtn) loginBtn.classList.remove('hidden');
         }
 
@@ -360,15 +369,15 @@
           const m = Math.floor(data.cooldown_seconds_remaining / 60);
           const s = data.cooldown_seconds_remaining % 60;
           cdText.innerText = `Cooldown ${m}m ${s}s`;
-          cdText.className = 'text-amber-400';
+          cdText.className = 'font-light text-amber-400';
         } else {
           cdText.innerText = 'Ready';
-          cdText.className = 'text-emerald-400';
+          cdText.className = 'font-light text-emerald-400';
         }
 
         const ahBadge = document.getElementById('activeHoursBadge');
         ahBadge.innerText = data.within_active_hours ? 'Awake Window' : 'Sleep Window';
-        ahBadge.className = `text-[10px] font-mono ${data.within_active_hours ? 'text-emerald-400' : 'text-amber-400'}`;
+        ahBadge.className = `text-[10px] font-mono font-light ${data.within_active_hours ? 'text-emerald-400' : 'text-amber-400'}`;
 
         renderLogs(data.recent_logs);
       } catch (e) {}
@@ -635,8 +644,8 @@
 
         if (items.length === 0) {
           container.innerHTML = `
-            <div class="bg-surface-card rounded-xl p-8 border border-surface-border text-center text-xs text-gray-500">
-              Queue is empty. Click <strong class="text-gray-300">Scan Now</strong> to find posts.
+            <div class="bg-surface-card rounded-xl p-8 border border-surface-border text-center text-xs font-light text-gray-500">
+              Queue is empty. Click <strong class="font-semibold text-gray-300">Scan Now</strong> to find posts.
             </div>
           `;
           return;
@@ -655,12 +664,12 @@
           const isThread = actType === 'thread';
           const isPost = actType === 'post';
 
-          let typeBadge = `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-input text-gray-400 border border-surface-border">REPLY</span>`;
+          let typeBadge = `<span class="text-[10px] font-mono font-light px-2 py-0.5 rounded bg-surface-input text-gray-400 border border-surface-border">REPLY</span>`;
           if (isThread) {
             const count = (item.generated_text || '').split('---').filter(Boolean).length;
-            typeBadge = `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">THREAD (${count} posts)</span>`;
+            typeBadge = `<span class="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">THREAD (${count} posts)</span>`;
           } else if (isPost) {
-            typeBadge = `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">ORIGINAL POST</span>`;
+            typeBadge = `<span class="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">ORIGINAL POST</span>`;
           }
 
           return `
@@ -668,35 +677,35 @@
               <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center gap-2 flex-wrap">
                   ${typeBadge}
-                  <span class="text-xs font-semibold text-white">@${escapeHtml(item.tweet_author || 'user')}</span>
-                  ${item.tweet_metrics ? `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-input text-gray-400 border border-surface-border">${escapeHtml(item.tweet_metrics)}</span>` : ''}
-                  ${isScheduled ? `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">${formatScheduledBadge(item.scheduled_for)}</span>` : ''}
+                  <span class="text-xs font-semibold text-white tracking-tight">@${escapeHtml(item.tweet_author || 'user')}</span>
+                  ${item.tweet_metrics ? `<span class="text-[10px] font-mono font-light px-2 py-0.5 rounded bg-surface-input text-gray-400 border border-surface-border">${escapeHtml(item.tweet_metrics)}</span>` : ''}
+                  ${isScheduled ? `<span class="text-[10px] font-mono font-light px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">${formatScheduledBadge(item.scheduled_for)}</span>` : ''}
                 </div>
-                ${actType === 'reply' ? `<a href="${item.tweet_url || '#'}" target="_blank" class="text-[11px] font-mono text-gray-400 hover:text-cyan-400">View ↗</a>` : ''}
+                ${actType === 'reply' ? `<a href="${item.tweet_url || '#'}" target="_blank" class="text-[11px] font-mono font-light text-gray-400 hover:text-cyan-400">View ↗</a>` : ''}
               </div>
 
-              <p class="text-xs text-gray-400 bg-surface-input p-2.5 rounded-lg border border-surface-border whitespace-pre-line">${escapeHtml(item.tweet_text || '')}</p>
+              <p class="text-xs font-extralight leading-relaxed text-gray-400 bg-surface-input p-2.5 rounded-lg border border-surface-border whitespace-pre-line">${escapeHtml(item.tweet_text || '')}</p>
 
               <div class="space-y-1.5">
                 <div class="flex items-center justify-between">
                   <div class="flex items-center gap-1.5">
                     ${hasVariants ? Object.keys(variants).map(k => `
-                      <button onclick="selectVariant('${item.tweet_id}', '${k}')" class="px-2 py-0.5 rounded text-[10px] font-mono bg-surface-input hover:bg-surface-border text-gray-300 border border-surface-border capitalize">${k}</button>
-                    `).join('') : '<span class="text-[10px] font-mono text-gray-500">Draft</span>'}
-                    ${isThread ? '<span class="text-[10px] font-mono text-gray-500 ml-1">(Separate thread posts with ---)</span>' : ''}
+                      <button onclick="selectVariant('${item.tweet_id}', '${k}')" class="px-2 py-0.5 rounded text-[10px] font-mono font-light bg-surface-input hover:bg-surface-border text-gray-300 border border-surface-border capitalize">${k}</button>
+                    `).join('') : '<span class="text-[10px] font-mono font-light text-gray-500">Draft</span>'}
+                    ${isThread ? '<span class="text-[10px] font-mono font-extralight text-gray-500 ml-1">(Separate thread posts with ---)</span>' : ''}
                   </div>
-                  <button onclick="regenerateDraft('${item.tweet_id}')" id="regen_${item.tweet_id}" title="Generate fresh angles" class="text-xs font-mono px-2 py-0.5 rounded bg-surface-input hover:bg-surface-border text-gray-400 hover:text-white border border-surface-border">↻</button>
+                  <button onclick="regenerateDraft('${item.tweet_id}')" id="regen_${item.tweet_id}" title="Generate fresh angles" class="text-xs font-mono font-light px-2 py-0.5 rounded bg-surface-input hover:bg-surface-border text-gray-400 hover:text-white border border-surface-border">↻</button>
                 </div>
 
                 <textarea id="draft_${item.tweet_id}" rows="${isThread ? 6 : 2}"
-                  class="w-full bg-surface-input border border-surface-border rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-cyan-500">${escapeHtml(item.generated_text || '')}</textarea>
+                  class="w-full bg-surface-input border border-surface-border rounded-lg p-2.5 text-xs font-light leading-relaxed text-white focus:outline-none focus:border-cyan-500">${escapeHtml(item.generated_text || '')}</textarea>
               </div>
 
               <div class="flex items-center justify-end gap-2 pt-1">
-                <button onclick="rejectDraft('${item.tweet_id}')" class="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-rose-400 hover:bg-surface-input transition">
+                <button onclick="rejectDraft('${item.tweet_id}')" class="px-3 py-1.5 rounded-lg text-xs font-light text-gray-400 hover:text-rose-400 hover:bg-surface-input transition">
                   Skip
                 </button>
-                <button onclick="approveDraft('${item.tweet_id}', true)" id="schedBtn_${item.tweet_id}" class="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-medium text-xs transition">
+                <button onclick="approveDraft('${item.tweet_id}', true)" id="schedBtn_${item.tweet_id}" class="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-light text-xs transition">
                   Queue Random Time
                 </button>
                 <button onclick="approveDraft('${item.tweet_id}', false)" id="postBtn_${item.tweet_id}" class="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs transition">
@@ -779,13 +788,13 @@
           const t = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           return `
             <tr class="hover:bg-surface-input/40">
-              <td class="py-2.5 px-3 font-mono text-[11px] ${cls}">${item.status.replace('_', ' ')}</td>
+              <td class="py-2.5 px-3 font-mono font-semibold text-[11px] ${cls}">${item.status.replace('_', ' ')}</td>
               <td class="py-2.5 px-3 max-w-xs">
-                <a href="${item.tweet_url || '#'}" target="_blank" class="font-medium text-gray-200 hover:text-cyan-400">@${escapeHtml(item.tweet_author || 'user')}</a>
-                <p class="text-gray-400 truncate">${escapeHtml(item.tweet_text || '')}</p>
+                <a href="${item.tweet_url || '#'}" target="_blank" class="font-semibold text-gray-200 hover:text-cyan-400">@${escapeHtml(item.tweet_author || 'user')}</a>
+                <p class="font-extralight text-gray-400 truncate">${escapeHtml(item.tweet_text || '')}</p>
               </td>
-              <td class="py-2.5 px-3 max-w-xs text-gray-300 truncate">${escapeHtml(out)}</td>
-              <td class="py-2.5 px-3 text-right font-mono text-[11px] text-gray-500">${t}</td>
+              <td class="py-2.5 px-3 max-w-xs font-light text-gray-300 truncate">${escapeHtml(out)}</td>
+              <td class="py-2.5 px-3 text-right font-mono font-light text-[11px] text-gray-500">${t}</td>
             </tr>
           `;
         }).join('');
