@@ -1,0 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700&family=JetBrains+Mono:wght@300;400;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0B0F19;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 15% -10%, rgba(56, 189, 248, 0.11), transparent 60%),
+    radial-gradient(ellipse 65% 45% at 88% 8%, rgba(167, 139, 250, 0.10), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 50% 100%, rgba(52, 211, 153, 0.05), transparent 60%);
+  color: #F1F5F9;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 300;
+  letter-spacing: 0.015em;
+  overflow-x: hidden;
+}
+
+input, select, textarea, button {
+  font-family: inherit;
+  font-weight: 300;
+  letter-spacing: 0.015em;
+}
+
+/* Figma Power BI Card Surface with Top Specular Edge */
+.bi-card {
+  background: linear-gradient(165deg, rgba(23, 32, 54, 0.88) 0%, rgba(16, 23, 39, 0.94) 100%);
+  border: 1px solid rgba(148, 163, 184, 0.11);
+  box-shadow:
+    0 12px 32px -12px rgba(3, 6, 14, 0.75),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(16px);
+}
+
+.bi-card-interactive {
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.22s ease, box-shadow 0.22s ease;
+}
+
+.bi-card-interactive:hover {
+  border-color: rgba(56, 189, 248, 0.32);
+  box-shadow:
+    0 18px 40px -12px rgba(3, 6, 14, 0.85),
+    0 0 24px -8px rgba(56, 189, 248, 0.18),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #0B0F19;
+}
+::-webkit-scrollbar-thumb {
+  background: #222E4A;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #38BDF8;
+}

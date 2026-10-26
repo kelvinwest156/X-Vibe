@@ -1,5 +1,11 @@
 # Persistent browser profile (holds login cookies and session data)
 x_browser_profile/
+cookies_backup.json
+
+# Next.js build & dependencies
+frontend/node_modules/
+frontend/.next/
+frontend/out/
 
 # SQLite Database
 vibebot.db
