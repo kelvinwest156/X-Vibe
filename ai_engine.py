@@ -647,10 +647,12 @@ Current Date: {os.popen('date /t').read().strip() if os.name == 'nt' else 'Today
         if _last_working_gemini_model:
             fallback_candidates.append(_last_working_gemini_model)
         fallback_candidates.extend([
-            chosen_model,
-            "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-3.7-flash",
+            chosen_model,
             "gemini-3.8-flash"
         ])
         models_to_try = list(dict.fromkeys(fallback_candidates))
@@ -659,7 +661,6 @@ Current Date: {os.popen('date /t').read().strip() if os.name == 'nt' else 'Today
         last_err = None
 
         for candidate_model in models_to_try:
-            # First try with Google Search grounding for up-to-the-minute facts, fallback to pure JSON config
             for use_search in (True, False):
                 try:
                     if use_search:
@@ -681,15 +682,16 @@ Current Date: {os.popen('date /t').read().strip() if os.name == 'nt' else 'Today
                             contents=prompt,
                             config=cfg
                         ),
-                        timeout=12.0
+                        timeout=8.0
                     )
-                    if response and response.text:
+                    if response and response.text and "{" in response.text:
                         _last_working_gemini_model = candidate_model
                         break
+                    response = None
                 except Exception as e:
                     last_err = e
-                    if use_search:
-                        # If search grounding tool isn't supported on this model, immediately retry without tool
+                    response = None
+                    if use_search and ("503" not in str(e) and "UNAVAILABLE" not in str(e)):
                         continue
                     break
             if response and response.text:
