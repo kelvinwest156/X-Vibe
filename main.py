@@ -61,7 +61,7 @@ from database import (
     compute_random_schedule_time,
     SessionLocal
 )
-from ai_engine import evaluate_tweet, test_ai_api, KNOWN_GEMINI_MODELS
+from ai_engine import evaluate_tweet, generate_original_content, test_ai_api, KNOWN_GEMINI_MODELS
 from browser_worker import XBrowserWorker
 
 load_dotenv()
@@ -175,8 +175,10 @@ async def scheduled_queue_dispatcher_loop():
 
             if due_items and daily_used < daily_cap:
                 target = due_items[0]
-                logger.info(f"Scheduled time reached for @{target.tweet_author} ({target.tweet_id}). Posting now...")
-                success = await browser_worker.post_reply(
+                act_type = target.action_type or "reply"
+                logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}). Publishing now...")
+                success = await browser_worker.execute_tweet_action(
+                    act_type,
                     target.tweet_id,
                     target.generated_text,
                     target.tweet_url
@@ -187,13 +189,13 @@ async def scheduled_queue_dispatcher_loop():
                     if success:
                         set_new_random_cooldown(min_cd, max_cd)
                         update_tweet_status(db, target.tweet_id, status="posted")
-                        logger.info(f"Successfully posted scheduled reply to @{target.tweet_author}!")
+                        logger.info(f"Successfully published scheduled {act_type} ({target.tweet_id})!")
                     else:
                         update_tweet_status(
                             db,
                             target.tweet_id,
                             status="failed",
-                            error_message="Browser failed while posting scheduled reply"
+                            error_message=f"Browser failed while publishing scheduled {act_type}"
                         )
                 finally:
                     db.close()
@@ -393,6 +395,57 @@ async def background_automation_loop():
             if new_count == 0 and len(tweets) > 0:
                 logger.info(f"All {len(tweets)} visible posts for '{query}' were already evaluated.")
 
+            # Also synthesize 1 original Post or Thread from the live conversation pulse
+            if len(tweets) >= 2:
+                orig_mode = random.choice(["post", "thread"])
+                logger.info(f"Synthesizing original {orig_mode} from live '{query}' conversation & real-time info...")
+                gen = await generate_original_content(
+                    mode=orig_mode,
+                    search_query=query,
+                    persona_prompt=persona,
+                    live_tweets=tweets,
+                    model_name=selected_model
+                )
+                if gen.get("success") and gen.get("text"):
+                    db = SessionLocal()
+                    try:
+                        cfg = get_agent_config(db)
+                        orig_id = f"{orig_mode}_{int(time.time())}"
+                        author_label = (browser_worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
+                        if auto_pilot:
+                            sched_utc = compute_random_schedule_time(db, cfg)
+                            record_processed_tweet(
+                                db=db,
+                                tweet_id=orig_id,
+                                action_type=orig_mode,
+                                tweet_text=gen["topic_summary"],
+                                tweet_author=author_label,
+                                tweet_url="https://x.com/home",
+                                generated_text=gen["text"],
+                                variants_json=gen.get("variants_json"),
+                                tweet_metrics="Live Pulse · OriginalThread" if orig_mode == "thread" else "Live Pulse · Original Post",
+                                status="scheduled",
+                                scheduled_for=sched_utc,
+                                error_message=gen["topic_summary"]
+                            )
+                        else:
+                            record_processed_tweet(
+                                db=db,
+                                tweet_id=orig_id,
+                                action_type=orig_mode,
+                                tweet_text=gen["topic_summary"],
+                                tweet_author=author_label,
+                                tweet_url="https://x.com/home",
+                                generated_text=gen["text"],
+                                variants_json=gen.get("variants_json"),
+                                tweet_metrics="Live Pulse · Thread" if orig_mode == "thread" else "Live Pulse · Original Post",
+                                status="pending_approval",
+                                error_message=gen["topic_summary"]
+                            )
+                        logger.info(f"Drafted original {orig_mode} from live conversation pulse.")
+                    finally:
+                        db.close()
+
             # Randomized jitter between scans (0.65x to 1.45x of polling interval + random seconds)
             jittered_wait = int(base_interval_secs * random.uniform(0.65, 1.45)) + random.randint(3, 58)
             try:
@@ -485,6 +538,12 @@ async def get_status(db: Session = Depends(get_db)):
         config.active_hours_end if config.active_hours_end is not None else 23
     )
 
+    has_profile_cookies = (
+        os.path.isfile(browser_worker.cookies_backup_path)
+        or os.path.isfile(os.path.join(browser_worker.profile_dir, "Default", "Network", "Cookies"))
+        or os.path.isfile(os.path.join(browser_worker.profile_dir, "Default", "Cookies"))
+    )
+
     return AgentStatusResponse(
         is_active=config.is_active,
         auto_pilot_mode=config.auto_pilot_mode,
@@ -496,7 +555,7 @@ async def get_status(db: Session = Depends(get_db)):
         within_active_hours=within_hours,
         scheduled_count=sched_count,
         browser_connected=browser_worker.is_running,
-        is_logged_in=is_session_logged_in or bool(config.linked_username),
+        is_logged_in=is_session_logged_in or bool(config.linked_username) or has_profile_cookies,
         linked_username=browser_worker.logged_in_username or config.linked_username,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
@@ -649,14 +708,15 @@ async def approve_tweet(
             "minutes_from_now": mins_away
         }
 
-    logger.info(f"Posting approved reply to @{tweet.tweet_author} ({tweet_id})...")
-    success = await browser_worker.post_reply(tweet_id, text_to_post, tweet.tweet_url)
+    act_type = tweet.action_type or "reply"
+    logger.info(f"Publishing approved {act_type} ({tweet_id})...")
+    success = await browser_worker.execute_tweet_action(act_type, tweet_id, text_to_post, tweet.tweet_url)
     sync_detected_username(db)
 
     if success:
         set_new_random_cooldown(config.min_cooldown_minutes or 10, config.max_cooldown_minutes or 45)
         update_tweet_status(db, tweet_id, status="posted", generated_text=text_to_post)
-        logger.info(f"Successfully posted reply to @{tweet.tweet_author}!")
+        logger.info(f"Successfully published {act_type} ({tweet_id})!")
         return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
     else:
         update_tweet_status(
@@ -664,19 +724,103 @@ async def approve_tweet(
             tweet_id,
             status="failed",
             generated_text=text_to_post,
-            error_message="Browser failed during reply submission"
+            error_message=f"Browser failed during {act_type} submission"
         )
-        raise HTTPException(status_code=500, detail="Failed to post reply via browser.")
+        raise HTTPException(status_code=500, detail=f"Failed to publish {act_type} via browser.")
+
+
+class GenerateOriginalPayload(BaseModel):
+    mode: str = "post"  # "post" or "thread"
+    custom_topic: Optional[str] = None
+
+
+@app.post("/api/generate-original")
+async def generate_original_endpoint(payload: GenerateOriginalPayload, db: Session = Depends(get_db)):
+    """
+    Generates a fresh Original Post or Multi-Post Thread from real-time conversations
+    and current Google Search information, adding it directly to the Queue.
+    """
+    cfg = get_agent_config(db)
+    mode = "thread" if payload.mode == "thread" else "post"
+    topic = (payload.custom_topic or cfg.search_query or "tech & culture").strip()
+
+    recent_db_tweets = get_recent_tweets(db, limit=10)
+    live_context = [
+        {
+            "author": r.tweet_author,
+            "text": r.tweet_text,
+            "metrics": r.tweet_metrics
+        }
+        for r in recent_db_tweets
+        if r.action_type == "reply" and r.tweet_text
+    ]
+
+    gen = await generate_original_content(
+        mode=mode,
+        search_query=topic,
+        persona_prompt=cfg.persona_prompt,
+        live_tweets=live_context,
+        model_name=cfg.selected_model or "gemini-3.8-flash"
+    )
+    if not gen.get("success") or not gen.get("text"):
+        raise HTTPException(status_code=500, detail=gen.get("topic_summary") or "Failed to generate content")
+
+    orig_id = f"{mode}_{int(time.time() * 1000)}"
+    author_label = (browser_worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
+    item = record_processed_tweet(
+        db=db,
+        tweet_id=orig_id,
+        action_type=mode,
+        tweet_text=gen["topic_summary"],
+        tweet_author=author_label,
+        tweet_url="https://x.com/home",
+        generated_text=gen["text"],
+        variants_json=gen.get("variants_json"),
+        tweet_metrics="Original Thread" if mode == "thread" else "Original Post",
+        status="pending_approval",
+        error_message=gen["topic_summary"]
+    )
+    logger.info(f"Generated new {mode} on '{topic}'")
+    return {"status": "created", "tweet_id": item.tweet_id, "action_type": mode}
 
 
 @app.post("/api/regenerate/{tweet_id}")
 async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
-    """Regenerates 3 fresh anti-robotic reply variants for a specific tweet."""
+    """Regenerates 3 fresh anti-robotic variants for a reply, original post, or thread."""
     tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
     cfg = get_agent_config(db)
+    if tweet.action_type in ("post", "thread"):
+        recent_db_tweets = get_recent_tweets(db, limit=8)
+        live_context = [
+            {"author": r.tweet_author, "text": r.tweet_text, "metrics": r.tweet_metrics}
+            for r in recent_db_tweets if r.action_type == "reply" and r.tweet_text
+        ]
+        gen = await generate_original_content(
+            mode=tweet.action_type,
+            search_query=cfg.search_query,
+            persona_prompt=(cfg.persona_prompt or "") + " | Take a completely fresh, different angle.",
+            live_tweets=live_context,
+            model_name=cfg.selected_model or "gemini-3.8-flash"
+        )
+        if not gen.get("success") or not gen.get("text"):
+            raise HTTPException(status_code=500, detail="Failed to regenerate")
+        updated = update_tweet_status(
+            db,
+            tweet_id,
+            status="pending_approval",
+            generated_text=gen["text"],
+            variants_json=gen.get("variants_json"),
+            error_message=gen.get("topic_summary")
+        )
+        return {
+            "tweet_id": tweet_id,
+            "generated_text": updated.generated_text,
+            "variants_json": updated.variants_json
+        }
+
     ai_result = await evaluate_tweet(
         tweet_text=tweet.tweet_text or "",
         tweet_author=tweet.tweet_author,

@@ -541,10 +541,202 @@ async def _evaluate_with_deepseek(
 def _clean_json_markdown(raw: str) -> str:
     """Strips markdown code fences from JSON output."""
     cleaned = raw.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    if cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
+    if "```json" in cleaned:
+        cleaned = cleaned.split("```json", 1)[1]
+    elif "```" in cleaned:
+        cleaned = cleaned.split("```", 1)[1]
+    if "```" in cleaned:
+        cleaned = cleaned.rsplit("```", 1)[0]
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start:end + 1]
     return cleaned.strip()
+
+
+async def generate_original_content(
+    mode: str = "post",
+    search_query: Optional[str] = None,
+    persona_prompt: Optional[str] = None,
+    live_tweets: Optional[List[Dict[str, Any]]] = None,
+    model_name: Optional[str] = None,
+    custom_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Generates an original standalone X post (mode='post') or a multi-post thread (mode='thread')
+    synthesized from real-time X conversations and live Google Search grounding.
+    """
+    client = get_gemini_client(custom_key=custom_key)
+    if not client:
+        return {
+            "success": False,
+            "action_type": mode,
+            "text": None,
+            "variants_json": None,
+            "topic_summary": "Google Gemini API key not configured"
+        }
+
+    topic = (search_query or "tech, AI, and culture").strip()
+    voice = (persona_prompt or "Casual, sharp, dry humor, short sentences, zero corporate buzzwords").strip()
+
+    # Format real-time scraped X conversations
+    live_feed_context = ""
+    if live_tweets:
+        snippets = []
+        for idx, t in enumerate(live_tweets[:8], 1):
+            author = t.get("author") or t.get("tweet_author") or "user"
+            txt = (t.get("text") or t.get("tweet_text") or "").replace("\n", " ").strip()
+            metrics = t.get("metrics") or t.get("tweet_metrics") or ""
+            if txt:
+                snippets.append(f"{idx}. @{author} ({metrics}): {txt[:200]}")
+        if snippets:
+            live_feed_context = "LIVE CONVERSATIONS HAPPENING RIGHT NOW ON X:\n" + "\n".join(snippets)
+
+    if mode == "thread":
+        format_instructions = """Create an original, high-signal 3 to 4 post X THREAD based on the real-time conversation and current facts around this topic.
+STRICT THREAD RULES:
+- Separate each post in the thread with exactly "\\n---\\n".
+- Each individual post MUST be under 240 characters (1-2 punchy sentences per post).
+- Post 1 must be a strong, natural hook (NO "🧵", NO "1/4", NO "Let's dive in", NO "A thread:").
+- Posts 2-4 should drop specific insights, real-time observations, or sharp takes that build on the hook.
+- NEVER use em-dashes (—), semicolons, or AI buzzwords.
+
+Respond ONLY in valid JSON with these exact keys:
+{
+  "topic_summary": "1-line summary of the real-time conversation angle this thread covers",
+  "text": "Post 1\\n---\\nPost 2\\n---\\nPost 3",
+  "variants": {
+    "witty": "Post 1 (witty/sharp angle)\\n---\\nPost 2\\n---\\nPost 3",
+    "insight": "Post 1 (deep/analytical angle)\\n---\\nPost 2\\n---\\nPost 3",
+    "punchy": "Post 1 (short/bold hot take)\\n---\\nPost 2\\n---\\nPost 3"
+  }
+}"""
+    else:
+        format_instructions = """Create an original, standalone X POST based on the real-time conversation and current facts around this topic.
+STRICT POST RULES:
+- 8 to 30 words max. Under 240 characters.
+- Sound like an authentic human insider sharing a sharp observation, hot take, or timely reaction.
+- NEVER use hashtags unless essential to the topic. NEVER use em-dashes (—), semicolons, or AI buzzwords.
+
+Respond ONLY in valid JSON with these exact keys:
+{
+  "topic_summary": "1-line summary of the real-time conversation or event this post reacts to",
+  "text": "your primary standalone post",
+  "variants": {
+    "witty": "sharp, clever observation or dry humor",
+    "question": "provoking question that sparks replies on the timeline",
+    "punchy": "ultra-short 5-14 word bold one-liner"
+  }
+}"""
+
+    prompt = f"""Topic / Search Pulse: {topic}
+Your Voice / Persona: {voice}
+Current Date: {os.popen('date /t').read().strip() if os.name == 'nt' else 'Today'}
+
+{live_feed_context}
+
+{format_instructions}"""
+
+    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")).replace("models/", "")
+
+    try:
+        from google.genai import types
+        global _last_working_gemini_model
+
+        fallback_candidates = []
+        if _last_working_gemini_model:
+            fallback_candidates.append(_last_working_gemini_model)
+        fallback_candidates.extend([
+            chosen_model,
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.8-flash"
+        ])
+        models_to_try = list(dict.fromkeys(fallback_candidates))
+
+        response = None
+        last_err = None
+
+        for candidate_model in models_to_try:
+            # First try with Google Search grounding for up-to-the-minute facts, fallback to pure JSON config
+            for use_search in (True, False):
+                try:
+                    if use_search:
+                        cfg = types.GenerateContentConfig(
+                            tools=[types.Tool(google_search=types.GoogleSearch())],
+                            temperature=0.82,
+                            max_output_tokens=1800
+                        )
+                    else:
+                        cfg = types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.82,
+                            max_output_tokens=1800
+                        )
+
+                    response = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=candidate_model,
+                            contents=prompt,
+                            config=cfg
+                        ),
+                        timeout=12.0
+                    )
+                    if response and response.text:
+                        _last_working_gemini_model = candidate_model
+                        break
+                except Exception as e:
+                    last_err = e
+                    if use_search:
+                        # If search grounding tool isn't supported on this model, immediately retry without tool
+                        continue
+                    break
+            if response and response.text:
+                break
+
+        if not response or not response.text:
+            raise last_err or RuntimeError("Empty response from Gemini")
+
+        cleaned = _clean_json_markdown(response.text)
+        data = json.loads(cleaned)
+
+        def clean_item(val: str) -> str:
+            if mode == "thread":
+                parts = [_sanitize_ai_tells(p.strip()) for p in val.split("---") if p.strip()]
+                return "\n---\n".join(parts)
+            return _sanitize_ai_tells(val)
+
+        raw_variants = data.get("variants") if isinstance(data.get("variants"), dict) else {}
+        variants = {}
+        for k, v in raw_variants.items():
+            if v and str(v).strip():
+                variants[k] = clean_item(str(v))
+
+        primary = clean_item(str(data.get("text", "") or ""))
+        if not primary and variants:
+            primary = next(iter(variants.values()))
+        if primary and not variants:
+            variants["witty"] = primary
+
+        topic_summary = str(data.get("topic_summary", f"Live pulse on {topic}")).strip()
+
+        return {
+            "success": True,
+            "action_type": mode,
+            "text": primary,
+            "variants": variants,
+            "variants_json": json.dumps(variants, ensure_ascii=False),
+            "topic_summary": topic_summary
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating original {mode}: {e}")
+        return {
+            "success": False,
+            "action_type": mode,
+            "text": None,
+            "variants_json": None,
+            "topic_summary": f"Error: {str(e)[:100]}"
+        }
+

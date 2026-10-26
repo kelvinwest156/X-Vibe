@@ -617,6 +617,121 @@ class XBrowserWorker:
                 logger.error(f"Failed to post reply to {tweet_id}: {e}", exc_info=True)
                 return False
 
+    async def post_original(self, post_text: str) -> bool:
+        """
+        Publishes a standalone original post on X with humanized typing.
+        """
+        async with self._lock:
+            page = await self._get_page_internal()
+            try:
+                logger.info("Navigating to X home to compose original post...")
+                await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
+                await self.human_delay(2.5, 4.5)
+
+                box = await page.query_selector('[data-testid="tweetTextarea_0"]')
+                if not box:
+                    compose_btn = await page.query_selector('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/post"]')
+                    if compose_btn:
+                        await compose_btn.click()
+                        await self.human_delay(1.2, 2.2)
+
+                await self.human_type(page, '[data-testid="tweetTextarea_0"]', post_text.strip())
+                await self.human_delay(1.2, 2.5)
+
+                submit_selectors = [
+                    '[data-testid="tweetButtonInline"]',
+                    '[data-testid="tweetButton"]'
+                ]
+                submit_btn = None
+                for s in submit_selectors:
+                    btn = await page.query_selector(s)
+                    if btn:
+                        is_dis = await btn.get_attribute("disabled")
+                        aria_dis = await btn.get_attribute("aria-disabled")
+                        if not is_dis and aria_dis != "true":
+                            submit_btn = btn
+                            break
+
+                if not submit_btn:
+                    logger.error("Could not find active Post button.")
+                    return False
+
+                await submit_btn.hover()
+                await self.human_delay(0.4, 1.0)
+                await submit_btn.click()
+                await self.human_delay(3.0, 5.0)
+                logger.info("Successfully published original post!")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to publish original post: {e}", exc_info=True)
+                return False
+
+    async def post_thread(self, thread_text: str) -> bool:
+        """
+        Publishes a multi-post thread on X using X's native thread composer ('Add post' button).
+        Posts in `thread_text` are separated by '---'.
+        """
+        posts = [p.strip() for p in re.split(r'\n?---\n?', thread_text) if p.strip()]
+        if not posts:
+            return False
+        if len(posts) == 1:
+            return await self.post_original(posts[0])
+
+        async with self._lock:
+            page = await self._get_page_internal()
+            try:
+                logger.info(f"Composing {len(posts)}-post thread on X...")
+                await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
+                await self.human_delay(2.5, 4.2)
+
+                # Open modal composer for multi-tweet thread
+                compose_btn = await page.query_selector('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/post"]')
+                if compose_btn:
+                    await compose_btn.click()
+                    await self.human_delay(1.5, 2.5)
+                else:
+                    await page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=30000)
+                    await self.human_delay(2.0, 3.5)
+
+                for idx, post_content in enumerate(posts):
+                    textarea_selector = f'[data-testid="tweetTextarea_{idx}"]'
+                    await self.human_type(page, textarea_selector, post_content)
+                    await self.human_delay(1.0, 2.2)
+
+                    # If there is another post in the thread, click the '+' Add post button
+                    if idx < len(posts) - 1:
+                        add_btn = await page.wait_for_selector('[data-testid="addButton"]', state="visible", timeout=10000)
+                        await add_btn.hover()
+                        await self.human_delay(0.3, 0.8)
+                        await add_btn.click()
+                        await self.human_delay(1.0, 1.8)
+
+                submit_btn = await page.wait_for_selector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', timeout=10000)
+                await submit_btn.hover()
+                await self.human_delay(0.5, 1.2)
+                await submit_btn.click()
+                await self.human_delay(3.5, 5.5)
+                logger.info(f"Successfully published {len(posts)}-post thread!")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to publish thread: {e}", exc_info=True)
+                return False
+
+    async def execute_tweet_action(
+        self,
+        action_type: str,
+        tweet_id: str,
+        text: str,
+        tweet_url: Optional[str] = None
+    ) -> bool:
+        """Unified dispatcher for replies, original posts, and multi-post threads."""
+        if action_type == "thread":
+            return await self.post_thread(text)
+        elif action_type == "post":
+            return await self.post_original(text)
+        else:
+            return await self.post_reply(tweet_id, text, tweet_url)
+
     async def open_headful_for_login(self):
         """Closes any existing session and opens a visible browser window to x.com/login."""
         async with self._lock:
