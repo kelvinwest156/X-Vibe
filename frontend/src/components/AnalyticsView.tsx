@@ -2,17 +2,6 @@
 
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import {
-  TrendingUp,
-  Sparkles,
-  Flame,
-  Feather,
-  Layers,
-  Filter,
-  Award,
-  ArrowUpRight,
-  Activity,
-} from "lucide-react";
 
 export interface AnalyticsData {
   kpis: {
@@ -30,28 +19,10 @@ export interface AnalyticsData {
     daily_used: number;
     daily_cap: number;
   };
-  content_mix: Array<{
-    label: string;
-    key: string;
-    count: number;
-    color: string;
-  }>;
-  status_funnel: Array<{
-    label: string;
-    count: number;
-    color: string;
-  }>;
-  length_distribution: Array<{
-    label: string;
-    count: number;
-    color: string;
-  }>;
-  timeline: Array<{
-    time: string;
-    evaluated: number;
-    drafted: number;
-    engagement: number;
-  }>;
+  content_mix: Array<{ label: string; key: string; count: number; color: string }>;
+  status_funnel: Array<{ label: string; count: number; color: string }>;
+  length_distribution: Array<{ label: string; count: number; color: string }>;
+  timeline: Array<{ time: string; evaluated: number; drafted: number; engagement: number }>;
   top_authors: Array<{
     author: string;
     interactions: number;
@@ -63,640 +34,413 @@ export interface AnalyticsData {
   }>;
 }
 
-function MiniSparkline({ color, points }: { color: string; points: number[] }) {
+// Power BI default data palette
+const C = {
+  teal: "#01b8aa",
+  slate: "#374649",
+  yellow: "#f2c811",
+  coral: "#fd625e",
+  sky: "#8ad4eb",
+  plum: "#a66999",
+  grid: "#edebe9",
+  axis: "#8a8886",
+};
+
+const MIX_COLORS: Record<string, string> = {
+  reply: C.slate,
+  post: C.teal,
+  thread: C.yellow,
+};
+const FUNNEL_COLORS = [C.teal, C.sky, C.yellow, "#c8c6c4"];
+const LENGTH_COLORS = [C.sky, C.teal, C.slate];
+
+function Spark({ points, color }: { points: number[]; color: string }) {
+  const w = 96;
+  const h = 28;
   const max = Math.max(...points, 1);
   const min = Math.min(...points, 0);
-  const range = Math.max(max - min, 1);
-  const width = 110;
-  const height = 34;
-
-  const coords = points.map((p, i) => {
-    const x = (i / Math.max(points.length - 1, 1)) * width;
-    const y = height - ((p - min) / range) * (height - 8) - 4;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-
-  const linePath = `M ${coords.join(" L ")}`;
-  const areaPath = `${linePath} L ${width},${height} L 0,${height} Z`;
-  const gradId = `spark_${color.replace("#", "")}`;
-
+  const span = Math.max(max - min, 1);
+  const pts = points.map((p, i) => [
+    (i / Math.max(points.length - 1, 1)) * w,
+    h - 3 - ((p - min) / span) * (h - 6),
+  ]);
+  const d = "M " + pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" L ");
   return (
-    <svg width={width} height={height} className="overflow-visible">
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.38" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.0" />
-        </linearGradient>
-      </defs>
+    <svg width={w} height={h} className="shrink-0">
       <motion.path
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.8 }}
-        d={areaPath}
-        fill={`url(#${gradId})`}
-      />
-      <motion.path
-        initial={{ pathLength: 0 }}
-        animate={{ pathLength: 1 }}
-        transition={{ duration: 1.1, ease: "easeOut" }}
-        d={linePath}
+        d={d}
         fill="none"
         stroke={color}
-        strokeWidth="2"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
         strokeLinecap="round"
+        initial={{ pathLength: 0 }}
+        animate={{ pathLength: 1 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
       />
     </svg>
   );
 }
 
-export default function AnalyticsView({
-  data,
-  onGenerateOriginal,
+function Tile({
+  title,
+  sub,
+  className = "",
+  children,
+  delay = 0,
 }: {
-  data: AnalyticsData | null;
-  onGenerateOriginal: (mode: "post" | "thread") => void;
+  title: string;
+  sub?: string;
+  className?: string;
+  children: React.ReactNode;
+  delay?: number;
 }) {
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  return (
+    <motion.section
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.35, delay }}
+      className={`tile p-4 ${className}`}
+    >
+      <header className="mb-3">
+        <h3 className="tile-title">{title}</h3>
+        {sub && <p className="tile-sub mt-0.5">{sub}</p>}
+      </header>
+      {children}
+    </motion.section>
+  );
+}
+
+export default function AnalyticsView({ data }: { data: AnalyticsData | null }) {
+  const [hover, setHover] = useState<number | null>(null);
 
   if (!data) {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        {[1, 2, 3, 4].map((i) => (
-          <div key={i} className="bi-card rounded-2xl p-5 h-32 animate-pulse" />
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="tile h-28 animate-pulse" />
         ))}
       </div>
     );
   }
 
   const { kpis, content_mix, status_funnel, length_distribution, timeline, top_authors } = data;
-  const totalContent = Math.max(
-    content_mix.reduce((acc, c) => acc + c.count, 0),
-    1
-  );
 
-  // Donut Ring Math
-  const radius = 58;
-  const circumference = 2 * Math.PI * radius;
-  let accumulatedPct = 0;
+  const pipeline = kpis.published_count + kpis.scheduled_count + kpis.pending_count;
+  const mixTotal = content_mix.reduce((a, b) => a + b.count, 0);
 
-  // Area Chart Math
-  const chartW = 640;
-  const chartH = 210;
-  const maxEng = Math.max(...timeline.map((t) => t.engagement), 10);
-  const maxEval = Math.max(...timeline.map((t) => t.evaluated), 4);
-
-  const engCoords = timeline.map((t, i) => {
-    const x = (i / Math.max(timeline.length - 1, 1)) * (chartW - 40) + 20;
-    const y = chartH - 28 - (t.engagement / maxEng) * (chartH - 55);
-    return { x, y, ...t };
-  });
-
-  const draftCoords = timeline.map((t, i) => {
-    const x = (i / Math.max(timeline.length - 1, 1)) * (chartW - 40) + 20;
-    const y = chartH - 28 - (t.drafted / maxEval) * (chartH - 75);
-    return { x, y };
-  });
-
-  const engLine =
-    engCoords.length > 0
-      ? `M ${engCoords.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L ")}`
-      : "";
-  const engArea =
-    engCoords.length > 0
-      ? `${engLine} L ${engCoords[engCoords.length - 1].x},${chartH - 24} L ${engCoords[0].x},${chartH - 24} Z`
-      : "";
-
-  const draftLine =
-    draftCoords.length > 0
-      ? `M ${draftCoords.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" L ")}`
-      : "";
-
-  const kpiCards = [
+  const kpiTiles = [
     {
-      title: "Content Pipeline",
-      value: `${kpis.published_count + kpis.scheduled_count + kpis.pending_count}`,
-      sub: `${kpis.published_count} posted · ${kpis.scheduled_count} scheduled`,
-      badge: `${kpis.daily_used}/${kpis.daily_cap} daily cap`,
-      color: "#38BDF8",
-      icon: Sparkles,
-      spark: timeline.map((t) => t.drafted + 1),
+      label: "In pipeline",
+      value: pipeline.toLocaleString(),
+      note: `${kpis.published_count} published, ${kpis.scheduled_count} scheduled`,
+      spark: timeline.map((t) => t.drafted),
+      color: C.teal,
     },
     {
-      title: "AI Relevance & Approval",
+      label: "Approval rate",
       value: `${kpis.approval_rate}%`,
-      sub: `${kpis.total_evaluated} total posts analyzed`,
-      badge: `${kpis.skipped_count} noise filtered`,
-      color: "#34D399",
-      icon: TrendingUp,
-      spark: [58, 64, 62, 71, 69, 75, kpis.approval_rate || 72],
+      note: `${kpis.total_evaluated} posts reviewed, ${kpis.skipped_count} skipped`,
+      color: C.slate,
     },
     {
-      title: "Feed Engagement Pulse",
-      value: `${kpis.feed_likes_captured + kpis.feed_replies_captured}`,
-      sub: `${kpis.feed_likes_captured} likes · ${kpis.feed_replies_captured} replies in feed`,
-      badge: `Avg score ${kpis.avg_engagement_score}`,
-      color: "#A78BFA",
-      icon: Flame,
-      spark: timeline.map((t) => t.engagement + 4),
+      label: "Feed engagement",
+      value: (kpis.feed_likes_captured + kpis.feed_replies_captured).toLocaleString(),
+      note: `${kpis.feed_likes_captured} likes, ${kpis.feed_replies_captured} replies`,
+      spark: timeline.map((t) => t.engagement),
+      color: C.yellow,
     },
     {
-      title: "Human Voice Cadence",
-      value: `${kpis.avg_draft_length}c`,
-      sub: "Average reply & post length",
-      badge: "Zero AI buzzwords",
-      color: "#FBBF24",
-      icon: Feather,
-      spark: [124, 98, 115, 104, 118, 92, kpis.avg_draft_length || 110],
+      label: "Today's actions",
+      value: `${kpis.daily_used}/${kpis.daily_cap}`,
+      note: `Avg draft ${kpis.avg_draft_length} characters`,
+      color: C.coral,
     },
   ];
 
+  // Line chart geometry
+  const W = 640;
+  const H = 220;
+  const padL = 34;
+  const padR = 12;
+  const padT = 12;
+  const padB = 26;
+  const maxEng = Math.max(...timeline.map((t) => t.engagement), 1);
+  const maxDr = Math.max(...timeline.map((t) => t.drafted), 1);
+  const n = Math.max(timeline.length - 1, 1);
+  const x = (i: number) => padL + (i / n) * (W - padL - padR);
+  const yEng = (v: number) => padT + (1 - v / maxEng) * (H - padT - padB);
+  const yDr = (v: number) => padT + (1 - v / maxDr) * (H - padT - padB);
+  const engPath = "M " + timeline.map((t, i) => `${x(i)},${yEng(t.engagement)}`).join(" L ");
+  const drPath = "M " + timeline.map((t, i) => `${x(i)},${yDr(t.drafted)}`).join(" L ");
+  const engArea = `${engPath} L ${x(timeline.length - 1)},${H - padB} L ${x(0)},${H - padB} Z`;
+
+  // Donut geometry
+  const R = 52;
+  const CIRC = 2 * Math.PI * R;
+  let acc = 0;
+
+  const maxFunnel = Math.max(...status_funnel.map((s) => s.count), 1);
+  const maxLen = Math.max(...length_distribution.map((l) => l.count), 1);
+
   return (
-    <div className="space-y-5">
-      {/* Row 1: Power BI KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpiCards.map((card, idx) => {
-          const Icon = card.icon;
-          return (
-            <motion.div
-              key={card.title}
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.35, delay: idx * 0.06 }}
-              className="bi-card bi-card-interactive rounded-2xl p-4 flex flex-col justify-between relative overflow-hidden group"
-            >
-              {/* Top glowing accent bar */}
-              <div
-                className="absolute top-0 left-0 right-0 h-[2px] opacity-75"
-                style={{
-                  background: `linear-gradient(90deg, transparent, ${card.color}, transparent)`,
-                }}
-              />
-
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <span className="text-xs font-extralight text-slate-400 tracking-wide block">
-                    {card.title}
-                  </span>
-                  <div className="mt-1.5 flex items-baseline gap-2">
-                    <span className="text-2xl font-semibold text-white tracking-tight">
-                      {card.value}
-                    </span>
-                  </div>
-                </div>
-                <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center border"
-                  style={{
-                    backgroundColor: `${card.color}14`,
-                    borderColor: `${card.color}35`,
-                    color: card.color,
-                  }}
-                >
-                  <Icon className="w-4 h-4" strokeWidth={1.6} />
-                </div>
-              </div>
-
-              <div className="mt-4 flex items-end justify-between gap-2">
-                <div className="space-y-1">
-                  <span
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-light border"
-                    style={{
-                      backgroundColor: `${card.color}12`,
-                      borderColor: `${card.color}30`,
-                      color: card.color,
-                    }}
-                  >
-                    <ArrowUpRight className="w-2.5 h-2.5" />
-                    {card.badge}
-                  </span>
-                  <p className="text-[11px] font-extralight text-slate-400">
-                    {card.sub}
-                  </p>
-                </div>
-                <MiniSparkline color={card.color} points={card.spark} />
-              </div>
-            </motion.div>
-          );
-        })}
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        {kpiTiles.map((k, i) => (
+          <motion.div
+            key={k.label}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: i * 0.05 }}
+            className="tile p-4 relative"
+          >
+            <span
+              className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[4px]"
+              style={{ background: k.color }}
+            />
+            <p className="caption">{k.label}</p>
+            <div className="mt-1 flex items-end justify-between gap-2">
+              <span className="text-[30px] leading-none font-semibold text-ink tracking-tight">
+                {k.value}
+              </span>
+              {k.spark && k.spark.some((v) => v > 0) && <Spark points={k.spark} color={k.color} />}
+            </div>
+            <p className="tile-sub mt-2">{k.note}</p>
+          </motion.div>
+        ))}
       </div>
 
-      {/* Row 2: Main Velocity Area Chart + Content Mix Donut */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Engagement & Velocity Area Chart (8 cols) */}
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.15 }}
-          className="lg:col-span-8 bi-card rounded-2xl p-5 flex flex-col justify-between"
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+        <Tile
+          title="Engagement and drafts over time"
+          sub="Likes and replies seen in the feed, against drafts created, per 2-hour window"
+          className="lg:col-span-8"
+          delay={0.1}
         >
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <Activity className="w-4 h-4 text-sky-400" strokeWidth={1.6} />
-                <h3 className="text-sm font-semibold text-white tracking-tight">
-                  Engagement Pulse & Content Velocity
-                </h3>
-              </div>
-              <p className="text-xs font-extralight text-slate-400 mt-0.5">
-                Real-time X conversation intensity vs. AI drafts synthesized across active windows
-              </p>
-            </div>
-
-            <div className="flex items-center gap-4 text-[11px] font-mono font-light">
-              <span className="flex items-center gap-1.5 text-sky-300">
-                <span className="w-2 h-2 rounded-full bg-sky-400" />
-                Engagement Score
-              </span>
-              <span className="flex items-center gap-1.5 text-purple-300">
-                <span className="w-2 h-2 rounded-full bg-purple-400" />
-                AI Drafts
-              </span>
-            </div>
+          <div className="flex items-center gap-4 mb-1 caption">
+            <span className="flex items-center gap-1.5">
+              <i className="w-3 h-[3px] inline-block" style={{ background: C.teal }} /> Engagement
+            </span>
+            <span className="flex items-center gap-1.5">
+              <i className="w-3 h-[3px] inline-block" style={{ background: C.yellow }} /> Drafts
+            </span>
           </div>
-
-          <div className="relative w-full overflow-x-auto">
-            <svg
-              viewBox={`0 0 ${chartW} ${chartH}`}
-              className="w-full h-52 overflow-visible select-none"
-            >
-              <defs>
-                <linearGradient id="engAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.35" />
-                  <stop offset="65%" stopColor="#818CF8" stopOpacity="0.10" />
-                  <stop offset="100%" stopColor="#0B0F19" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-
-              {/* Subtle Horizontal Grid Lines */}
-              {[0.2, 0.45, 0.7, 0.9].map((ratio, idx) => (
-                <line
-                  key={idx}
-                  x1={16}
-                  x2={chartW - 16}
-                  y1={chartH * ratio}
-                  y2={chartH * ratio}
-                  stroke="rgba(148, 163, 184, 0.08)"
-                  strokeDasharray="3 3"
-                />
-              ))}
-
-              {/* Area Fill */}
-              <motion.path
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.7 }}
-                d={engArea}
-                fill="url(#engAreaGrad)"
-              />
-
-              {/* Engagement Curve */}
-              <motion.path
-                initial={{ pathLength: 0 }}
-                animate={{ pathLength: 1 }}
-                transition={{ duration: 1.2, ease: "easeOut" }}
-                d={engLine}
-                fill="none"
-                stroke="#38BDF8"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-              />
-
-              {/* Drafted Curve */}
-              <motion.path
-                initial={{ pathLength: 0 }}
-                animate={{ pathLength: 1 }}
-                transition={{ duration: 1.2, delay: 0.15, ease: "easeOut" }}
-                d={draftLine}
-                fill="none"
-                stroke="#A78BFA"
-                strokeWidth="2"
-                strokeDasharray="4 4"
-                strokeLinecap="round"
-              />
-
-              {/* Interactive Data Points */}
-              {engCoords.map((pt, i) => (
-                <g
-                  key={pt.time + i}
-                  onMouseEnter={() => setHoveredIdx(i)}
-                  onMouseLeave={() => setHoveredIdx(null)}
-                  className="cursor-pointer"
-                >
-                  <circle
-                    cx={pt.x}
-                    cy={pt.y}
-                    r={hoveredIdx === i ? 5.5 : 3.2}
-                    fill="#0B0F19"
-                    stroke="#38BDF8"
-                    strokeWidth="2.2"
-                  />
-                  <text
-                    x={pt.x}
-                    y={chartH - 6}
-                    textAnchor="middle"
-                    className="fill-slate-500 text-[9px] font-mono font-light"
-                  >
-                    {pt.time}
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[230px] select-none">
+            {[0, 0.25, 0.5, 0.75, 1].map((r) => {
+              const yy = padT + r * (H - padT - padB);
+              return (
+                <g key={r}>
+                  <line x1={padL} x2={W - padR} y1={yy} y2={yy} stroke={C.grid} />
+                  <text x={padL - 6} y={yy + 3} textAnchor="end" fontSize="10" fill={C.axis}>
+                    {Math.round((1 - r) * maxEng)}
                   </text>
-                  {hoveredIdx === i && (
-                    <g transform={`translate(${Math.min(Math.max(pt.x - 52, 10), chartW - 115)}, ${Math.max(pt.y - 46, 6)})`}>
-                      <rect
-                        width="104"
-                        height="36"
-                        rx="6"
-                        fill="#0F172A"
-                        stroke="rgba(56, 189, 248, 0.4)"
-                      />
-                      <text x="8" y="14" className="fill-white text-[10px] font-semibold">
-                        Pulse: {pt.engagement} pts
+                </g>
+              );
+            })}
+            <motion.path
+              d={engArea}
+              fill={C.teal}
+              fillOpacity="0.12"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.6 }}
+            />
+            <motion.path
+              d={engPath}
+              fill="none"
+              stroke={C.teal}
+              strokeWidth="2.25"
+              strokeLinejoin="round"
+              initial={{ pathLength: 0 }}
+              animate={{ pathLength: 1 }}
+              transition={{ duration: 1, ease: "easeOut" }}
+            />
+            <motion.path
+              d={drPath}
+              fill="none"
+              stroke={C.yellow}
+              strokeWidth="2.25"
+              strokeLinejoin="round"
+              initial={{ pathLength: 0 }}
+              animate={{ pathLength: 1 }}
+              transition={{ duration: 1, delay: 0.1, ease: "easeOut" }}
+            />
+            {timeline.map((t, i) => (
+              <g key={i} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+                <rect
+                  x={x(i) - 22}
+                  y={padT}
+                  width="44"
+                  height={H - padT - padB}
+                  fill="transparent"
+                />
+                <text x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" fill={C.axis}>
+                  {t.time}
+                </text>
+                {hover === i && (
+                  <>
+                    <line
+                      x1={x(i)}
+                      x2={x(i)}
+                      y1={padT}
+                      y2={H - padB}
+                      stroke="#c8c6c4"
+                      strokeDasharray="3 3"
+                    />
+                    <circle cx={x(i)} cy={yEng(t.engagement)} r="4" fill={C.teal} />
+                    <circle cx={x(i)} cy={yDr(t.drafted)} r="4" fill={C.yellow} />
+                    <g
+                      transform={`translate(${Math.min(Math.max(x(i) - 62, padL), W - 138)}, ${padT})`}
+                    >
+                      <rect width="124" height="46" rx="2" fill="#fff" stroke="#c8c6c4" />
+                      <text x="8" y="16" fontSize="11" fontWeight="600" fill="#252423">
+                        {t.time}
                       </text>
-                      <text x="8" y="27" className="fill-sky-300 text-[9px] font-mono">
-                        {pt.drafted} drafts · {pt.evaluated} scanned
+                      <text x="8" y="30" fontSize="10" fill="#605e5c">
+                        Engagement {t.engagement}
+                      </text>
+                      <text x="8" y="41" fontSize="10" fill="#605e5c">
+                        Drafts {t.drafted}, scanned {t.evaluated}
                       </text>
                     </g>
-                  )}
-                </g>
-              ))}
-            </svg>
-          </div>
-        </motion.div>
+                  </>
+                )}
+              </g>
+            ))}
+          </svg>
+        </Tile>
 
-        {/* Content Mix Donut Ring (4 cols) */}
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.22 }}
-          className="lg:col-span-4 bi-card rounded-2xl p-5 flex flex-col justify-between"
-        >
-          <div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-purple-400" strokeWidth={1.6} />
-                <h3 className="text-sm font-semibold text-white tracking-tight">
-                  Content Format Mix
-                </h3>
+        <Tile title="Content by type" className="lg:col-span-4" delay={0.15}>
+          <div className="flex items-center gap-5">
+            <div className="relative shrink-0">
+              <svg width="132" height="132" viewBox="0 0 132 132" className="-rotate-90">
+                <circle cx="66" cy="66" r={R} fill="none" stroke={C.grid} strokeWidth="16" />
+                {mixTotal > 0 &&
+                  content_mix.map((seg) => {
+                    const frac = seg.count / mixTotal;
+                    const dash = frac * CIRC;
+                    const off = -acc * CIRC;
+                    acc += frac;
+                    return (
+                      <motion.circle
+                        key={seg.key}
+                        cx="66"
+                        cy="66"
+                        r={R}
+                        fill="none"
+                        stroke={MIX_COLORS[seg.key] || C.sky}
+                        strokeWidth="16"
+                        strokeDashoffset={off}
+                        initial={{ strokeDasharray: `0 ${CIRC}` }}
+                        animate={{ strokeDasharray: `${dash} ${CIRC}` }}
+                        transition={{ duration: 0.8, ease: "easeOut" }}
+                      />
+                    );
+                  })}
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-semibold text-ink leading-none">{mixTotal}</span>
+                <span className="caption mt-1">total</span>
               </div>
-              <span className="text-[10px] font-mono font-light text-slate-400 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.06]">
-                Replies · Posts · Threads
-              </span>
             </div>
-            <p className="text-xs font-extralight text-slate-400 mt-0.5">
-              Distribution of autonomous formats created
-            </p>
-          </div>
-
-          <div className="my-4 flex items-center justify-center relative">
-            <svg width="156" height="156" viewBox="0 0 156 156" className="-rotate-90">
-              <circle
-                cx="78"
-                cy="78"
-                r={radius}
-                fill="none"
-                stroke="rgba(148, 163, 184, 0.08)"
-                strokeWidth="14"
-              />
-              {content_mix.map((seg) => {
-                const pct = seg.count / totalContent;
-                const dash = pct * circumference;
-                const offset = -accumulatedPct * circumference;
-                accumulatedPct += pct;
-                return (
-                  <motion.circle
-                    key={seg.key}
-                    cx="78"
-                    cy="78"
-                    r={radius}
-                    fill="none"
-                    stroke={seg.color}
-                    strokeWidth="14"
-                    strokeDasharray={`${dash} ${circumference}`}
-                    strokeDashoffset={offset}
-                    strokeLinecap="round"
-                    initial={{ strokeDasharray: `0 ${circumference}` }}
-                    animate={{ strokeDasharray: `${dash} ${circumference}` }}
-                    transition={{ duration: 0.9, ease: "easeOut" }}
-                  />
-                );
-              })}
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-              <span className="text-2xl font-semibold text-white tracking-tight">
-                {content_mix.reduce((a, b) => a + b.count, 0)}
-              </span>
-              <span className="text-[10px] font-mono font-extralight text-slate-400 uppercase tracking-wider">
-                Total Items
-              </span>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            {content_mix.map((item) => {
-              const pct = Math.round((item.count / totalContent) * 100);
-              return (
-                <div
-                  key={item.key}
-                  className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.02] border border-white/[0.04]"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: item.color }}
+            <ul className="flex-1 space-y-2.5">
+              {content_mix.map((m) => (
+                <li key={m.key} className="flex items-center justify-between text-[13px]">
+                  <span className="flex items-center gap-2 text-ink-2">
+                    <i
+                      className="w-2.5 h-2.5 inline-block"
+                      style={{ background: MIX_COLORS[m.key] || C.sky }}
                     />
-                    <span className="font-light text-slate-200">{item.label}</span>
-                  </div>
-                  <div className="flex items-center gap-2 font-mono text-[11px]">
-                    <strong className="font-semibold text-white">{item.count}</strong>
-                    <span className="text-slate-500 font-light">({pct}%)</span>
-                  </div>
-                </div>
-              );
-            })}
+                    {m.label}
+                  </span>
+                  <span className="font-semibold text-ink">{m.count}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-        </motion.div>
+        </Tile>
       </div>
 
-      {/* Row 3: Pipeline Funnel + Cadence Length + Top Authors Leaderboard */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Pipeline Conversion Funnel (4 cols) */}
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.28 }}
-          className="lg:col-span-4 bi-card rounded-2xl p-5 space-y-4"
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Filter className="w-4 h-4 text-emerald-400" strokeWidth={1.6} />
-              <h3 className="text-sm font-semibold text-white tracking-tight">
-                Pipeline Funnel
-              </h3>
-            </div>
-            <span className="text-[10px] font-mono font-light text-slate-400">
-              Conversion stages
-            </span>
-          </div>
-
-          <div className="space-y-3 pt-1">
-            {status_funnel.map((stage) => {
-              const maxStage = Math.max(...status_funnel.map((s) => s.count), 1);
-              const widthPct = Math.max(8, Math.round((stage.count / maxStage) * 100));
-              return (
-                <div key={stage.label} className="space-y-1.5">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-light text-slate-300">{stage.label}</span>
-                    <span className="font-mono font-semibold text-white">
-                      {stage.count}
-                    </span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-slate-900/90 overflow-hidden p-[1px] border border-white/[0.05]">
-                    <motion.div
-                      initial={{ width: 0 }}
-                      animate={{ width: `${widthPct}%` }}
-                      transition={{ duration: 0.8, ease: "easeOut" }}
-                      className="h-full rounded-full"
-                      style={{
-                        background: `linear-gradient(90deg, ${stage.color}99, ${stage.color})`,
-                      }}
-                    />
-                  </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+        <Tile title="Where posts end up" className="lg:col-span-4" delay={0.2}>
+          <ul className="space-y-3">
+            {status_funnel.map((s, i) => (
+              <li key={s.label}>
+                <div className="flex items-center justify-between text-[13px] mb-1">
+                  <span className="text-ink-2">{s.label}</span>
+                  <span className="font-semibold text-ink">{s.count}</span>
                 </div>
-              );
-            })}
-          </div>
-
-          {/* Quick Studio Shortcut */}
-          <div className="pt-3 border-t border-white/[0.06] flex items-center justify-between gap-2">
-            <button
-              onClick={() => onGenerateOriginal("post")}
-              className="flex-1 py-2 px-3 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-xs font-light text-sky-300 transition"
-            >
-              + Draft Original Post
-            </button>
-            <button
-              onClick={() => onGenerateOriginal("thread")}
-              className="flex-1 py-2 px-3 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-xs font-light text-purple-300 transition"
-            >
-              + Draft Thread
-            </button>
-          </div>
-        </motion.div>
-
-        {/* Draft Length & Vibe Cadence (4 cols) */}
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.34 }}
-          className="lg:col-span-4 bi-card rounded-2xl p-5 flex flex-col justify-between"
-        >
-          <div>
-            <div className="flex items-center gap-2">
-              <Feather className="w-4 h-4 text-amber-400" strokeWidth={1.6} />
-              <h3 className="text-sm font-semibold text-white tracking-tight">
-                Voice Cadence & Length Mix
-              </h3>
-            </div>
-            <p className="text-xs font-extralight text-slate-400 mt-0.5">
-              Keeping replies punchy and threads multi-layered
-            </p>
-          </div>
-
-          <div className="my-4 grid grid-cols-3 gap-2.5 pt-2">
-            {length_distribution.map((item) => {
-              const maxLenCount = Math.max(
-                ...length_distribution.map((l) => l.count),
-                1
-              );
-              const barH = Math.max(18, Math.round((item.count / maxLenCount) * 95));
-              return (
-                <div
-                  key={item.label}
-                  className="bg-white/[0.02] border border-white/[0.05] rounded-xl p-3 flex flex-col items-center justify-end h-36"
-                >
-                  <span className="font-mono text-sm font-semibold text-white mb-1.5">
-                    {item.count}
-                  </span>
-                  <div className="w-8 bg-slate-900/80 rounded-lg flex items-end overflow-hidden h-20 p-0.5">
-                    <motion.div
-                      initial={{ height: 0 }}
-                      animate={{ height: `${barH}%` }}
-                      transition={{ duration: 0.85, ease: "easeOut" }}
-                      className="w-full rounded-md"
-                      style={{ backgroundColor: item.color }}
-                    />
-                  </div>
-                  <span className="text-[10px] font-extralight text-slate-400 text-center mt-2 leading-tight">
-                    {item.label}
-                  </span>
+                <div className="h-[10px] bg-[#f3f2f1]">
+                  <motion.div
+                    className="h-full"
+                    style={{ background: FUNNEL_COLORS[i % FUNNEL_COLORS.length] }}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${(s.count / maxFunnel) * 100}%` }}
+                    transition={{ duration: 0.7, ease: "easeOut" }}
+                  />
                 </div>
-              );
-            })}
-          </div>
+              </li>
+            ))}
+          </ul>
+        </Tile>
 
-          <div className="px-3 py-2 rounded-xl bg-emerald-500/[0.07] border border-emerald-500/20 flex items-center justify-between text-xs">
-            <span className="font-extralight text-emerald-200">
-              Anti-Robotic Guardrail
-            </span>
-            <span className="font-mono font-semibold text-emerald-400 text-[11px]">
-              100% Clean
-            </span>
-          </div>
-        </motion.div>
-
-        {/* Top Engaging Authors Leaderboard (4 cols) */}
-        <motion.div
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
-          className="lg:col-span-4 bi-card rounded-2xl p-5 flex flex-col justify-between"
-        >
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Award className="w-4 h-4 text-sky-400" strokeWidth={1.6} />
-              <h3 className="text-sm font-semibold text-white tracking-tight">
-                Top Engaging Conversations
-              </h3>
-            </div>
-            <span className="text-[10px] font-mono font-light text-slate-400">
-              By Impact Score
-            </span>
-          </div>
-
-          <div className="space-y-2 flex-1">
-            {top_authors.length === 0 ? (
-              <div className="text-xs font-extralight text-slate-500 py-8 text-center">
-                Scan your feed to rank top conversations.
+        <Tile title="Draft length" sub="Characters per generated draft" className="lg:col-span-3" delay={0.25}>
+          <div className="flex items-end justify-between gap-3 h-[132px]">
+            {length_distribution.map((l, i) => (
+              <div key={l.label} className="flex-1 flex flex-col items-center justify-end h-full">
+                <span className="text-[13px] font-semibold text-ink mb-1">{l.count}</span>
+                <motion.div
+                  className="w-full max-w-[44px]"
+                  style={{ background: LENGTH_COLORS[i % LENGTH_COLORS.length] }}
+                  initial={{ height: 0 }}
+                  animate={{ height: `${Math.max((l.count / maxLen) * 88, l.count ? 6 : 2)}px` }}
+                  transition={{ duration: 0.7, ease: "easeOut" }}
+                />
               </div>
-            ) : (
-              top_authors.map((auth, idx) => (
-                <div
-                  key={auth.author}
-                  className="flex items-center justify-between px-3 py-2 rounded-xl bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.05] transition"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-5 h-5 rounded-full bg-sky-500/15 border border-sky-500/30 text-sky-300 font-mono text-[10px] flex items-center justify-center font-semibold">
-                      {idx + 1}
-                    </span>
-                    <div className="truncate">
-                      <span className="text-xs font-semibold text-white block truncate">
-                        {auth.author}
-                      </span>
-                      <span className="text-[10px] font-mono font-extralight text-slate-400">
-                        {auth.likes} likes · {auth.replies} replies
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-mono font-semibold text-emerald-400 block">
-                      +{auth.score}
-                    </span>
-                    <span className="text-[10px] font-extralight text-slate-500 uppercase">
-                      {auth.last_type}
-                    </span>
-                  </div>
-                </div>
-              ))
-            )}
+            ))}
           </div>
-        </motion.div>
+          <div className="flex justify-between gap-3 mt-2">
+            {length_distribution.map((l) => (
+              <span key={l.label} className="flex-1 text-center caption leading-tight">
+                {l.label.replace(/\s*\(.*\)/, "")}
+              </span>
+            ))}
+          </div>
+        </Tile>
+
+        <Tile
+          title="Top conversations"
+          sub="Ranked by likes plus 3 per reply"
+          className="lg:col-span-5"
+          delay={0.3}
+        >
+          {top_authors.length === 0 ? (
+            <p className="caption py-6">Scan your feed to see ranked conversations.</p>
+          ) : (
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="text-left caption border-b border-line">
+                  <th className="pb-1.5 font-medium">Author</th>
+                  <th className="pb-1.5 font-medium text-right">Likes</th>
+                  <th className="pb-1.5 font-medium text-right">Replies</th>
+                  <th className="pb-1.5 font-medium text-right">Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top_authors.map((a) => (
+                  <tr key={a.author} className="border-b border-[#f3f2f1] last:border-0">
+                    <td className="py-1.5 font-semibold text-ink truncate max-w-[140px]">
+                      {a.author}
+                    </td>
+                    <td className="py-1.5 text-right text-ink-2">{a.likes}</td>
+                    <td className="py-1.5 text-right text-ink-2">{a.replies}</td>
+                    <td className="py-1.5 text-right font-semibold text-ink">{a.score}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Tile>
       </div>
     </div>
   );

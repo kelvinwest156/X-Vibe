@@ -744,9 +744,9 @@ async def get_analytics_endpoint(db: Session = Depends(get_db)):
 
     for idx, r in enumerate(all_rows):
         parsed = _parse_metric_numbers(r.tweet_metrics)
-        # Provide realistic baseline engagement weight when X hides metrics
-        likes_val = parsed["likes"] or ((len(r.tweet_text or "") % 19) + 4 if r.action_type == "reply" else 18)
-        replies_val = parsed["replies"] or ((len(r.tweet_text or "") % 7) + 1 if r.action_type == "reply" else 5)
+        # Only real scraped numbers are counted; items without metrics contribute zero.
+        likes_val = parsed["likes"]
+        replies_val = parsed["replies"]
         total_likes += likes_val
         total_replies += replies_val
 

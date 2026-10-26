@@ -7,24 +7,18 @@ import {
   Inbox,
   History,
   Sliders,
-  Sparkles,
   Play,
   Pause,
   Radar,
   RefreshCw,
   Clock,
   Send,
-  Trash2,
+  X,
   ExternalLink,
-  Terminal,
   Cookie,
-  CheckCircle2,
-  AlertCircle,
-  Layers,
+  Terminal,
   Feather,
-  Moon,
-  Sun,
-  ShieldCheck,
+  Layers,
 } from "lucide-react";
 import AnalyticsView, { AnalyticsData } from "@/components/AnalyticsView";
 
@@ -37,14 +31,12 @@ interface SystemLog {
 interface AgentStatus {
   is_active: boolean;
   auto_pilot_mode: boolean;
-  polling_interval_minutes: number;
   daily_action_cap: number;
   daily_actions_used: number;
   cooldown_active: boolean;
   cooldown_seconds_remaining: number;
   within_active_hours: boolean;
   scheduled_count: number;
-  browser_connected: boolean;
   is_logged_in: boolean;
   linked_username?: string | null;
   pending_approvals_count: number;
@@ -54,20 +46,8 @@ interface AgentStatus {
 }
 
 interface AgentConfig {
-  id: number;
-  is_active: boolean;
-  auto_pilot_mode: boolean;
-  polling_interval_minutes: number;
-  daily_action_cap: number;
-  min_cooldown_minutes: number;
-  max_cooldown_minutes: number;
-  active_hours_start: number;
-  active_hours_end: number;
-  search_query: string;
-  persona_prompt: string;
-  selected_model: string;
-  linked_username?: string | null;
   masked_api_key?: string | null;
+  [k: string]: unknown;
 }
 
 interface TweetItem {
@@ -87,67 +67,78 @@ interface TweetItem {
 
 type NavTab = "dashboard" | "queue" | "history" | "settings";
 
+const NAV: Array<{ id: NavTab; label: string; icon: typeof BarChart3 }> = [
+  { id: "dashboard", label: "Analytics", icon: BarChart3 },
+  { id: "queue", label: "Queue", icon: Inbox },
+  { id: "history", label: "History", icon: History },
+  { id: "settings", label: "Settings", icon: Sliders },
+];
+
+const STATUS_STYLE: Record<string, string> = {
+  posted: "bg-[#dff6dd] text-[#107c10]",
+  scheduled: "bg-[#deecf9] text-[#0f548c]",
+  pending_approval: "bg-[#fff4ce] text-[#8a6d00]",
+  skipped: "bg-[#f3f2f1] text-[#605e5c]",
+  failed: "bg-[#fde7e9] text-[#a4262c]",
+};
+
 export default function HomePage() {
-  const [activeTab, setActiveTab] = useState<NavTab>("dashboard");
+  const [tab, setTab] = useState<NavTab>("dashboard");
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
-  const [pendingItems, setPendingItems] = useState<TweetItem[]>([]);
-  const [historyItems, setHistoryItems] = useState<TweetItem[]>([]);
-  const [draftEdits, setDraftEdits] = useState<Record<string, string>>({});
-  const [activeVariantKey, setActiveVariantKey] = useState<Record<string, string>>({});
-  const [busyMap, setBusyMap] = useState<Record<string, boolean>>({});
+  const [pending, setPending] = useState<TweetItem[]>([]);
+  const [history, setHistory] = useState<TweetItem[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [variantSel, setVariantSel] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [scanning, setScanning] = useState(false);
-  const [draftingMode, setDraftingMode] = useState<string | null>(null);
-  const [showLogs, setShowLogs] = useState(true);
-  const [cookieModalOpen, setCookieModalOpen] = useState(false);
+  const [creating, setCreating] = useState<string | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [cookieOpen, setCookieOpen] = useState(false);
   const [cookieJson, setCookieJson] = useState("");
-  const [historyFilter, setHistoryFilter] = useState<string>("all");
+  const [histFilter, setHistFilter] = useState("all");
 
-  // Editable config fields
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [modelInput, setModelInput] = useState("gemini-3.8-flash");
-  const [queryInput, setQueryInput] = useState("");
-  const [personaInput, setPersonaInput] = useState("");
-  const [capInput, setCapInput] = useState(15);
-  const [intervalInput, setIntervalInput] = useState(20);
-  const [minDelayInput, setMinDelayInput] = useState(10);
-  const [maxDelayInput, setMaxDelayInput] = useState(45);
-  const [startHourInput, setStartHourInput] = useState(8);
-  const [endHourInput, setEndHourInput] = useState(23);
-  const [autopilotInput, setAutopilotInput] = useState(false);
-  const [availableModels, setAvailableModels] = useState<string[]>([
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("gemini-3.8-flash");
+  const [query, setQuery] = useState("");
+  const [persona, setPersona] = useState("");
+  const [cap, setCap] = useState(15);
+  const [interval, setIntervalMin] = useState(20);
+  const [minDelay, setMinDelay] = useState(10);
+  const [maxDelay, setMaxDelay] = useState(45);
+  const [wake, setWake] = useState(8);
+  const [sleep, setSleep] = useState(23);
+  const [autopilot, setAutopilot] = useState(false);
+  const [models, setModels] = useState<string[]>([
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-2.5-flash",
   ]);
 
-  // Toast state
   const [toast, setToast] = useState<{ msg: string; error?: boolean } | null>(null);
   const notify = useCallback((msg: string, error = false) => {
     setToast({ msg, error });
-    setTimeout(() => setToast(null), 3600);
+    setTimeout(() => setToast(null), 3400);
   }, []);
 
-  const fetchAllData = useCallback(async () => {
+  const refresh = useCallback(async () => {
     try {
-      const [stRes, anRes, pdRes] = await Promise.all([
+      const [s, a, p] = await Promise.all([
         fetch("/api/status"),
         fetch("/api/analytics"),
         fetch("/api/pending"),
       ]);
-      if (stRes.ok) setStatus(await stRes.json());
-      if (anRes.ok) setAnalytics(await anRes.json());
-      if (pdRes.ok) {
-        const list: TweetItem[] = await pdRes.json();
-        setPendingItems(list);
-        setDraftEdits((prev) => {
+      if (s.ok) setStatus(await s.json());
+      if (a.ok) setAnalytics(await a.json());
+      if (p.ok) {
+        const list: TweetItem[] = await p.json();
+        setPending(list);
+        setDrafts((prev) => {
           const next = { ...prev };
-          list.forEach((item) => {
-            if (next[item.tweet_id] === undefined) {
-              next[item.tweet_id] = item.generated_text || "";
-            }
+          list.forEach((i) => {
+            if (next[i.tweet_id] === undefined) next[i.tweet_id] = i.generated_text || "";
           });
           return next;
         });
@@ -155,1283 +146,791 @@ export default function HomePage() {
     } catch {}
   }, []);
 
-  const fetchConfig = useCallback(async () => {
+  const loadConfig = useCallback(async () => {
     try {
       const res = await fetch("/api/config");
       if (!res.ok) return;
-      const cfg: AgentConfig = await res.json();
-      setConfig(cfg);
-      setModelInput(cfg.selected_model || "gemini-3.8-flash");
-      setQueryInput(cfg.search_query || "");
-      setPersonaInput(cfg.persona_prompt || "");
-      setCapInput(cfg.daily_action_cap || 15);
-      setIntervalInput(cfg.polling_interval_minutes || 20);
-      setMinDelayInput(cfg.min_cooldown_minutes || 10);
-      setMaxDelayInput(cfg.max_cooldown_minutes || 45);
-      setStartHourInput(cfg.active_hours_start ?? 8);
-      setEndHourInput(cfg.active_hours_end ?? 23);
-      setAutopilotInput(Boolean(cfg.auto_pilot_mode));
+      const c = await res.json();
+      setConfig(c);
+      setModel(c.selected_model || "gemini-3.8-flash");
+      setQuery(c.search_query || "");
+      setPersona(c.persona_prompt || "");
+      setCap(c.daily_action_cap || 15);
+      setIntervalMin(c.polling_interval_minutes || 20);
+      setMinDelay(c.min_cooldown_minutes || 10);
+      setMaxDelay(c.max_cooldown_minutes || 45);
+      setWake(c.active_hours_start ?? 8);
+      setSleep(c.active_hours_end ?? 23);
+      setAutopilot(Boolean(c.auto_pilot_mode));
     } catch {}
   }, []);
 
-  const fetchHistory = useCallback(async () => {
+  const loadHistory = useCallback(async () => {
     try {
       const res = await fetch("/api/history?limit=60");
-      if (res.ok) setHistoryItems(await res.json());
+      if (res.ok) setHistory(await res.json());
     } catch {}
   }, []);
 
   useEffect(() => {
-    fetchConfig();
-    fetchAllData();
-    fetchHistory();
-    const timer = setInterval(fetchAllData, 5000);
-    return () => clearInterval(timer);
-  }, [fetchConfig, fetchAllData, fetchHistory]);
+    loadConfig();
+    refresh();
+    loadHistory();
+    const t = setInterval(refresh, 6000);
+    return () => clearInterval(t);
+  }, [loadConfig, refresh, loadHistory]);
 
-  // Actions
-  const handleToggleAgent = async () => {
+  const toggleAgent = async () => {
     if (!status) return;
-    const nextState = !status.is_active;
+    const next = !status.is_active;
     const res = await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_active: nextState }),
+      body: JSON.stringify({ is_active: next }),
     });
     if (res.ok) {
-      notify(nextState ? "Autonomous Agent started" : "Agent paused");
-      fetchAllData();
+      notify(next ? "Agent started" : "Agent paused");
+      refresh();
     }
   };
 
-  const handleSaveSettings = async (silent = false) => {
+  const saveSettings = async (silent = false) => {
     const payload: Record<string, unknown> = {
-      auto_pilot_mode: autopilotInput,
-      polling_interval_minutes: Number(intervalInput) || 20,
-      daily_action_cap: Number(capInput) || 15,
-      min_cooldown_minutes: Number(minDelayInput) || 10,
-      max_cooldown_minutes: Number(maxDelayInput) || 45,
-      active_hours_start: Number(startHourInput) || 0,
-      active_hours_end: Number(endHourInput) || 23,
-      search_query: queryInput.trim(),
-      persona_prompt: personaInput.trim(),
-      selected_model: modelInput,
+      auto_pilot_mode: autopilot,
+      polling_interval_minutes: Number(interval) || 20,
+      daily_action_cap: Number(cap) || 15,
+      min_cooldown_minutes: Number(minDelay) || 10,
+      max_cooldown_minutes: Number(maxDelay) || 45,
+      active_hours_start: Number(wake) || 0,
+      active_hours_end: Number(sleep) || 23,
+      search_query: query.trim(),
+      persona_prompt: persona.trim(),
+      selected_model: model,
     };
-    if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
-
+    if (apiKey.trim()) payload.api_key = apiKey.trim();
     const res = await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
     if (res.ok) {
-      const updated = await res.json();
-      setConfig(updated);
-      setApiKeyInput("");
-      if (!silent) notify("Configuration saved");
-      fetchAllData();
-    } else if (!silent) {
-      notify("Failed to save configuration", true);
-    }
+      setConfig(await res.json());
+      setApiKey("");
+      if (!silent) notify("Settings saved");
+      refresh();
+    } else if (!silent) notify("Could not save settings", true);
   };
 
-  const handleVerifyKey = async () => {
-    setBusyMap((p) => ({ ...p, verifyKey: true }));
+  const verifyKey = async () => {
+    setBusy((p) => ({ ...p, key: true }));
     try {
       const res = await fetch("/api/ai/test-key", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: apiKeyInput.trim() || null }),
+        body: JSON.stringify({ api_key: apiKey.trim() || null }),
       });
-      const data = await res.json();
-      if (data.success) {
-        if (data.models?.length) {
-          setAvailableModels(data.models.map((m: { id: string }) => m.id));
-        }
-        setApiKeyInput("");
-        notify("Gemini API key verified & active");
-        fetchConfig();
-      } else {
-        notify(data.hint || data.error || "API key verification failed", true);
-      }
+      const d = await res.json();
+      if (d.success) {
+        if (d.models?.length) setModels(d.models.map((m: { id: string }) => m.id));
+        setApiKey("");
+        notify("API key verified");
+        loadConfig();
+      } else notify(d.hint || d.error || "Key not accepted", true);
     } finally {
-      setBusyMap((p) => ({ ...p, verifyKey: false }));
+      setBusy((p) => ({ ...p, key: false }));
     }
   };
 
-  const handleScanNow = async () => {
+  const scan = async () => {
     setScanning(true);
-    await handleSaveSettings(true);
+    await saveSettings(true);
     try {
       const res = await fetch("/api/trigger-scrape", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok || data.status === "not_logged_in" || data.status === "missing_api_key") {
-        notify(data.message || "Check X login & Gemini API key", true);
+      const d = await res.json();
+      if (!res.ok || d.status === "not_logged_in" || d.status === "missing_api_key") {
+        notify(d.message || "Check your X login and API key", true);
       } else {
-        notify("Scanning live X feed & synthesizing drafts...");
-        [3000, 7000, 13000, 22000].forEach((ms) => setTimeout(fetchAllData, ms));
+        notify("Scanning your feed");
+        [3000, 8000, 15000, 25000].forEach((ms) => setTimeout(refresh, ms));
       }
     } finally {
-      setTimeout(() => setScanning(false), 1800);
+      setTimeout(() => setScanning(false), 1500);
     }
   };
 
-  const handleGenerateOriginal = async (mode: "post" | "thread") => {
-    setDraftingMode(mode);
-    notify(`Synthesizing original ${mode} from live pulse...`);
+  const createOriginal = async (mode: "post" | "thread") => {
+    setCreating(mode);
     try {
       const res = await fetch("/api/generate-original", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          custom_topic: queryInput.trim() || null,
-        }),
+        body: JSON.stringify({ mode, custom_topic: query.trim() || null }),
       });
       if (res.ok) {
-        const created: TweetItem = await res.json();
-        setDraftEdits((p) => ({
-          ...p,
-          [created.tweet_id]: created.generated_text || "",
-        }));
-        notify(`New ${mode} added to Action Queue!`);
-        setActiveTab("queue");
-        await fetchAllData();
+        const c: TweetItem = await res.json();
+        setDrafts((p) => ({ ...p, [c.tweet_id]: c.generated_text || "" }));
+        notify(`New ${mode} added to the queue`);
+        setTab("queue");
+        await refresh();
       } else {
-        const err = await res.json();
-        notify(err.detail || `Failed to generate ${mode}`, true);
+        const e = await res.json();
+        notify(e.detail || `Could not create ${mode}`, true);
       }
     } finally {
-      setDraftingMode(null);
+      setCreating(null);
     }
   };
 
-  const handleRegenerate = async (tweetId: string) => {
-    setBusyMap((p) => ({ ...p, [`regen_${tweetId}`]: true }));
+  const regenerate = async (id: string) => {
+    setBusy((p) => ({ ...p, [`r_${id}`]: true }));
     try {
-      const res = await fetch(`/api/regenerate/${tweetId}`, { method: "POST" });
+      const res = await fetch(`/api/regenerate/${id}`, { method: "POST" });
       if (res.ok) {
-        const data = await res.json();
-        setDraftEdits((p) => ({ ...p, [tweetId]: data.generated_text || "" }));
-        notify("Fresh angles synthesized");
-        await fetchAllData();
-      } else {
-        notify("Could not regenerate right now", true);
-      }
+        const d = await res.json();
+        setDrafts((p) => ({ ...p, [id]: d.generated_text || "" }));
+        notify("New angles ready");
+        refresh();
+      } else notify("Could not regenerate", true);
     } finally {
-      setBusyMap((p) => ({ ...p, [`regen_${tweetId}`]: false }));
+      setBusy((p) => ({ ...p, [`r_${id}`]: false }));
     }
   };
 
-  const handleApprove = async (tweetId: string, scheduleRandom: boolean) => {
-    const busyKey = `${scheduleRandom ? "sched" : "post"}_${tweetId}`;
-    setBusyMap((p) => ({ ...p, [busyKey]: true }));
+  const approve = async (id: string, random: boolean) => {
+    const key = `${random ? "s" : "p"}_${id}`;
+    setBusy((p) => ({ ...p, [key]: true }));
     try {
-      const customText = (draftEdits[tweetId] || "").trim();
-      const res = await fetch(`/api/approve/${tweetId}`, {
+      const res = await fetch(`/api/approve/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          custom_text: customText,
-          schedule_random: scheduleRandom,
-        }),
+        body: JSON.stringify({ custom_text: (drafts[id] || "").trim(), schedule_random: random }),
       });
-      const data = await res.json();
+      const d = await res.json();
       if (res.ok) {
-        if (scheduleRandom) {
-          notify(`Scheduled for random organic window (~${data.minutes_from_now}m)`);
-        } else {
-          notify("Published to X!");
-        }
-        await fetchAllData();
-        await fetchHistory();
-      } else {
-        notify(data.detail || "Action failed", true);
-      }
+        notify(random ? `Scheduled in about ${d.minutes_from_now} min` : "Posted to X");
+        refresh();
+        loadHistory();
+      } else notify(d.detail || "Action failed", true);
     } finally {
-      setBusyMap((p) => ({ ...p, [busyKey]: false }));
+      setBusy((p) => ({ ...p, [key]: false }));
     }
   };
 
-  const handleReject = async (tweetId: string) => {
-    await fetch(`/api/reject/${tweetId}`, { method: "POST" });
-    setPendingItems((prev) => prev.filter((i) => i.tweet_id !== tweetId));
-    fetchAllData();
-    fetchHistory();
+  const skip = async (id: string) => {
+    await fetch(`/api/reject/${id}`, { method: "POST" });
+    setPending((p) => p.filter((i) => i.tweet_id !== id));
+    refresh();
+    loadHistory();
   };
 
-  const handleLaunchLogin = async () => {
-    notify("Launching browser window for X login...");
+  const login = async () => {
     const res = await fetch("/api/browser/launch-login", { method: "POST" });
-    const data = await res.json();
-    notify(data.message || "Browser opened");
-    setTimeout(fetchAllData, 4000);
+    const d = await res.json();
+    notify(d.message || "Browser opened");
+    setTimeout(refresh, 4000);
   };
 
-  const handleCheckSession = async () => {
-    notify("Verifying X session...");
+  const checkSession = async () => {
     const res = await fetch("/api/browser/check-session", { method: "POST" });
-    const data = await res.json();
-    if (data.is_logged_in) {
-      notify(`Connected as ${data.linked_username || "active user"}`);
-    } else {
-      notify("Not logged in yet", true);
-    }
-    fetchAllData();
+    const d = await res.json();
+    if (d.is_logged_in) notify(`Connected as ${d.linked_username || "your account"}`);
+    else notify("Not logged in", true);
+    refresh();
   };
 
-  const handleExportCookies = async () => {
+  const exportCookies = async () => {
     const res = await fetch("/api/browser/cookies");
-    const data = await res.json();
-    setCookieJson(JSON.stringify(data.cookies || [], null, 2));
-    notify(`Exported ${data.count || 0} cookies`);
+    const d = await res.json();
+    setCookieJson(JSON.stringify(d.cookies || [], null, 2));
+    notify(`Exported ${d.count || 0} cookies`);
   };
 
-  const handleImportCookies = async () => {
+  const importCookies = async () => {
     try {
-      const parsed = JSON.parse(cookieJson.trim());
       const res = await fetch("/api/browser/cookies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cookies: parsed }),
+        body: JSON.stringify({ cookies: JSON.parse(cookieJson.trim()) }),
       });
-      const data = await res.json();
-      if (data.is_logged_in) {
-        notify(`Connected as ${data.linked_username || "active user"}!`);
-        setCookieModalOpen(false);
-        fetchAllData();
-      } else {
-        notify("Cookies imported, but session not authenticated", true);
-      }
+      const d = await res.json();
+      if (d.is_logged_in) {
+        notify(`Connected as ${d.linked_username || "your account"}`);
+        setCookieOpen(false);
+        refresh();
+      } else notify("Imported, but the session is not signed in", true);
     } catch {
-      notify("Invalid JSON format", true);
+      notify("That is not valid JSON", true);
     }
   };
 
-  const formatScheduledBadge = (iso?: string | null) => {
+  const schedLabel = (iso?: string | null) => {
     if (!iso) return "";
     const dt = new Date(iso.endsWith("Z") ? iso : iso + "Z");
-    const mins = Math.max(1, Math.round((dt.getTime() - Date.now()) / 60000));
-    const timeStr = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    return `Scheduled ${timeStr} (~${mins}m)`;
+    const m = Math.max(1, Math.round((dt.getTime() - Date.now()) / 60000));
+    return `${dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (in ${m} min)`;
   };
 
-  const filteredHistory = historyItems.filter((item) =>
-    historyFilter === "all" ? true : item.status === historyFilter
-  );
+  const shownHistory = history.filter((h) => histFilter === "all" || h.status === histFilter);
+  const pageTitle = NAV.find((n) => n.id === tab)?.label;
+  const awake = status?.within_active_hours;
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row">
-      {/* Toast Notification */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 12, scale: 0.95 }}
-            className="fixed bottom-5 right-5 z-50 bi-card rounded-xl px-4 py-3 flex items-center gap-2.5 shadow-2xl border border-sky-500/30"
-          >
-            {toast.error ? (
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4 text-sky-400 shrink-0" />
-            )}
-            <span className="text-xs font-light text-slate-100">{toast.msg}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Cloud Cookie Sync Modal */}
-      <AnimatePresence>
-        {cookieModalOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.95, y: 10 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.95, y: 10 }}
-              className="bi-card rounded-2xl max-w-lg w-full p-5 space-y-4"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Cookie className="w-4 h-4 text-sky-400" />
-                  <h3 className="text-sm font-semibold text-white">
-                    X Session Cookies (Cloud Sync)
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setCookieModalOpen(false)}
-                  className="text-slate-400 hover:text-white text-xs"
-                >
-                  ✕
-                </button>
-              </div>
-              <p className="text-xs font-extralight text-slate-400">
-                Export your local X session cookies or paste them here when running on Render.
-              </p>
-              <textarea
-                rows={6}
-                value={cookieJson}
-                onChange={(e) => setCookieJson(e.target.value)}
-                placeholder='[{"name": "auth_token", ...}]'
-                className="w-full bg-[#0A0F1D] border border-white/10 rounded-xl p-3 text-xs font-mono font-light text-slate-200 focus:outline-none focus:border-sky-400"
-              />
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  onClick={handleExportCookies}
-                  className="px-3.5 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-light text-slate-200 transition"
-                >
-                  Export Current
-                </button>
-                <button
-                  onClick={handleImportCookies}
-                  className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition"
-                >
-                  Import & Verify
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Left Power BI Navigation Sidebar */}
-      <aside className="w-full lg:w-64 bg-[#0D1322]/90 backdrop-blur-xl border-b lg:border-b-0 lg:border-r border-white/[0.07] flex flex-col justify-between p-4 shrink-0">
-        <div className="space-y-6">
-          {/* Brand Logo */}
-          <div className="flex items-center justify-between px-2 pt-1">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400/20 to-purple-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 font-mono font-semibold text-base shadow-lg shadow-sky-500/10">
-                X
-              </div>
-              <div>
-                <div className="text-base tracking-tight text-white">
-                  <strong className="font-semibold">Vibe</strong>
-                  <span className="font-extralight text-slate-300">Bot</span>
-                </div>
-                <span className="text-[10px] font-mono font-extralight text-sky-400/90 block">
-                  BI & Creator Suite
-                </span>
-              </div>
-            </div>
-
-            {/* Live Status Dot */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] text-[11px]">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  status?.is_active
-                    ? status.within_active_hours
-                      ? "bg-emerald-400 animate-pulse"
-                      : "bg-amber-400"
-                    : "bg-slate-500"
-                }`}
-              />
-              <span className="font-light text-slate-300">
-                {status?.is_active
-                  ? status.within_active_hours
-                    ? "Active"
-                    : "Sleeping"
-                  : "Paused"}
-              </span>
-            </div>
-          </div>
-
-          {/* Navigation Menu */}
-          <nav className="space-y-1.5">
-            {[
-              {
-                id: "dashboard" as NavTab,
-                label: "Analytics BI",
-                sub: "Metrics & Velocity",
-                icon: BarChart3,
-                badge: null,
-              },
-              {
-                id: "queue" as NavTab,
-                label: "Action Queue",
-                sub: "Replies, Posts & Threads",
-                icon: Inbox,
-                badge: status?.pending_approvals_count ?? 0,
-              },
-              {
-                id: "history" as NavTab,
-                label: "Activity Audit",
-                sub: "Published & Filtered",
-                icon: History,
-                badge: status?.total_processed_count ?? null,
-              },
-              {
-                id: "settings" as NavTab,
-                label: "Agent Studio",
-                sub: "Voice, Timing & Keys",
-                icon: Sliders,
-                badge: null,
-              },
-            ].map((item) => {
-              const Icon = item.icon;
-              const isActive = activeTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setActiveTab(item.id);
-                    if (item.id === "history") fetchHistory();
-                  }}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-left transition relative overflow-hidden ${
-                    isActive
-                      ? "bg-gradient-to-r from-sky-500/15 to-purple-500/10 text-white border border-sky-400/30 shadow-lg shadow-sky-500/5"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.03] border border-transparent"
-                  }`}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="activeRail"
-                      className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-sky-400"
-                    />
-                  )}
-                  <div className="flex items-center gap-3">
-                    <Icon
-                      className={`w-4 h-4 ${
-                        isActive ? "text-sky-400" : "text-slate-400"
-                      }`}
-                      strokeWidth={1.6}
-                    />
-                    <div>
-                      <span
-                        className={`text-xs block ${
-                          isActive ? "font-semibold text-white" : "font-light"
-                        }`}
-                      >
-                        {item.label}
-                      </span>
-                      <span className="text-[10px] font-extralight text-slate-500 hidden sm:block">
-                        {item.sub}
-                      </span>
-                    </div>
-                  </div>
-                  {item.badge !== null && (
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                        isActive
-                          ? "bg-sky-400/20 text-sky-300 font-semibold"
-                          : "bg-white/[0.05] text-slate-400 font-light"
-                      }`}
-                    >
-                      {item.badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* Quick Live Target Card inside Sidebar */}
-          <div className="bi-card rounded-2xl p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="font-extralight text-slate-400">Active Topic</span>
-              <span className="font-mono text-[10px] text-sky-400">Live Pulse</span>
-            </div>
-            <input
-              type="text"
-              value={queryInput}
-              onChange={(e) => setQueryInput(e.target.value)}
-              onBlur={() => handleSaveSettings(true)}
-              placeholder="#elclassico OR buildinpublic"
-              className="w-full bg-[#090D18] border border-white/[0.08] rounded-xl px-2.5 py-1.5 text-xs font-light text-white focus:outline-none focus:border-sky-400"
-            />
-            <div className="grid grid-cols-2 gap-1.5 pt-1">
-              <button
-                onClick={() => handleGenerateOriginal("post")}
-                disabled={draftingMode !== null}
-                className="py-1.5 px-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 text-[11px] font-light text-emerald-300 transition flex items-center justify-center gap-1"
-              >
-                <Feather className="w-3 h-3" />
-                {draftingMode === "post" ? "..." : "+ Post"}
-              </button>
-              <button
-                onClick={() => handleGenerateOriginal("thread")}
-                disabled={draftingMode !== null}
-                className="py-1.5 px-2 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/25 text-[11px] font-light text-purple-300 transition flex items-center justify-center gap-1"
-              >
-                <Layers className="w-3 h-3" />
-                {draftingMode === "thread" ? "..." : "+ Thread"}
-              </button>
-            </div>
-          </div>
+    <div className="min-h-screen flex">
+      {/* Navigation rail */}
+      <aside className="w-[208px] shrink-0 bg-[#252423] text-white flex flex-col sticky top-0 h-screen">
+        <div className="px-5 h-14 flex items-center gap-2.5 border-b border-white/10">
+          <span className="w-6 h-6 bg-[#f2c811] text-[#252423] font-extrabold text-[13px] grid place-items-center rounded-[2px]">
+            V
+          </span>
+          <span className="font-semibold text-[15px] tracking-tight">VibeBot</span>
         </div>
 
-        {/* Bottom Sidebar Info: Awake Schedule & Logs Toggle */}
-        <div className="space-y-2 pt-4 border-t border-white/[0.06] mt-4">
-          <div className="flex items-center justify-between px-2 py-1.5 rounded-xl bg-white/[0.02] text-xs">
-            <div className="flex items-center gap-2">
-              {status?.within_active_hours ? (
-                <Sun className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <Moon className="w-3.5 h-3.5 text-amber-400" />
-              )}
-              <span className="font-extralight text-slate-300 text-[11px]">
-                {status?.within_active_hours ? "Awake Window" : "Sleep Window"}
-              </span>
-            </div>
-            <span className="font-mono text-[10px] text-slate-400">
-              {startHourInput}:00–{endHourInput}:00
-            </span>
-          </div>
+        <nav className="flex-1 py-3">
+          {NAV.map((n) => {
+            const Icon = n.icon;
+            const active = tab === n.id;
+            const count =
+              n.id === "queue" ? status?.pending_approvals_count : undefined;
+            return (
+              <button
+                key={n.id}
+                onClick={() => {
+                  setTab(n.id);
+                  if (n.id === "history") loadHistory();
+                }}
+                className={`relative w-full h-10 px-5 flex items-center gap-3 text-[13px] text-left transition-colors ${
+                  active
+                    ? "bg-white/10 text-white font-semibold"
+                    : "text-white/65 hover:bg-white/5 hover:text-white font-normal"
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="rail"
+                    className="absolute left-0 top-0 bottom-0 w-[3px] bg-[#f2c811]"
+                  />
+                )}
+                <Icon className="w-4 h-4" strokeWidth={1.75} />
+                <span className="flex-1">{n.label}</span>
+                {count ? (
+                  <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#f2c811] text-[#252423] text-[11px] font-bold grid place-items-center">
+                    {count}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+        </nav>
 
+        <div className="p-4 border-t border-white/10 space-y-2.5 text-[12px]">
+          <div className="flex items-center gap-2 text-white/70">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                status?.is_active ? (awake ? "bg-[#01b8aa]" : "bg-[#f2c811]") : "bg-white/30"
+              }`}
+            />
+            {status?.is_active ? (awake ? "Running" : "Sleeping") : "Paused"}
+          </div>
           <button
             onClick={() => setShowLogs((s) => !s)}
-            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] text-xs font-light text-slate-300 transition"
+            className="flex items-center gap-2 text-white/60 hover:text-white transition-colors"
           >
-            <span className="flex items-center gap-2">
-              <Terminal className="w-3.5 h-3.5 text-sky-400" />
-              Live Telemetry Logs
-            </span>
-            <span className="text-[10px] font-mono text-slate-500">
-              {showLogs ? "Hide" : "Show"}
-            </span>
+            <Terminal className="w-3.5 h-3.5" />
+            {showLogs ? "Hide activity log" : "Activity log"}
           </button>
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Top Power BI Glass Header */}
-        <header className="sticky top-0 z-30 bg-[#0B0F19]/80 backdrop-blur-xl border-b border-white/[0.07] px-5 py-3 flex flex-wrap items-center justify-between gap-3">
-          {/* Left: Linked Account + Quick Metrics */}
-          <div className="flex items-center gap-3 flex-wrap">
-            {/* Linked X Account Pill */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.08] text-xs">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  status?.is_logged_in ? "bg-emerald-400" : "bg-rose-400"
-                }`}
-              />
-              <span
-                className={`font-mono ${
-                  status?.is_logged_in
-                    ? "font-semibold text-emerald-300"
-                    : "font-light text-slate-400"
-                }`}
-              >
-                {status?.is_logged_in
-                  ? status.linked_username || "Linked"
-                  : "Not Linked"}
-              </span>
-              <button
-                onClick={handleCheckSession}
-                title="Verify X Session"
-                className="text-slate-400 hover:text-white transition ml-0.5"
-              >
-                <RefreshCw className="w-3 h-3" />
-              </button>
-            </div>
-
-            {/* Hide Login Button when already logged in */}
-            {status && !status.is_logged_in && (
-              <button
-                onClick={handleLaunchLogin}
-                className="px-3 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-xs font-semibold text-sky-300 transition"
-              >
-                Login to X
-              </button>
-            )}
-
-            <div className="hidden md:flex items-center gap-4 pl-2 text-xs font-mono font-light text-slate-400">
-              <span>
-                Today:{" "}
-                <strong className="font-semibold text-white">
-                  {status?.daily_actions_used ?? 0}/{status?.daily_action_cap ?? 15}
-                </strong>
-              </span>
-              <span>
-                Scheduled:{" "}
-                <strong className="font-semibold text-sky-400">
-                  {status?.scheduled_count ?? 0}
-                </strong>
-              </span>
-              <span
-                className={
-                  status?.cooldown_active ? "text-amber-400" : "text-emerald-400"
-                }
-              >
-                {status?.cooldown_active
-                  ? `Cooldown ${Math.floor(
-                      (status.cooldown_seconds_remaining || 0) / 60
-                    )}m`
-                  : "Ready"}
-              </span>
-            </div>
+      {/* Report area */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <header className="h-14 bg-white border-b border-line px-6 flex items-center justify-between gap-4 sticky top-0 z-20">
+          <div className="flex items-center gap-4 min-w-0">
+            <h1 className="text-[18px] font-semibold text-ink">{pageTitle}</h1>
+            <span className="hidden md:inline caption">
+              {status ? `${status.daily_actions_used} of ${status.daily_action_cap} actions today` : ""}
+              {status && status.scheduled_count ? `, ${status.scheduled_count} scheduled` : ""}
+              {status?.cooldown_active
+                ? `, cooldown ${Math.ceil((status.cooldown_seconds_remaining || 0) / 60)} min`
+                : ""}
+            </span>
           </div>
 
-          {/* Right: Action Buttons */}
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setCookieModalOpen(true)}
-              className="px-3 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-light text-slate-300 flex items-center gap-1.5 transition"
-            >
-              <Cookie className="w-3.5 h-3.5 text-slate-400" />
-              <span className="hidden sm:inline">Cookies</span>
+            {status?.is_logged_in ? (
+              <span className="chip gap-1.5 !h-8 !px-3 !text-[12px] !bg-white">
+                <i className="w-2 h-2 rounded-full bg-[#01b8aa] inline-block" />
+                <span className="font-semibold text-ink">{status.linked_username || "Linked"}</span>
+                <button onClick={checkSession} title="Re-check session" className="text-ink-3 hover:text-ink">
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+              </span>
+            ) : (
+              status && (
+                <button onClick={login} className="btn btn-accent">
+                  Log in to X
+                </button>
+              )
+            )}
+            <button onClick={() => setCookieOpen(true)} className="btn btn-quiet" title="Session cookies">
+              <Cookie className="w-4 h-4" />
             </button>
-
-            <button
-              onClick={handleScanNow}
-              disabled={scanning}
-              className="px-3.5 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-xs font-light text-sky-300 flex items-center gap-1.5 transition"
-            >
-              <Radar
-                className={`w-3.5 h-3.5 ${scanning ? "animate-spin" : ""}`}
-              />
-              <span>{scanning ? "Scanning..." : "Scan Feed"}</span>
+            <button onClick={scan} disabled={scanning} className="btn">
+              <Radar className={`w-4 h-4 ${scanning ? "animate-spin" : ""}`} />
+              {scanning ? "Scanning" : "Scan feed"}
             </button>
-
-            <button
-              onClick={handleToggleAgent}
-              className={`px-4 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
-                status?.is_active
-                  ? "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/35"
-                  : "bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/15"
-              }`}
-            >
+            <button onClick={toggleAgent} className={`btn ${status?.is_active ? "" : "btn-primary"}`}>
               {status?.is_active ? (
                 <>
-                  <Pause className="w-3.5 h-3.5" />
-                  <span>Pause</span>
+                  <Pause className="w-4 h-4" /> Pause
                 </>
               ) : (
                 <>
-                  <Play className="w-3.5 h-3.5" />
-                  <span>Start Agent</span>
+                  <Play className="w-4 h-4" /> Start
                 </>
               )}
             </button>
           </div>
         </header>
 
-        {/* Main Animated View Container */}
-        <main className="flex-1 p-5 lg:p-6 max-w-7xl w-full mx-auto space-y-5">
+        <main className="flex-1 p-6 space-y-3 max-w-[1280px] w-full">
           <AnimatePresence mode="wait">
-            {/* TAB 1: POWER BI ANALYTICS DASHBOARD */}
-            {activeTab === "dashboard" && (
-              <motion.div
-                key="dashboard"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.25 }}
-              >
-                <AnalyticsView
-                  data={analytics}
-                  onGenerateOriginal={handleGenerateOriginal}
-                />
-              </motion.div>
-            )}
+            <motion.div
+              key={tab}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18 }}
+            >
+              {tab === "dashboard" && <AnalyticsView data={analytics} />}
 
-            {/* TAB 2: ACTION QUEUE (REPLIES, ORIGINAL POSTS & THREADS) */}
-            {activeTab === "queue" && (
-              <motion.div
-                key="queue"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-4"
-              >
-                {/* Queue Header Bar */}
-                <div className="bi-card rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-white tracking-tight">
-                      Action Queue & Content Synthesizer
-                    </h2>
-                    <p className="text-xs font-extralight text-slate-400">
-                      Review, tweak angles, schedule at random human timestamps, or publish immediately
+              {tab === "queue" && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="caption">
+                      Edit a draft, then post it now or let it go out at a random time.
                     </p>
+                    <div className="flex gap-2">
+                      <button onClick={() => createOriginal("post")} disabled={creating !== null} className="btn">
+                        <Feather className="w-4 h-4" />
+                        {creating === "post" ? "Writing" : "New post"}
+                      </button>
+                      <button onClick={() => createOriginal("thread")} disabled={creating !== null} className="btn">
+                        <Layers className="w-4 h-4" />
+                        {creating === "thread" ? "Writing" : "New thread"}
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleGenerateOriginal("post")}
-                      disabled={draftingMode !== null}
-                      className="px-3.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-light text-emerald-300 flex items-center gap-1.5 transition"
-                    >
-                      <Feather className="w-3.5 h-3.5" />
-                      <span>
-                        {draftingMode === "post" ? "Drafting..." : "+ New Post"}
-                      </span>
-                    </button>
-                    <button
-                      onClick={() => handleGenerateOriginal("thread")}
-                      disabled={draftingMode !== null}
-                      className="px-3.5 py-2 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-xs font-light text-purple-300 flex items-center gap-1.5 transition"
-                    >
-                      <Layers className="w-3.5 h-3.5" />
-                      <span>
-                        {draftingMode === "thread" ? "Drafting..." : "+ New Thread"}
-                      </span>
-                    </button>
-                  </div>
-                </div>
 
-                {pendingItems.length === 0 ? (
-                  <div className="bi-card rounded-2xl p-12 text-center space-y-3">
-                    <Sparkles className="w-8 h-8 text-sky-400 mx-auto opacity-80" strokeWidth={1.4} />
-                    <p className="text-sm font-light text-slate-300">
-                      Your Action Queue is clear.
-                    </p>
-                    <p className="text-xs font-extralight text-slate-500">
-                      Click <strong className="font-semibold text-slate-300">Scan Feed</strong> to discover conversations or{" "}
-                      <strong className="font-semibold text-purple-300">+ New Thread</strong> to synthesize an original thread.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 gap-4">
-                    {pendingItems.map((item, idx) => {
+                  {pending.length === 0 ? (
+                    <div className="tile py-16 text-center">
+                      <p className="text-[15px] font-semibold text-ink">Nothing waiting for review</p>
+                      <p className="caption mt-1">
+                        Scan your feed for replies, or write a new post or thread.
+                      </p>
+                    </div>
+                  ) : (
+                    pending.map((item, idx) => {
                       let variants: Record<string, string> = {};
                       try {
                         if (item.variants_json) variants = JSON.parse(item.variants_json);
                       } catch {}
-                      const variantKeys = Object.keys(variants);
-                      const isScheduled = item.status === "scheduled";
-                      const actType = item.action_type || "reply";
-                      const isThread = actType === "thread";
-                      const isPost = actType === "post";
-                      const currentText =
-                        draftEdits[item.tweet_id] ?? item.generated_text ?? "";
-                      const threadPartsCount = currentText
-                        .split("---")
-                        .filter((p) => p.trim()).length;
+                      const keys = Object.keys(variants);
+                      const type = item.action_type || "reply";
+                      const text = drafts[item.tweet_id] ?? item.generated_text ?? "";
+                      const parts = text.split("---").filter((p) => p.trim()).length;
+                      const typeColor =
+                        type === "thread" ? "#f2c811" : type === "post" ? "#01b8aa" : "#374649";
+                      const typeLabel =
+                        type === "thread" ? `Thread, ${parts} posts` : type === "post" ? "Original post" : "Reply";
 
                       return (
-                        <motion.div
+                        <motion.article
                           key={item.tweet_id}
-                          initial={{ opacity: 0, y: 14 }}
+                          initial={{ opacity: 0, y: 8 }}
                           animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.3, delay: idx * 0.04 }}
-                          className={`bi-card bi-card-interactive rounded-2xl p-5 space-y-3.5 ${
-                            isScheduled ? "border-sky-400/40" : ""
-                          }`}
+                          transition={{ duration: 0.25, delay: Math.min(idx, 6) * 0.04 }}
+                          className="tile relative p-4"
                         >
-                          {/* Card Top Metadata */}
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span
+                            className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[4px]"
+                            style={{ background: typeColor }}
+                          />
+                          <div className="flex items-center justify-between gap-3 mb-2.5">
                             <div className="flex items-center gap-2 flex-wrap">
-                              {isThread ? (
-                                <span className="text-[10px] font-mono font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30">
-                                  THREAD ({threadPartsCount} posts)
-                                </span>
-                              ) : isPost ? (
-                                <span className="text-[10px] font-mono font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                                  ORIGINAL POST
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-mono font-light px-2.5 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-500/30">
-                                  SMART REPLY
-                                </span>
-                              )}
-
-                              <span className="text-xs font-semibold text-white tracking-tight">
-                                @{item.tweet_author || "user"}
-                              </span>
-
-                              {item.tweet_metrics && (
-                                <span className="text-[10px] font-mono font-light px-2 py-0.5 rounded-full bg-white/[0.04] text-slate-400 border border-white/[0.06]">
-                                  {item.tweet_metrics}
-                                </span>
-                              )}
-
-                              {isScheduled && (
-                                <span className="text-[10px] font-mono font-semibold px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-400/35 flex items-center gap-1">
-                                  <Clock className="w-2.5 h-2.5" />
-                                  {formatScheduledBadge(item.scheduled_for)}
+                              <span className="text-[13px] font-semibold text-ink">{typeLabel}</span>
+                              <span className="caption">@{item.tweet_author || "user"}</span>
+                              {item.tweet_metrics && <span className="chip">{item.tweet_metrics}</span>}
+                              {item.status === "scheduled" && (
+                                <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent gap-1">
+                                  <Clock className="w-3 h-3" /> {schedLabel(item.scheduled_for)}
                                 </span>
                               )}
                             </div>
-
-                            {actType === "reply" && item.tweet_url && (
+                            {type === "reply" && item.tweet_url && (
                               <a
                                 href={item.tweet_url}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="text-[11px] font-mono font-light text-slate-400 hover:text-sky-400 flex items-center gap-1 transition"
+                                className="caption inline-flex items-center gap-1 hover:text-ink"
                               >
-                                <span>Source</span>
-                                <ExternalLink className="w-3 h-3" />
+                                Original <ExternalLink className="w-3 h-3" />
                               </a>
                             )}
                           </div>
 
-                          {/* Context / Original Scraped Tweet */}
-                          <div className="text-xs font-extralight leading-relaxed text-slate-300 bg-[#0A0F1D]/90 p-3 rounded-xl border border-white/[0.06] whitespace-pre-line">
-                            {item.tweet_text}
-                          </div>
+                          {item.tweet_text && (
+                            <p className="text-[13px] font-light text-ink-2 bg-[#faf9f8] border border-line-soft rounded-[2px] px-3 py-2 mb-3 whitespace-pre-line">
+                              {item.tweet_text}
+                            </p>
+                          )}
 
-                          {/* Vibe Variant Switcher + Regenerate */}
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between flex-wrap gap-2">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                {variantKeys.map((k) => {
-                                  const selected =
-                                    (activeVariantKey[item.tweet_id] || "witty") === k;
-                                  return (
-                                    <button
-                                      key={k}
-                                      onClick={() => {
-                                        setActiveVariantKey((p) => ({
-                                          ...p,
-                                          [item.tweet_id]: k,
-                                        }));
-                                        setDraftEdits((p) => ({
-                                          ...p,
-                                          [item.tweet_id]: variants[k],
-                                        }));
-                                      }}
-                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-mono capitalize transition border ${
-                                        selected
-                                          ? "bg-sky-500/20 text-sky-300 border-sky-400/40 font-semibold"
-                                          : "bg-white/[0.03] hover:bg-white/[0.07] text-slate-400 border-white/[0.06] font-light"
-                                      }`}
-                                    >
-                                      {k}
-                                    </button>
-                                  );
-                                })}
-                                {isThread && (
-                                  <span className="text-[10px] font-mono font-extralight text-slate-500 ml-1">
-                                    Separate tweets with ---
-                                  </span>
-                                )}
-                              </div>
-
-                              <button
-                                onClick={() => handleRegenerate(item.tweet_id)}
-                                disabled={busyMap[`regen_${item.tweet_id}`]}
-                                className="px-2.5 py-1 rounded-lg bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-mono font-light text-slate-300 flex items-center gap-1 transition"
-                              >
-                                <RefreshCw
-                                  className={`w-3 h-3 ${
-                                    busyMap[`regen_${item.tweet_id}`]
-                                      ? "animate-spin text-sky-400"
-                                      : ""
-                                  }`}
-                                />
-                                <span className="text-[10px]">Regenerate</span>
-                              </button>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-1">
+                              {keys.map((k) => {
+                                const sel = (variantSel[item.tweet_id] || keys[0]) === k;
+                                return (
+                                  <button
+                                    key={k}
+                                    onClick={() => {
+                                      setVariantSel((p) => ({ ...p, [item.tweet_id]: k }));
+                                      setDrafts((p) => ({ ...p, [item.tweet_id]: variants[k] }));
+                                    }}
+                                    className={`h-7 px-2.5 text-[12px] capitalize rounded-[2px] border transition-colors ${
+                                      sel
+                                        ? "bg-[#252423] border-[#252423] text-white font-semibold"
+                                        : "bg-white border-[#c8c6c4] text-ink-2 hover:bg-[#f3f2f1]"
+                                    }`}
+                                  >
+                                    {k}
+                                  </button>
+                                );
+                              })}
+                              {type === "thread" && (
+                                <span className="caption ml-2">Split posts with ---</span>
+                              )}
                             </div>
-
-                            <textarea
-                              rows={isThread ? 6 : 2}
-                              value={currentText}
-                              onChange={(e) =>
-                                setDraftEdits((p) => ({
-                                  ...p,
-                                  [item.tweet_id]: e.target.value,
-                                }))
-                              }
-                              className="w-full bg-[#090D18] border border-white/[0.09] rounded-xl p-3 text-xs font-light leading-relaxed text-white focus:outline-none focus:border-sky-400"
-                            />
+                            <button
+                              onClick={() => regenerate(item.tweet_id)}
+                              disabled={busy[`r_${item.tweet_id}`]}
+                              className="btn btn-quiet !h-7 !px-2"
+                            >
+                              <RefreshCw
+                                className={`w-3.5 h-3.5 ${busy[`r_${item.tweet_id}`] ? "animate-spin" : ""}`}
+                              />
+                              Rewrite
+                            </button>
                           </div>
 
-                          {/* Action Buttons */}
-                          <div className="flex items-center justify-between pt-1">
-                            <span className="text-[10px] font-mono font-extralight text-slate-500">
-                              {currentText.length} chars
-                            </span>
+                          <textarea
+                            rows={type === "thread" ? 6 : 3}
+                            value={text}
+                            onChange={(e) => setDrafts((p) => ({ ...p, [item.tweet_id]: e.target.value }))}
+                            className="field leading-relaxed resize-y"
+                          />
+
+                          <div className="flex items-center justify-between mt-3">
+                            <span className="caption">{text.length} characters</span>
                             <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleReject(item.tweet_id)}
-                                className="px-3 py-1.5 rounded-xl text-xs font-light text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 flex items-center gap-1 transition"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Skip</span>
+                              <button onClick={() => skip(item.tweet_id)} className="btn btn-quiet">
+                                <X className="w-4 h-4" /> Skip
                               </button>
                               <button
-                                onClick={() => handleApprove(item.tweet_id, true)}
-                                disabled={busyMap[`sched_${item.tweet_id}`]}
-                                className="px-3.5 py-1.5 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-400/30 font-light text-xs flex items-center gap-1.5 transition"
+                                onClick={() => approve(item.tweet_id, true)}
+                                disabled={busy[`s_${item.tweet_id}`]}
+                                className="btn"
                               >
-                                <Clock className="w-3.5 h-3.5" />
-                                <span>
-                                  {busyMap[`sched_${item.tweet_id}`]
-                                    ? "Scheduling..."
-                                    : "Queue Random Time"}
-                                </span>
+                                <Clock className="w-4 h-4" />
+                                {busy[`s_${item.tweet_id}`] ? "Scheduling" : "Schedule randomly"}
                               </button>
                               <button
-                                onClick={() => handleApprove(item.tweet_id, false)}
-                                disabled={busyMap[`post_${item.tweet_id}`]}
-                                className="px-4 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs flex items-center gap-1.5 transition shadow-md shadow-emerald-500/10"
+                                onClick={() => approve(item.tweet_id, false)}
+                                disabled={busy[`p_${item.tweet_id}`]}
+                                className="btn btn-accent"
                               >
-                                <Send className="w-3.5 h-3.5" />
-                                <span>
-                                  {busyMap[`post_${item.tweet_id}`]
-                                    ? "Posting..."
-                                    : "Post Now"}
-                                </span>
+                                <Send className="w-4 h-4" />
+                                {busy[`p_${item.tweet_id}`] ? "Posting" : "Post now"}
                               </button>
                             </div>
                           </div>
-                        </motion.div>
+                        </motion.article>
                       );
-                    })}
-                  </div>
-                )}
-              </motion.div>
-            )}
+                    })
+                  )}
+                </div>
+              )}
 
-            {/* TAB 3: ACTIVITY AUDIT HISTORY */}
-            {activeTab === "history" && (
-              <motion.div
-                key="history"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.25 }}
-                className="bi-card rounded-2xl overflow-hidden"
-              >
-                <div className="p-4 border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-white tracking-tight">
-                      Interaction & Content Audit Log
-                    </h2>
-                    <p className="text-xs font-extralight text-slate-400">
-                      Complete record of published posts, scheduled items, and AI-filtered noise
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {["all", "posted", "scheduled", "pending_approval", "skipped"].map(
-                      (flt) => (
+              {tab === "history" && (
+                <section className="tile overflow-hidden">
+                  <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+                    <h3 className="tile-title">All activity</h3>
+                    <div className="flex gap-1">
+                      {["all", "posted", "scheduled", "pending_approval", "skipped", "failed"].map((f) => (
                         <button
-                          key={flt}
-                          onClick={() => setHistoryFilter(flt)}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-mono uppercase transition ${
-                            historyFilter === flt
-                              ? "bg-sky-500/20 text-sky-300 border border-sky-400/35 font-semibold"
-                              : "bg-white/[0.03] text-slate-400 hover:text-white font-light"
+                          key={f}
+                          onClick={() => setHistFilter(f)}
+                          className={`h-7 px-2.5 text-[12px] rounded-[2px] border transition-colors capitalize ${
+                            histFilter === f
+                              ? "bg-[#252423] border-[#252423] text-white font-semibold"
+                              : "bg-white border-[#c8c6c4] text-ink-2 hover:bg-[#f3f2f1]"
                           }`}
                         >
-                          {flt.replace("_", " ")}
+                          {f === "pending_approval" ? "Pending" : f}
                         </button>
-                      )
-                    )}
+                      ))}
+                    </div>
                   </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-white/[0.06] text-[10px] font-mono font-light uppercase text-slate-400 bg-[#090D18]/60">
-                        <th className="py-3 px-4">Status</th>
-                        <th className="py-3 px-4">Type</th>
-                        <th className="py-3 px-4">Source / Topic</th>
-                        <th className="py-3 px-4">Draft / Reason</th>
-                        <th className="py-3 px-4 text-right">Time</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/[0.05] text-xs font-light">
-                      {filteredHistory.map((item) => {
-                        const statusColors: Record<string, string> = {
-                          posted: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30",
-                          scheduled: "text-sky-400 bg-sky-500/10 border-sky-500/30",
-                          pending_approval:
-                            "text-amber-300 bg-amber-500/10 border-amber-500/30",
-                          skipped: "text-slate-400 bg-white/[0.03] border-white/10",
-                          failed: "text-rose-400 bg-rose-500/10 border-rose-500/30",
-                        };
-                        const badgeCls =
-                          statusColors[item.status] ||
-                          "text-slate-400 bg-white/[0.03] border-white/10";
-
-                        return (
-                          <tr
-                            key={item.tweet_id}
-                            className="hover:bg-white/[0.02] transition"
-                          >
-                            <td className="py-3 px-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] text-left">
+                      <thead>
+                        <tr className="bg-[#faf9f8] caption border-b border-line">
+                          <th className="py-2 px-4 font-medium">Status</th>
+                          <th className="py-2 px-4 font-medium">Type</th>
+                          <th className="py-2 px-4 font-medium">Source</th>
+                          <th className="py-2 px-4 font-medium">Draft or reason</th>
+                          <th className="py-2 px-4 font-medium text-right">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shownHistory.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="py-10 text-center caption">
+                              Nothing here yet.
+                            </td>
+                          </tr>
+                        )}
+                        {shownHistory.map((h) => (
+                          <tr key={h.tweet_id} className="border-b border-line-soft last:border-0 hover:bg-[#faf9f8]">
+                            <td className="py-2.5 px-4">
                               <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold border ${badgeCls}`}
+                                className={`inline-block px-2 py-0.5 rounded-[2px] text-[11px] font-semibold ${
+                                  STATUS_STYLE[h.status] || STATUS_STYLE.skipped
+                                }`}
                               >
-                                {item.status.replace("_", " ")}
+                                {h.status === "pending_approval" ? "pending" : h.status}
                               </span>
                             </td>
-                            <td className="py-3 px-4 font-mono text-[11px] text-slate-400 uppercase">
-                              {item.action_type || "reply"}
+                            <td className="py-2.5 px-4 capitalize text-ink-2">{h.action_type || "reply"}</td>
+                            <td className="py-2.5 px-4 max-w-[260px]">
+                              <span className="font-semibold text-ink block">@{h.tweet_author || "user"}</span>
+                              <span className="text-ink-2 font-light block truncate">{h.tweet_text}</span>
                             </td>
-                            <td className="py-3 px-4 max-w-xs">
-                              <span className="font-semibold text-white block">
-                                @{item.tweet_author || "user"}
-                              </span>
-                              <p className="font-extralight text-slate-400 truncate">
-                                {item.tweet_text}
-                              </p>
+                            <td className="py-2.5 px-4 max-w-[320px] text-ink-2 truncate">
+                              {h.generated_text || h.error_message || "-"}
                             </td>
-                            <td className="py-3 px-4 max-w-sm text-slate-300 truncate">
-                              {item.generated_text || item.error_message || "-"}
-                            </td>
-                            <td className="py-3 px-4 text-right font-mono text-[11px] text-slate-500">
-                              {new Date(item.timestamp).toLocaleTimeString([], {
+                            <td className="py-2.5 px-4 text-right text-ink-3 whitespace-nowrap">
+                              {new Date(h.timestamp).toLocaleTimeString([], {
                                 hour: "2-digit",
                                 minute: "2-digit",
                               })}
                             </td>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </motion.div>
-            )}
-
-            {/* TAB 4: AGENT STUDIO & PERSONA CONFIGURATION */}
-            {activeTab === "settings" && (
-              <motion.div
-                key="settings"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.25 }}
-                className="grid grid-cols-1 lg:grid-cols-12 gap-5"
-              >
-                {/* Left Column: AI Brain & Persona Voice (7 cols) */}
-                <div className="lg:col-span-7 bi-card rounded-2xl p-5 space-y-4">
-                  <div className="flex items-center gap-2 border-b border-white/[0.07] pb-3">
-                    <Sparkles className="w-4 h-4 text-sky-400" />
-                    <h2 className="text-sm font-semibold text-white tracking-tight">
-                      AI Engine & Persona Voice Studio
-                    </h2>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
+                </section>
+              )}
 
-                  {/* Gemini API Key */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <label className="font-light text-slate-300">
-                        Google Gemini API Key
-                      </label>
-                      <span className="font-mono text-[11px] text-emerald-400">
-                        {config?.masked_api_key || "Not Configured"}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
+              {tab === "settings" && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+                  <section className="tile p-5 space-y-4">
+                    <h3 className="tile-title">Voice and topic</h3>
+                    <div>
+                      <label className="label">Search topic on X</label>
                       <input
-                        type="password"
-                        value={apiKeyInput}
-                        onChange={(e) => setApiKeyInput(e.target.value)}
-                        placeholder="Paste new key from aistudio.google.com"
-                        className="flex-1 bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white focus:outline-none focus:border-sky-400"
+                        className="field"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="#elclassico OR buildinpublic"
                       />
-                      <button
-                        onClick={handleVerifyKey}
-                        disabled={busyMap.verifyKey}
-                        className="px-4 py-2 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-xs font-semibold text-sky-300 transition"
-                      >
-                        {busyMap.verifyKey ? "..." : "Verify Key"}
-                      </button>
                     </div>
-                  </div>
-
-                  {/* Model Selection */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-light text-slate-300 block">
-                      Active Gemini Model (Auto-Failover Enabled)
-                    </label>
-                    <select
-                      value={modelInput}
-                      onChange={(e) => setModelInput(e.target.value)}
-                      className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white focus:outline-none focus:border-sky-400"
-                    >
-                      {availableModels.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Target Feed Query */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-light text-slate-300 block">
-                      Target Feed / X Search Topic
-                    </label>
-                    <input
-                      type="text"
-                      value={queryInput}
-                      onChange={(e) => setQueryInput(e.target.value)}
-                      placeholder="#elclassico OR buildinpublic"
-                      className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-light text-white focus:outline-none focus:border-sky-400"
-                    />
-                  </div>
-
-                  {/* Persona Voice Prompt */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-light text-slate-300 block">
-                      Creator Persona & Anti-Robotic Style Rules
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={personaInput}
-                      onChange={(e) => setPersonaInput(e.target.value)}
-                      placeholder="Casual, sharp, dry humor, lowercase okay, short punchy sentences, zero corporate buzzwords"
-                      className="w-full bg-[#090D18] border border-white/10 rounded-xl p-3 text-xs font-light text-white focus:outline-none focus:border-sky-400"
-                    />
-                  </div>
-                </div>
-
-                {/* Right Column: Random Cadence & Active Hours (5 cols) */}
-                <div className="lg:col-span-5 bi-card rounded-2xl p-5 flex flex-col justify-between space-y-4">
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 border-b border-white/[0.07] pb-3">
-                      <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                      <h2 className="text-sm font-semibold text-white tracking-tight">
-                        Human Cadence & Random Scheduling
-                      </h2>
+                    <div>
+                      <label className="label">How you write</label>
+                      <textarea
+                        rows={3}
+                        className="field"
+                        value={persona}
+                        onChange={(e) => setPersona(e.target.value)}
+                        placeholder="Casual, dry humor, short sentences"
+                      />
                     </div>
+                    <div>
+                      <label className="label">
+                        Gemini API key{" "}
+                        <span className="text-ink-3 font-normal">
+                          {config?.masked_api_key ? `(saved: ${config.masked_api_key})` : "(not set)"}
+                        </span>
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          className="field"
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          placeholder="Paste a new key"
+                        />
+                        <button onClick={verifyKey} disabled={busy.key} className="btn">
+                          {busy.key ? "Checking" : "Verify"}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label">Model</label>
+                      <select className="field" value={model} onChange={(e) => setModel(e.target.value)}>
+                        {models.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </section>
 
+                  <section className="tile p-5 space-y-4">
+                    <h3 className="tile-title">Timing and limits</h3>
                     <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-[11px] font-extralight text-slate-400 block mb-1">
-                          Daily Action Cap
-                        </label>
-                        <input
-                          type="number"
-                          value={capInput}
-                          onChange={(e) => setCapInput(Number(e.target.value))}
-                          className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] font-extralight text-slate-400 block mb-1">
-                          Scan Interval (mins)
-                        </label>
-                        <input
-                          type="number"
-                          value={intervalInput}
-                          onChange={(e) => setIntervalInput(Number(e.target.value))}
-                          className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] font-extralight text-slate-400 block mb-1">
-                          Min Random Delay (m)
-                        </label>
-                        <input
-                          type="number"
-                          value={minDelayInput}
-                          onChange={(e) => setMinDelayInput(Number(e.target.value))}
-                          className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] font-extralight text-slate-400 block mb-1">
-                          Max Random Delay (m)
-                        </label>
-                        <input
-                          type="number"
-                          value={maxDelayInput}
-                          onChange={(e) => setMaxDelayInput(Number(e.target.value))}
-                          className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] font-extralight text-slate-400 block mb-1">
-                          Wake Hour (0–23)
-                        </label>
-                        <input
-                          type="number"
-                          value={startHourInput}
-                          onChange={(e) => setStartHourInput(Number(e.target.value))}
-                          className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[11px] font-extralight text-slate-400 block mb-1">
-                          Sleep Hour (0–23)
-                        </label>
-                        <input
-                          type="number"
-                          value={endHourInput}
-                          onChange={(e) => setEndHourInput(Number(e.target.value))}
-                          className="w-full bg-[#090D18] border border-white/10 rounded-xl px-3 py-2 text-xs font-mono font-light text-white"
-                        />
-                      </div>
+                      {[
+                        ["Daily action limit", cap, setCap],
+                        ["Scan every (min)", interval, setIntervalMin],
+                        ["Shortest random delay (min)", minDelay, setMinDelay],
+                        ["Longest random delay (min)", maxDelay, setMaxDelay],
+                        ["Wakes up at (hour)", wake, setWake],
+                        ["Goes to sleep at (hour)", sleep, setSleep],
+                      ].map(([label, val, set]) => (
+                        <div key={label as string}>
+                          <label className="label">{label as string}</label>
+                          <input
+                            type="number"
+                            className="field"
+                            value={val as number}
+                            onChange={(e) => (set as (n: number) => void)(Number(e.target.value))}
+                          />
+                        </div>
+                      ))}
                     </div>
-
-                    {/* Autopilot Switch */}
-                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.07] flex items-center justify-between">
-                      <div>
-                        <span className="text-xs font-semibold text-white block">
-                          Autopilot Random Scheduling
-                        </span>
-                        <span className="text-[11px] font-extralight text-slate-400">
-                          Automatically stagger approved drafts across random timestamps
-                        </span>
-                      </div>
+                    <label className="flex items-start gap-3 p-3 border border-line rounded-[2px] cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={autopilotInput}
-                        onChange={(e) => setAutopilotInput(e.target.checked)}
-                        className="w-4 h-4 accent-sky-400 cursor-pointer"
+                        checked={autopilot}
+                        onChange={(e) => setAutopilot(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-[#252423]"
                       />
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => handleSaveSettings(false)}
-                    className="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition shadow-lg shadow-sky-500/15"
-                  >
-                    Save All Studio Settings
-                  </button>
+                      <span>
+                        <span className="block text-[13px] font-semibold text-ink">Autopilot</span>
+                        <span className="caption">
+                          Schedule new drafts at random times without waiting for approval.
+                        </span>
+                      </span>
+                    </label>
+                    <button onClick={() => saveSettings(false)} className="btn btn-primary w-full justify-center">
+                      Save settings
+                    </button>
+                  </section>
                 </div>
-              </motion.div>
-            )}
+              )}
+            </motion.div>
           </AnimatePresence>
 
-          {/* Collapsible Live Telemetry Console */}
           <AnimatePresence>
             {showLogs && (
-              <motion.div
+              <motion.section
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
-                className="bi-card rounded-2xl overflow-hidden"
+                className="tile overflow-hidden"
               >
-                <div className="px-4 py-2 border-b border-white/[0.06] flex items-center justify-between bg-[#090D18]/70">
-                  <div className="flex items-center gap-2">
-                    <Terminal className="w-3.5 h-3.5 text-sky-400" />
-                    <span className="text-[11px] font-mono font-light text-slate-300">
-                      Live Agent Telemetry
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-mono font-extralight text-slate-500">
-                    {status?.selected_model || "gemini-3.8-flash"}
-                  </span>
+                <div className="px-4 py-2 border-b border-line flex justify-between caption">
+                  <span className="font-semibold text-ink">Activity log</span>
+                  <span>{status?.selected_model}</span>
                 </div>
-                <div className="p-3.5 h-32 overflow-y-auto font-mono font-light text-[11px] space-y-1 bg-[#070A12]/90">
+                <div className="p-3 h-36 overflow-y-auto font-mono text-[11px] space-y-0.5 bg-[#faf9f8]">
                   {status?.recent_logs?.length ? (
                     status.recent_logs.map((l, i) => (
                       <div
                         key={i}
                         className={
                           l.level === "ERROR"
-                            ? "text-rose-400"
+                            ? "text-[#a4262c]"
                             : l.level === "WARNING"
-                            ? "text-amber-300"
-                            : "text-slate-300"
+                            ? "text-[#8a6d00]"
+                            : "text-ink-2"
                         }
                       >
-                        <span className="text-slate-600 mr-2">[{l.timestamp}]</span>
+                        <span className="text-ink-3 mr-2">{l.timestamp}</span>
                         {l.message}
                       </div>
                     ))
                   ) : (
-                    <div className="text-slate-600">Waiting for telemetry events...</div>
+                    <span className="text-ink-3">No activity yet.</span>
                   )}
                 </div>
-              </motion.div>
+              </motion.section>
             )}
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Toast */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            className={`fixed bottom-5 right-5 z-50 px-4 py-2.5 text-[13px] shadow-lg rounded-[2px] ${
+              toast.error ? "bg-[#a4262c] text-white" : "bg-[#252423] text-white"
+            }`}
+          >
+            {toast.msg}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Cookie dialog */}
+      <AnimatePresence>
+        {cookieOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4"
+            onClick={() => setCookieOpen(false)}
+          >
+            <motion.div
+              initial={{ y: 10 }}
+              animate={{ y: 0 }}
+              exit={{ y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-[4px] w-full max-w-lg p-5 space-y-3 shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-[15px] font-semibold text-ink">Session cookies</h3>
+                <button onClick={() => setCookieOpen(false)} className="text-ink-3 hover:text-ink">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="caption">
+                Export your X session here, then paste it on your Render deployment so it stays logged in.
+              </p>
+              <textarea
+                rows={7}
+                className="field font-mono text-[11px]"
+                value={cookieJson}
+                onChange={(e) => setCookieJson(e.target.value)}
+                placeholder='[{"name": "auth_token", ...}]'
+              />
+              <div className="flex justify-end gap-2">
+                <button onClick={exportCookies} className="btn">
+                  Export current
+                </button>
+                <button onClick={importCookies} className="btn btn-primary">
+                  Import and verify
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
