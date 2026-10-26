@@ -11,5 +11,5 @@ echo Press CTRL+C at any time to pause the server.
 echo.
 echo ======================================================================
 echo.
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --loop asyncio --reload
+python main.py
 pause
