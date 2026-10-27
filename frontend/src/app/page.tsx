@@ -185,17 +185,35 @@ export default function HomePage() {
   // Demo mode toggle allows previewing the full studio even if X session is not linked yet
   const [demoMode, setDemoMode] = useState(false);
   const [tenantId, setTenantId] = useState<string>("default");
-  const [userProfile, setUserProfile] = useState<{ email?: string | null; name?: string | null } | null>(null);
+  const [userProfile, setUserProfile] = useState<{ email?: string | null; name?: string | null; uid?: string | null } | null>(null);
 
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [authToken, setAuthToken] = useState<string>("");
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      const savedToken = localStorage.getItem("xvibebot_auth_token");
       const savedTenant = localStorage.getItem("xvibebot_tenant_id");
-      if (savedTenant) setTenantId(savedTenant);
       const savedEmail = localStorage.getItem("xvibebot_user_email");
+      if (savedToken) setAuthToken(savedToken);
+      if (savedTenant) setTenantId(savedTenant);
       if (savedEmail) setUserProfile({ email: savedEmail, name: savedEmail.split("@")[0] });
+
+      // Verify token with backend
+      if (savedToken) {
+        fetch("/api/auth/me", {
+          headers: { Authorization: `Bearer ${savedToken}` },
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (d && d.email) {
+              setUserProfile({ email: d.email, name: d.name, uid: d.uid });
+              if (d.tenant_id) setTenantId(d.tenant_id);
+            }
+          })
+          .catch(() => {});
+      }
 
       const savedTheme = localStorage.getItem("xvibebot_theme");
       const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -226,13 +244,31 @@ export default function HomePage() {
     });
   }, []);
 
+  const handleSignOut = useCallback(async () => {
+    try {
+      await fetch("/api/auth/signout", { method: "POST" });
+    } catch {}
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("xvibebot_auth_token");
+      localStorage.removeItem("xvibebot_tenant_id");
+      localStorage.removeItem("xvibebot_user_email");
+    }
+    setAuthToken("");
+    setUserProfile(null);
+    setTenantId("default");
+    setDemoMode(false);
+  }, []);
+
   const apiFetch = useCallback(
     (url: string, options: RequestInit = {}) => {
       const headers = new Headers(options.headers || {});
       headers.set("X-Tenant-Id", tenantId);
+      if (authToken) {
+        headers.set("Authorization", `Bearer ${authToken}`);
+      }
       return fetch(url, { ...options, headers });
     },
-    [tenantId]
+    [tenantId, authToken]
   );
 
   const [apiKey, setApiKey] = useState("");
@@ -678,10 +714,10 @@ export default function HomePage() {
 
   const shownHistory = history.filter((h) => histFilter === "all" || h.status === histFilter);
   const awake = status?.within_active_hours;
-  const isUserAuthenticated = Boolean(status?.is_logged_in);
+  const isUserAuthenticated = Boolean(userProfile?.email || authToken || demoMode);
 
   // If user is not authenticated and hasn't toggled demo mode, show AuthView!
-  if (ready && status && !isUserAuthenticated && !demoMode) {
+  if (ready && !isUserAuthenticated) {
     return (
       <AuthView
         theme={theme}
@@ -689,15 +725,16 @@ export default function HomePage() {
         onLoginWithX={login}
         onExploreDemo={() => setDemoMode(true)}
         busyLogin={busy.login}
-        onAuthenticated={(user) => {
-          const tId = user.uid || "default";
+        onAuthenticated={(user, token) => {
+          const tId = user.uid || (user as any).tenant_id || "default";
           setTenantId(tId);
-          setUserProfile({ email: user.email, name: user.displayName || user.email?.split("@")[0] });
+          setAuthToken(token);
+          setUserProfile({ email: user.email || undefined, name: user.displayName || user.email?.split("@")[0], uid: user.uid });
           if (typeof window !== "undefined") {
+            localStorage.setItem("xvibebot_auth_token", token);
             localStorage.setItem("xvibebot_tenant_id", tId);
             if (user.email) localStorage.setItem("xvibebot_user_email", user.email);
           }
-          setDemoMode(true);
           refresh();
         }}
       />
@@ -705,9 +742,9 @@ export default function HomePage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 flex flex-col selection:bg-slate-900 selection:text-white transition-colors duration-200">
+    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#121212] text-slate-900 dark:text-[#F3F3F3] flex flex-col selection:bg-neutral-900 selection:text-white transition-colors duration-200">
       {/* Top Modern Studio Rail / Navigation Header */}
-      <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 px-4 sm:px-6 py-2.5 sm:py-3 transition-colors duration-200">
+      <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#181818]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-[#262626] px-4 sm:px-6 py-2.5 sm:py-3 transition-colors duration-200">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-4">
           {/* Brand & Identity */}
           <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
@@ -721,7 +758,7 @@ export default function HomePage() {
                 <span className="font-semibold text-[14.5px] text-slate-900 dark:text-white tracking-tight">
                   X-VibeBot
                 </span>
-                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700">
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-100 dark:bg-[#222222] text-slate-600 dark:text-[#A3A3A3] border border-slate-200/80 dark:border-[#2E2E2E]">
                   Studio
                 </span>
               </div>
@@ -729,7 +766,7 @@ export default function HomePage() {
           </div>
 
           {/* Clean Pill-Based Navigation Tabs (Desktop Rail) */}
-          <nav className="hidden md:flex items-center p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/60 dark:border-slate-700/60 shadow-xs">
+          <nav className="hidden md:flex items-center p-1 bg-slate-100 dark:bg-[#202020] rounded-xl border border-slate-200/60 dark:border-[#2E2E2E] shadow-xs">
             {NAV.map((n) => {
               const Icon = n.icon;
               const active = tab === n.id;
@@ -745,20 +782,20 @@ export default function HomePage() {
                   className={`relative px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all flex items-center gap-2 ${
                     active
                       ? "text-slate-900 dark:text-white shadow-xs font-semibold"
-                      : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                      : "text-slate-500 dark:text-[#A3A3A3] hover:text-slate-900 dark:hover:text-white"
                   }`}
                 >
                   {active && (
                     <motion.div
                       layoutId="navPill"
-                      className="absolute inset-0 bg-white dark:bg-slate-900 rounded-lg border border-slate-200/70 dark:border-slate-700"
+                      className="absolute inset-0 bg-white dark:bg-[#141414] rounded-lg border border-slate-200/70 dark:border-[#2E2E2E]"
                       transition={{ type: "spring", stiffness: 450, damping: 35 }}
                     />
                   )}
                   <Icon className="w-4 h-4 relative z-10" />
                   <span className="relative z-10">{n.label}</span>
                   {Boolean(count && count > 0) && (
-                    <span className="relative z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[10.5px] font-semibold flex items-center justify-center">
+                    <span className="relative z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-slate-900 dark:bg-white text-white dark:text-black text-[10.5px] font-semibold flex items-center justify-center">
                       {count}
                     </span>
                   )}
@@ -773,7 +810,7 @@ export default function HomePage() {
             <button
               type="button"
               onClick={toggleTheme}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-[#A3A3A3] hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#222222] transition-colors"
               title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
               aria-label="Toggle theme"
             >
@@ -786,24 +823,15 @@ export default function HomePage() {
 
             {/* Multi-Tenant / User Profile pill */}
             {userProfile && (
-              <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-300 shadow-2xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                <span className="font-medium max-w-[85px] md:max-w-[120px] truncate" title={userProfile.email || tenantId}>
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#222222] border border-slate-200/80 dark:border-[#2E2E2E] text-xs text-slate-700 dark:text-[#D4D4D4] shadow-2xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="font-medium max-w-[70px] sm:max-w-[120px] truncate" title={userProfile.email || tenantId}>
                   {userProfile.name || userProfile.email || "Workspace"}
                 </span>
                 <button
-                  onClick={() => {
-                    if (typeof window !== "undefined") {
-                      localStorage.removeItem("xvibebot_tenant_id");
-                      localStorage.removeItem("xvibebot_user_email");
-                    }
-                    setTenantId("default");
-                    setUserProfile(null);
-                    setDemoMode(false);
-                    notify("Signed out of tenant workspace");
-                  }}
-                  title="Sign out of workspace"
-                  className="text-slate-400 hover:text-rose-600 ml-1 transition-colors"
+                  onClick={handleSignOut}
+                  title="Sign out of studio account"
+                  className="text-slate-400 hover:text-rose-500 ml-1 transition-colors"
                 >
                   <LogOut className="w-3 h-3" />
                 </button>
@@ -812,19 +840,19 @@ export default function HomePage() {
 
             {/* Account pill */}
             {status?.is_logged_in ? (
-              <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs shadow-2xs">
+              <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white dark:bg-[#202020] border border-slate-200 dark:border-[#2E2E2E] text-xs shadow-2xs">
                 <span className="relative flex h-2 w-2 shrink-0">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                 </span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200 max-w-[80px] sm:max-w-[120px] truncate">
+                <span className="font-semibold text-slate-800 dark:text-[#E5E5E5] max-w-[80px] sm:max-w-[120px] truncate">
                   {status.linked_username || "Linked"}
                 </span>
                 <button
                   onClick={checkSession}
                   disabled={busy.session}
                   title="Re-check session"
-                  className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 ml-0.5 transition-colors shrink-0"
+                  className="text-slate-400 hover:text-slate-700 dark:hover:text-white ml-0.5 transition-colors shrink-0"
                 >
                   {busy.session ? <Spin className="w-3 h-3" /> : <RefreshCw className="w-3 h-3" />}
                 </button>
@@ -867,7 +895,7 @@ export default function HomePage() {
               disabled={busy.toggle || !status}
               className={`btn !h-8 !px-2.5 sm:!px-3 text-xs transition-all ${
                 status?.is_active
-                  ? "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-700"
+                  ? "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2A2A2A] text-slate-800 dark:text-[#E5E5E5] border-slate-200 dark:border-[#2E2E2E]"
                   : "btn-primary"
               }`}
             >
@@ -890,7 +918,7 @@ export default function HomePage() {
             <button
               onClick={() => setShowLogs((s) => !s)}
               className={`btn btn-quiet !h-8 !w-8 !p-0 transition-colors hidden md:inline-flex ${
-                showLogs ? "bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white" : ""
+                showLogs ? "bg-slate-200 dark:bg-[#2A2A2A] text-slate-900 dark:text-white" : ""
               }`}
               title="Toggle Live Activity Log"
             >
@@ -942,7 +970,7 @@ export default function HomePage() {
             {tab === "queue" && (
               <div className="space-y-4">
                 {/* Queue Control Toolbar */}
-                <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl p-3 sm:p-3.5 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-3 sm:p-3.5 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <input
                       className="field !h-9 flex-1 sm:max-w-[320px]"
@@ -992,21 +1020,21 @@ export default function HomePage() {
 
                 {/* Queue Cards or Empty State */}
                 {!ready ? (
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl py-20 flex flex-col items-center justify-center gap-3 text-slate-400">
-                    <Spin className="w-6 h-6 text-slate-600 dark:text-slate-400" />
+                  <div className="bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#262626] rounded-xl py-20 flex flex-col items-center justify-center gap-3 text-slate-400">
+                    <Spin className="w-6 h-6 text-slate-600 dark:text-[#A3A3A3]" />
                     <span className="text-xs font-medium">Loading drafting queue...</span>
                   </div>
                 ) : pending.length === 0 ? (
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl py-16 sm:py-20 text-center space-y-2 p-6">
-                    <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 flex items-center justify-center mx-auto mb-3">
+                  <div className="bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#262626] rounded-xl py-16 sm:py-20 text-center space-y-2 p-6">
+                    <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-[#222222] text-slate-400 dark:text-[#737373] flex items-center justify-center mx-auto mb-3">
                       <Inbox className="w-6 h-6" />
                     </div>
                     <h3 className="text-base font-semibold text-slate-900 dark:text-white">
                       Drafting queue is empty
                     </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-[#A3A3A3] max-w-md mx-auto leading-relaxed">
                       Scan your feed to discover live niche conversations, or trigger{" "}
-                      <strong className="text-slate-700 dark:text-slate-200">Smart Auto-Draft</strong> above to let
+                      <strong className="text-slate-700 dark:text-[#E5E5E5]">Smart Auto-Draft</strong> above to let
                       Gemini compose an original post or multi-part thread.
                     </p>
                     <div className="pt-2">
@@ -1044,10 +1072,10 @@ export default function HomePage() {
                         // Type colors
                         const typeBadgeStyle =
                           type === "thread"
-                            ? "bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800"
+                            ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800"
                             : type === "post"
-                            ? "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
-                            : "bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800";
+                            ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
+                            : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800";
 
                         const typeLabel =
                           type === "thread"
@@ -1063,7 +1091,7 @@ export default function HomePage() {
                             initial={{ opacity: 0, y: 6 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ duration: 0.2, delay: Math.min(idx, 5) * 0.03 }}
-                            className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl p-4 sm:p-5 shadow-xs transition-shadow hover:shadow-sm space-y-4 relative overflow-hidden"
+                            className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-4 sm:p-5 shadow-xs transition-shadow hover:shadow-sm space-y-4 relative overflow-hidden"
                           >
                             {/* Accent stripe */}
                             <div
@@ -1084,19 +1112,19 @@ export default function HomePage() {
                                 >
                                   {typeLabel}
                                 </span>
-                                <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                                <span className="text-xs font-medium text-slate-700 dark:text-[#D4D4D4]">
                                   @{item.tweet_author || "creator"}
                                 </span>
                                 {item.tweet_metrics && (
-                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200/60 dark:border-slate-700">
+                                  <span className="text-[11px] text-slate-500 dark:text-[#A3A3A3] bg-slate-100 dark:bg-[#222222] px-2 py-0.5 rounded-md border border-slate-200/60 dark:border-[#2E2E2E]">
                                     {item.tweet_metrics}
                                   </span>
                                 )}
                                 <span
                                   className={`text-[11px] font-medium px-2 py-0.5 rounded-md ${
                                     urgency >= 7
-                                      ? "bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
-                                      : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                                      ? "bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+                                      : "bg-slate-100 dark:bg-[#222222] text-slate-600 dark:text-[#D4D4D4]"
                                   }`}
                                 >
                                   Urgency {urgency}/10
@@ -1114,8 +1142,8 @@ export default function HomePage() {
                                     }
                                     className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-md border transition-colors ${
                                       effectiveLike
-                                        ? "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 font-semibold"
-                                        : "bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:text-slate-800 dark:hover:text-slate-200"
+                                        ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 font-semibold"
+                                        : "bg-slate-50 dark:bg-[#222222]/60 text-slate-500 dark:text-[#A3A3A3] border-slate-200 dark:border-[#2E2E2E] hover:text-slate-800 dark:hover:text-[#E5E5E5]"
                                     }`}
                                   >
                                     <Heart
@@ -1128,13 +1156,13 @@ export default function HomePage() {
                                 )}
 
                                 {item.media_url && (
-                                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                                     Vision Analyzed
                                   </span>
                                 )}
 
                                 {item.status === "scheduled" && (
-                                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 flex items-center gap-1">
+                                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 flex items-center gap-1">
                                     <Clock className="w-3 h-3" /> {schedLabel(item.scheduled_for)}
                                   </span>
                                 )}
@@ -1145,7 +1173,7 @@ export default function HomePage() {
                                   href={item.tweet_url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white inline-flex items-center gap-1 transition-colors"
+                                  className="text-xs text-slate-500 dark:text-[#A3A3A3] hover:text-slate-900 dark:hover:text-white inline-flex items-center gap-1 transition-colors"
                                 >
                                   <span>View Original</span>
                                   <ExternalLink className="w-3 h-3" />
@@ -1155,13 +1183,13 @@ export default function HomePage() {
 
                             {/* Source Tweet Context Box */}
                             {item.tweet_text && (
-                              <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/60 rounded-lg p-3 sm:p-3.5 flex items-start gap-3.5">
+                              <div className="bg-slate-50 dark:bg-[#222222]/60 border border-slate-200/70 dark:border-[#2E2E2E]/60 rounded-lg p-3 sm:p-3.5 flex items-start gap-3.5">
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-xs font-normal text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-line">
+                                  <p className="text-xs font-normal text-slate-700 dark:text-[#D4D4D4] leading-relaxed whitespace-pre-line">
                                     {item.tweet_text}
                                   </p>
                                   {item.error_message && (
-                                    <p className="text-[11.5px] text-blue-700 dark:text-blue-300 mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center gap-1.5">
+                                    <p className="text-[11.5px] text-blue-700 dark:text-blue-300 mt-2 pt-2 border-t border-slate-200/60 dark:border-[#2E2E2E]/60 flex items-center gap-1.5">
                                       <Sparkles className="w-3 h-3 text-blue-600 dark:text-blue-400 shrink-0" />
                                       <span>
                                         <strong className="font-semibold">Context Insight:</strong>{" "}
@@ -1181,7 +1209,7 @@ export default function HomePage() {
                                     <img
                                       src={item.media_url}
                                       alt="Tweet media"
-                                      className="w-16 h-16 object-cover rounded-md border border-slate-200 dark:border-slate-700 hover:opacity-90 transition-opacity"
+                                      className="w-16 h-16 object-cover rounded-md border border-slate-200 dark:border-[#2E2E2E] hover:opacity-90 transition-opacity"
                                     />
                                   </a>
                                 )}
@@ -1203,8 +1231,8 @@ export default function HomePage() {
                                       }}
                                       className={`h-7 px-3 rounded-md text-[12px] font-medium transition-all ${
                                         sel
-                                          ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-xs font-semibold"
-                                          : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200/60 dark:border-slate-700"
+                                          ? "bg-slate-900 dark:bg-white text-white dark:text-black shadow-xs font-semibold"
+                                          : "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2C2C2C] text-slate-700 dark:text-[#D4D4D4] border border-slate-200/60 dark:border-[#2E2E2E]"
                                       }`}
                                     >
                                       {k}
@@ -1212,7 +1240,7 @@ export default function HomePage() {
                                   );
                                 })}
                                 {type === "thread" && (
-                                  <span className="text-[11px] text-slate-400 dark:text-slate-500 ml-1">
+                                  <span className="text-[11px] text-slate-400 dark:text-[#737373] ml-1">
                                     (Posts separated with ---)
                                   </span>
                                 )}
@@ -1221,7 +1249,7 @@ export default function HomePage() {
                               <button
                                 onClick={() => regenerate(item.tweet_id)}
                                 disabled={busy[`r_${item.tweet_id}`]}
-                                className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                                className="text-xs text-slate-500 dark:text-[#A3A3A3] hover:text-slate-900 dark:hover:text-white font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-[#222222] transition-colors"
                               >
                                 {busy[`r_${item.tweet_id}`] ? (
                                   <Spin className="w-3.5 h-3.5" />
@@ -1247,11 +1275,11 @@ export default function HomePage() {
                             </div>
 
                             {/* Bottom Action Footer */}
-                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
-                              <div className="flex items-center gap-2.5 text-xs text-slate-500 dark:text-slate-400">
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-[#262626]">
+                              <div className="flex items-center gap-2.5 text-xs text-slate-500 dark:text-[#A3A3A3]">
                                 <span className="tabular-nums">{text.length} characters</span>
                                 {isEdited && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 text-[11px] font-semibold border border-amber-200 dark:border-amber-800">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 text-[11px] font-semibold border border-amber-200 dark:border-amber-800">
                                     <Brain className="w-3 h-3 text-amber-600 dark:text-amber-400" />
                                     <span>Edited · Voice Memory will learn</span>
                                   </span>
@@ -1296,12 +1324,12 @@ export default function HomePage() {
 
             {/* History View */}
             {tab === "history" && (
-              <section className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl overflow-hidden shadow-xs">
+              <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl overflow-hidden shadow-xs">
                 {/* Header & Filter Pills */}
-                <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between flex-wrap gap-3">
+                <div className="p-4 border-b border-slate-200 dark:border-[#262626] flex items-center justify-between flex-wrap gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Activity History</h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Every evaluated tweet, published reply, and schedule event</p>
+                    <p className="text-xs text-slate-500 dark:text-[#A3A3A3]">Every evaluated tweet, published reply, and schedule event</p>
                   </div>
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
                     {["all", "posted", "scheduled", "pending_approval", "skipped", "failed"].map((f) => (
@@ -1310,8 +1338,8 @@ export default function HomePage() {
                         onClick={() => setHistFilter(f)}
                         className={`h-7 px-3 text-xs rounded-lg transition-all capitalize font-medium shrink-0 ${
                           histFilter === f
-                            ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-xs font-semibold"
-                            : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+                            ? "bg-slate-900 dark:bg-white text-white dark:text-black shadow-xs font-semibold"
+                            : "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2C2C2C] text-slate-600 dark:text-[#D4D4D4]"
                         }`}
                       >
                         {f === "pending_approval" ? "Pending" : f}
@@ -1324,7 +1352,7 @@ export default function HomePage() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead>
-                      <tr className="bg-slate-50/80 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 font-medium border-b border-slate-200 dark:border-slate-800">
+                      <tr className="bg-slate-50/80 dark:bg-[#222222]/60 text-slate-500 dark:text-[#A3A3A3] font-medium border-b border-slate-200 dark:border-[#262626]">
                         <th className="py-2.5 px-4">Status</th>
                         <th className="py-2.5 px-4">Type & Signals</th>
                         <th className="py-2.5 px-4">Source Conversation</th>
@@ -1332,10 +1360,10 @@ export default function HomePage() {
                         <th className="py-2.5 px-4 text-right">Time</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    <tbody className="divide-y divide-slate-100 dark:divide-[#262626]">
                       {!histReady && (
                         <tr>
-                          <td colSpan={5} className="py-12 text-center text-slate-400">
+                          <td colSpan={5} className="py-12 text-center text-slate-400 dark:text-[#737373]">
                             <div className="flex items-center justify-center gap-2">
                               <Spin /> Loading history...
                             </div>
@@ -1344,13 +1372,13 @@ export default function HomePage() {
                       )}
                       {histReady && shownHistory.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="py-12 text-center text-slate-400">
+                          <td colSpan={5} className="py-12 text-center text-slate-400 dark:text-[#737373]">
                             No activity found matching this filter.
                           </td>
                         </tr>
                       )}
                       {shownHistory.map((h) => (
-                        <tr key={h.tweet_id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                        <tr key={h.tweet_id} className="hover:bg-slate-50/70 dark:hover:bg-[#202020] transition-colors">
                           <td className="py-3 px-4">
                             <span
                               className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-wider ${
@@ -1362,11 +1390,11 @@ export default function HomePage() {
                           </td>
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="capitalize font-semibold text-slate-800 dark:text-slate-200">
+                              <span className="capitalize font-semibold text-slate-800 dark:text-[#E5E5E5]">
                                 {h.action_type || "reply"}
                               </span>
                               {h.urgency_score !== undefined && (
-                                <span className="text-[10px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded">
+                                <span className="text-[10px] font-medium bg-slate-100 dark:bg-[#222222] text-slate-600 dark:text-[#D4D4D4] px-1.5 py-0.5 rounded">
                                   U{h.urgency_score}/10
                                 </span>
                               )}
@@ -1391,14 +1419,14 @@ export default function HomePage() {
                             <span className="font-semibold text-slate-900 dark:text-white block truncate">
                               @{h.tweet_author || "creator"}
                             </span>
-                            <span className="text-slate-500 dark:text-slate-400 font-normal block truncate">
+                            <span className="text-slate-500 dark:text-[#A3A3A3] font-normal block truncate">
                               {h.tweet_text}
                             </span>
                           </td>
-                          <td className="py-3 px-4 max-w-[320px] text-slate-600 dark:text-slate-300 truncate">
+                          <td className="py-3 px-4 max-w-[320px] text-slate-600 dark:text-[#D4D4D4] truncate">
                             {h.generated_text || h.error_message || "—"}
                           </td>
-                          <td className="py-3 px-4 text-right text-slate-400 whitespace-nowrap">
+                          <td className="py-3 px-4 text-right text-slate-400 dark:text-[#737373] whitespace-nowrap">
                             {new Date(h.timestamp).toLocaleTimeString([], {
                               hour: "2-digit",
                               minute: "2-digit",
@@ -1416,12 +1444,12 @@ export default function HomePage() {
             {tab === "settings" && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
                 {/* Column 1: Voice & AI Intelligence */}
-                <section className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl p-4 sm:p-6 space-y-5 shadow-xs">
+                <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-4 sm:p-6 space-y-5 shadow-xs">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                       Voice, Persona & Discovery
                     </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    <p className="text-xs text-slate-500 dark:text-[#A3A3A3] mt-0.5">
                       Tune Gemini&apos;s writing persona and autonomous niche exploration
                     </p>
                   </div>
@@ -1437,7 +1465,7 @@ export default function HomePage() {
                   </div>
 
                   {/* Smart Search Toggle */}
-                  <label className="flex items-start gap-3 p-3.5 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/70 dark:bg-slate-800/50 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                  <label className="flex items-start gap-3 p-3.5 border border-slate-200 dark:border-[#262626] rounded-xl bg-slate-50/70 dark:bg-[#202020] cursor-pointer hover:bg-slate-50 dark:hover:bg-[#242424] transition-colors">
                     <input
                       type="checkbox"
                       checked={smartQuery}
@@ -1448,7 +1476,7 @@ export default function HomePage() {
                       <span className="block text-xs font-semibold text-slate-900 dark:text-white">
                         Smart AI Search Discovery
                       </span>
-                      <span className="text-xs text-slate-500 dark:text-slate-400 leading-normal block">
+                      <span className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-normal block">
                         Allows Gemini to formulate dynamic 2–4 word search pulses for every scan, preventing query stagnation and discovering fresh conversational threads.
                       </span>
                     </div>
@@ -1466,9 +1494,9 @@ export default function HomePage() {
                   </div>
 
                   {/* Active Few-Shot Memory Card */}
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 rounded-xl space-y-2">
+                  <div className="p-4 bg-slate-50 dark:bg-[#202020] border border-slate-200 dark:border-[#262626] rounded-xl space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                      <span className="text-xs font-semibold text-slate-800 dark:text-[#E5E5E5] flex items-center gap-1.5">
                         <Brain className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                         Few-Shot Self-Learning Voice Memory
                       </span>
@@ -1476,13 +1504,13 @@ export default function HomePage() {
                         {analytics?.learning_memory?.total_learned ?? status?.learned_examples_count ?? 0} samples active
                       </span>
                     </div>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-relaxed">
                       Every reply you edit or approve in the Queue is automatically injected as a high-signal few-shot reference, while skipped posts refine the negative filter.
                     </p>
                   </div>
 
                   {/* AI Model & Key Verification */}
-                  <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-[#262626]">
                     <div>
                       <label className="label">Active Model</label>
                       <select
@@ -1528,12 +1556,12 @@ export default function HomePage() {
                 </section>
 
                 {/* Column 2: Safety & Anti-Detection Automation */}
-                <section className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl p-4 sm:p-6 space-y-5 shadow-xs">
+                <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-4 sm:p-6 space-y-5 shadow-xs">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                       Safety, Throttling & Velocity
                     </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    <p className="text-xs text-slate-500 dark:text-[#A3A3A3] mt-0.5">
                       Configure biological pacing and anti-detection boundaries
                     </p>
                   </div>
@@ -1628,7 +1656,7 @@ export default function HomePage() {
                   </div>
 
                   {/* Account Warmup Shield */}
-                  <label className="flex items-start gap-3 p-3.5 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/70 dark:bg-slate-800/50 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                  <label className="flex items-start gap-3 p-3.5 border border-slate-200 dark:border-[#262626] rounded-xl bg-slate-50/70 dark:bg-[#202020] cursor-pointer hover:bg-slate-50 dark:hover:bg-[#242424] transition-colors">
                     <input
                       type="checkbox"
                       checked={warmupMode}
@@ -1639,14 +1667,14 @@ export default function HomePage() {
                       <span className="block text-xs font-semibold text-slate-900 dark:text-white">
                         Account Warmup Shield
                       </span>
-                      <span className="text-xs text-slate-500 dark:text-slate-400 leading-normal block">
+                      <span className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-normal block">
                         Recommended for new or cautious profiles: limits velocity to 3 actions/hr and 8/day with extended dwell and randomized reading intervals.
                       </span>
                     </div>
                   </label>
 
                   {/* Autopilot Mode */}
-                  <label className="flex items-start gap-3 p-3.5 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/70 dark:bg-slate-800/50 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                  <label className="flex items-start gap-3 p-3.5 border border-slate-200 dark:border-[#262626] rounded-xl bg-slate-50/70 dark:bg-[#202020] cursor-pointer hover:bg-slate-50 dark:hover:bg-[#242424] transition-colors">
                     <input
                       type="checkbox"
                       checked={autopilot}
@@ -1657,7 +1685,7 @@ export default function HomePage() {
                       <span className="block text-xs font-semibold text-slate-900 dark:text-white">
                         Autonomous Autopilot
                       </span>
-                      <span className="text-xs text-slate-500 dark:text-slate-400 leading-normal block">
+                      <span className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-normal block">
                         Automatically schedules high-urgency drafts into natural jittered intervals without waiting for manual queue approval.
                       </span>
                     </div>
@@ -1685,16 +1713,16 @@ export default function HomePage() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              className="bg-slate-900 text-slate-100 rounded-xl overflow-hidden border border-slate-800 shadow-md"
+              className="bg-[#141414] text-[#E5E5E5] rounded-xl overflow-hidden border border-[#262626] shadow-md"
             >
-              <div className="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex items-center justify-between text-xs">
+              <div className="px-4 py-2.5 bg-[#101010] border-b border-[#262626] flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
                   <Terminal className="w-3.5 h-3.5 text-emerald-400" />
                   <span className="font-semibold text-white">Live Activity Stream</span>
                 </div>
-                <span className="text-slate-400 font-mono text-[11px]">{status?.selected_model}</span>
+                <span className="text-[#A3A3A3] font-mono text-[11px]">{status?.selected_model}</span>
               </div>
-              <div className="p-3.5 h-44 overflow-y-auto font-mono text-[11px] space-y-1 bg-slate-900/90">
+              <div className="p-3.5 h-44 overflow-y-auto font-mono text-[11px] space-y-1 bg-[#141414]">
                 {status?.recent_logs?.length ? (
                   status.recent_logs.map((l, i) => (
                     <div
@@ -1704,18 +1732,18 @@ export default function HomePage() {
                           ? "text-rose-400"
                           : l.level === "WARNING"
                           ? "text-amber-400"
-                          : "text-slate-300"
+                          : "text-[#D4D4D4]"
                       }
                     >
-                      <span className="text-slate-500 mr-2">{l.timestamp}</span>
-                      <span className="text-[10px] font-bold uppercase mr-2 text-slate-400">
+                      <span className="text-[#737373] mr-2">{l.timestamp}</span>
+                      <span className="text-[10px] font-bold uppercase mr-2 text-[#A3A3A3]">
                         [{l.level}]
                       </span>
                       <span>{l.message}</span>
                     </div>
                   ))
                 ) : (
-                  <span className="text-slate-500">No activity logged yet.</span>
+                  <span className="text-[#737373]">No activity logged yet.</span>
                 )}
               </div>
             </motion.section>
@@ -1733,7 +1761,7 @@ export default function HomePage() {
             className={`fixed bottom-20 md:bottom-6 right-4 left-4 sm:left-auto sm:right-6 z-50 px-4 py-3 text-xs font-medium shadow-dropdown rounded-xl flex items-center gap-2.5 max-w-md ${
               toast.error
                 ? "bg-rose-950 text-rose-100 border border-rose-800"
-                : "bg-slate-900 text-white border border-slate-800"
+                : "bg-[#181818] text-[#F3F3F3] border border-[#262626]"
             }`}
           >
             {toast.error ? (
@@ -1754,7 +1782,7 @@ export default function HomePage() {
       </AnimatePresence>
 
       {/* Mobile Bottom Navigation Thumb Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 px-3 py-1.5 flex items-center justify-around md:hidden shadow-lg">
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#181818]/95 backdrop-blur-md border-t border-slate-200 dark:border-[#262626] px-3 py-1.5 flex items-center justify-around md:hidden shadow-lg">
         {NAV.map((n) => {
           const Icon = n.icon;
           const active = tab === n.id;
@@ -1769,13 +1797,13 @@ export default function HomePage() {
               className={`relative flex flex-col items-center justify-center py-1 px-3 rounded-lg text-[11px] font-medium transition-all ${
                 active
                   ? "text-slate-900 dark:text-white font-semibold"
-                  : "text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                  : "text-slate-400 dark:text-[#737373] hover:text-slate-700 dark:hover:text-[#D4D4D4]"
               }`}
             >
               <div className="relative">
                 <Icon className={`w-5 h-5 ${active ? "stroke-[2.2px]" : "stroke-[1.8px]"}`} />
                 {Boolean(count && count > 0) && (
-                  <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[10px] font-bold flex items-center justify-center">
+                  <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-slate-900 dark:bg-white text-white dark:text-black text-[10px] font-bold flex items-center justify-center">
                     {count}
                   </span>
                 )}
@@ -1793,7 +1821,7 @@ export default function HomePage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-xs grid place-items-center p-4"
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs grid place-items-center p-4"
             onClick={() => setCookieOpen(false)}
           >
             <motion.div
@@ -1801,21 +1829,21 @@ export default function HomePage() {
               animate={{ y: 0, scale: 1 }}
               exit={{ y: 8, scale: 0.98 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-lg p-5 sm:p-6 space-y-4 shadow-dropdown border border-slate-200 dark:border-slate-800"
+              className="bg-white dark:bg-[#181818] rounded-2xl w-full max-w-lg p-5 sm:p-6 space-y-4 shadow-dropdown border border-slate-200 dark:border-[#262626]"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Cookie className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+                  <Cookie className="w-4 h-4 text-slate-700 dark:text-[#D4D4D4]" />
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Session Cookie Sync</h3>
                 </div>
                 <button
                   onClick={() => setCookieOpen(false)}
-                  className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
+                  className="text-slate-400 hover:text-slate-700 dark:hover:text-[#F3F3F3] transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              <p className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-relaxed">
                 Export your active X session cookies to transfer your logged-in session to cloud deployments (like Render or Docker) without re-authenticating.
               </p>
               <textarea

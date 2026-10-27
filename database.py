@@ -6,12 +6,21 @@ Uses SQLite via SQLAlchemy with automatic schema migration.
 import os
 import re
 import random
+import hashlib
+import hmac
+import base64
+import json
+import secrets
+import time
+import uuid
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, Session
 
-from models import Base, ProcessedTweet, AgentConfig
+from models import Base, ProcessedTweet, AgentConfig, User
+
+AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "x-vibebot-creator-studio-secret-key-salt-2026")
 
 DB_FILE = os.getenv("DATABASE_URL", "sqlite:///./vibebot.db")
 
@@ -484,3 +493,101 @@ def update_agent_config(db: Session, updates: dict, tenant_id: str = "default") 
     db.commit()
     db.refresh(config)
     return config
+
+
+# ==============================================================================
+# Authentication & User Management Helpers
+# ==============================================================================
+
+def hash_password(password: str) -> str:
+    """Hashes a plaintext password using salted PBKDF2-HMAC-SHA256 (100,000 iterations)."""
+    salt = secrets.token_hex(16)
+    pwd_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        100_000
+    ).hex()
+    return f"{salt}${pwd_hash}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verifies a plaintext password against a stored salt$hash string."""
+    try:
+        if not stored_hash or "$" not in stored_hash:
+            return False
+        salt, expected_hash = stored_hash.split("$", 1)
+        calc_hash = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            100_000
+        ).hex()
+        return hmac.compare_digest(calc_hash, expected_hash)
+    except Exception:
+        return False
+
+
+def create_auth_token(user_id: str, email: str, tenant_id: str, exp_days: int = 30) -> str:
+    """Generates an HMAC-SHA256 signed session token for a user."""
+    payload = {
+        "uid": user_id,
+        "email": email,
+        "tenant_id": tenant_id,
+        "exp": int(time.time()) + (exp_days * 86400)
+    }
+    payload_json = json.dumps(payload, separators=(',', ':'))
+    b64_payload = base64.urlsafe_b64encode(payload_json.encode('utf-8')).decode('utf-8').rstrip('=')
+    sig = hmac.new(AUTH_SECRET_KEY.encode('utf-8'), b64_payload.encode('utf-8'), hashlib.sha256).hexdigest()
+    return f"{b64_payload}.{sig}"
+
+
+def verify_auth_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verifies an HMAC-SHA256 signed token and returns its payload if valid and not expired."""
+    try:
+        if not token or "." not in token:
+            return None
+        b64_payload, sig = token.split(".", 1)
+        expected_sig = hmac.new(AUTH_SECRET_KEY.encode('utf-8'), b64_payload.encode('utf-8'), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        padded = b64_payload + "=" * ((4 - len(b64_payload) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode('utf-8')).decode('utf-8'))
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def create_user(db: Session, email: str, password_plain: str, name: Optional[str] = None) -> User:
+    """Creates a new user record in SQLite with isolated tenant_id and default agent config."""
+    clean_email = email.strip().lower()
+    user_id = f"u_{uuid.uuid4().hex[:12]}"
+    tenant_id = user_id
+    pwd_hash = hash_password(password_plain)
+    user = User(
+        user_id=user_id,
+        email=clean_email,
+        password_hash=pwd_hash,
+        name=name.strip() if name else clean_email.split("@")[0],
+        tenant_id=tenant_id
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    # Ensure this user gets an isolated AgentConfig record
+    get_agent_config(db, tenant_id=tenant_id)
+    return user
+
+
+def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    """Retrieves a user by email address (case-insensitive)."""
+    clean_email = email.strip().lower()
+    return db.query(User).filter(func.lower(User.email) == clean_email).first()
+
+
+def get_user_by_id(db: Session, user_id: str) -> Optional[User]:
+    """Retrieves a user by unique user_id string."""
+    return db.query(User).filter(User.user_id == user_id).first()
+

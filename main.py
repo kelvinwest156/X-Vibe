@@ -39,12 +39,17 @@ from models import (
     Base,
     ProcessedTweet,
     AgentConfig,
+    User,
     ProcessedTweetResponse,
     AgentConfigUpdate,
     AgentConfigResponse,
     AgentStatusResponse,
     ApproveDraftRequest,
-    SystemLogEntry
+    SystemLogEntry,
+    SignUpRequest,
+    SignInRequest,
+    UserResponse,
+    AuthResponse
 )
 from database import (
     init_db,
@@ -64,7 +69,13 @@ from database import (
     update_agent_config,
     is_within_active_hours,
     compute_random_schedule_time,
-    SessionLocal
+    SessionLocal,
+    create_user,
+    get_user_by_email,
+    get_user_by_id,
+    verify_password,
+    create_auth_token,
+    verify_auth_token
 )
 from ai_engine import (
     evaluate_tweet,
@@ -137,23 +148,37 @@ def get_tenant_browser_worker(tenant_id: str = "default") -> XBrowserWorker:
 
 async def get_current_tenant(
     authorization: Optional[str] = Header(None),
-    x_tenant_id: Optional[str] = Header(None)
+    x_tenant_id: Optional[str] = Header(None),
+    x_auth_token: Optional[str] = Header(None)
 ) -> str:
     """
     Multi-tenancy isolation dependency:
-    Extracts tenant ID from Firebase JWT Bearer token or 'X-Tenant-Id' header.
+    Extracts tenant ID from signed session token, Firebase JWT Bearer token, or 'X-Tenant-Id' header.
     Defaults cleanly to 'default' when running in single-user or local mode.
     """
-    if x_tenant_id and x_tenant_id.strip():
-        return x_tenant_id.strip()
+    token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split("Bearer ", 1)[1].strip()
+    elif x_auth_token and x_auth_token.strip():
+        token = x_auth_token.strip()
+
+    if token:
+        # Check signed session token first
+        payload = verify_auth_token(token)
+        if payload and payload.get("tenant_id"):
+            return payload["tenant_id"]
+        # Check Firebase token fallback
         try:
             import firebase_admin.auth
             decoded = firebase_admin.auth.verify_id_token(token)
-            return decoded.get("uid") or "default"
+            if decoded.get("uid"):
+                return decoded["uid"]
         except Exception:
             pass
+
+    if x_tenant_id and x_tenant_id.strip():
+        return x_tenant_id.strip()
+
     return "default"
 
 last_interaction_timestamp: float = 0.0
@@ -639,6 +664,111 @@ async def serve_dashboard():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return HTMLResponse("<h1>Static dashboard not found.</h1>", status_code=404)
+
+
+# ==============================================================================
+# Authentication Endpoints (Sign Up, Sign In, Profile, Sign Out)
+# ==============================================================================
+
+@app.post("/api/auth/signup", response_model=AuthResponse)
+async def signup(req: SignUpRequest, db: Session = Depends(get_db)):
+    email = req.email.strip().lower()
+    if not email or "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Please provide a valid email address.")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+
+    existing = get_user_by_email(db, email)
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists. Please sign in.")
+
+    user = create_user(db, email=email, password_plain=req.password, name=req.name)
+    token = create_auth_token(user.user_id, user.email, user.tenant_id)
+    return AuthResponse(
+        success=True,
+        token=token,
+        user=UserResponse(
+            uid=user.user_id,
+            email=user.email,
+            name=user.name,
+            tenant_id=user.tenant_id,
+            created_at=user.created_at
+        ),
+        tenant_id=user.tenant_id,
+        message="Account created successfully."
+    )
+
+
+@app.post("/api/auth/signin", response_model=AuthResponse)
+async def signin(req: SignInRequest, db: Session = Depends(get_db)):
+    email = req.email.strip().lower()
+    user = get_user_by_email(db, email)
+    if not user or not verify_password(req.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    token = create_auth_token(user.user_id, user.email, user.tenant_id)
+    return AuthResponse(
+        success=True,
+        token=token,
+        user=UserResponse(
+            uid=user.user_id,
+            email=user.email,
+            name=user.name,
+            tenant_id=user.tenant_id,
+            created_at=user.created_at
+        ),
+        tenant_id=user.tenant_id,
+        message="Signed in successfully."
+    )
+
+
+@app.get("/api/auth/me")
+async def get_me(
+    authorization: Optional[str] = Header(None),
+    x_auth_token: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split("Bearer ", 1)[1].strip()
+    elif x_auth_token and x_auth_token.strip():
+        token = x_auth_token.strip()
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+
+    payload = verify_auth_token(token)
+    if not payload or not payload.get("uid"):
+        # Check Firebase token fallback
+        try:
+            import firebase_admin.auth
+            decoded = firebase_admin.auth.verify_id_token(token)
+            return {
+                "uid": decoded.get("uid"),
+                "email": decoded.get("email"),
+                "name": decoded.get("name") or decoded.get("email", "").split("@")[0],
+                "tenant_id": decoded.get("uid")
+            }
+        except Exception:
+            raise HTTPException(status_code=401, detail="Session expired or invalid. Please sign in again.")
+
+    user = get_user_by_id(db, payload["uid"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    return {
+        "uid": user.user_id,
+        "email": user.email,
+        "name": user.name,
+        "tenant_id": user.tenant_id,
+        "created_at": user.created_at.isoformat() if user.created_at else None
+    }
+
+
+@app.post("/api/auth/signout")
+async def signout():
+    return {"success": True, "message": "Signed out successfully."}
+
 
 
 def update_env_variable(key: str, value: str):

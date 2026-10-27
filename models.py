@@ -69,6 +69,21 @@ class AgentConfig(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class User(Base):
+    """
+    Stores authenticated creator accounts for Multi-Tenancy and Access Control.
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), unique=True, index=True, nullable=False)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    name = Column(String(128), nullable=True)
+    tenant_id = Column(String(128), index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ==============================================================================
 # Pydantic Schemas (FastAPI API validation & serialization)
 # ==============================================================================
@@ -171,3 +186,35 @@ class AgentStatusResponse(BaseModel):
     total_processed_count: int
     selected_model: str
     recent_logs: List[SystemLogEntry]
+
+
+# ==============================================================================
+# Authentication Schemas
+# ==============================================================================
+
+class SignUpRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
+
+class SignInRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    uid: str
+    email: str
+    name: Optional[str] = None
+    tenant_id: str
+    created_at: Optional[datetime] = None
+
+
+class AuthResponse(BaseModel):
+    success: bool
+    token: str
+    user: UserResponse
+    tenant_id: str
+    message: str
+

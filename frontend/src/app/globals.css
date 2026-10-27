@@ -17,15 +17,15 @@
 }
 
 .dark {
-  --canvas: #090d16;
-  --card: #0f172a;
-  --card-hover: #1e293b;
-  --line: #1e293b;
-  --line-soft: #141f33;
-  --ink: #f8fafc;
-  --ink-2: #94a3b8;
-  --ink-3: #64748b;
-  --brand-black: #f8fafc;
+  --canvas: #121212;
+  --card: #181818;
+  --card-hover: #222222;
+  --line: #262626;
+  --line-soft: #1E1E1E;
+  --ink: #F3F3F3;
+  --ink-2: #A3A3A3;
+  --ink-3: #737373;
+  --brand-black: #FFFFFF;
 }
 
 html, body {
@@ -57,12 +57,12 @@ input, select, textarea, button {
     border-color: #cbd5e1;
   }
   .dark .studio-card {
-    background: #0f172a;
-    border-color: #1e293b;
-    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+    background: #181818;
+    border-color: #262626;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.6);
   }
   .dark .studio-card:hover {
-    border-color: #334155;
+    border-color: #383838;
   }
 
   /* Legacy tile aliases mapped to studio-card for smooth compatibility */
@@ -74,8 +74,8 @@ input, select, textarea, button {
     transition: background 0.15s ease, border-color 0.15s ease;
   }
   .dark .tile {
-    background: #0f172a;
-    border-color: #1e293b;
+    background: #181818;
+    border-color: #262626;
   }
   .tile-title {
     font-size: 14px;
@@ -84,7 +84,7 @@ input, select, textarea, button {
     letter-spacing: -0.01em;
   }
   .dark .tile-title {
-    color: #f8fafc;
+    color: #F3F3F3;
   }
   .tile-sub {
     font-size: 12px;
@@ -92,7 +92,7 @@ input, select, textarea, button {
     color: #64748b;
   }
   .dark .tile-sub {
-    color: #94a3b8;
+    color: #A3A3A3;
   }
   .caption {
     font-size: 12px;
@@ -100,7 +100,7 @@ input, select, textarea, button {
     color: #64748b;
   }
   .dark .caption {
-    color: #94a3b8;
+    color: #A3A3A3;
   }
 
   /* Refined Modern Buttons */
@@ -128,14 +128,14 @@ input, select, textarea, button {
     color: #0f172a;
   }
   .dark .btn {
-    background: #1e293b;
-    border-color: #334155;
-    color: #f8fafc;
-    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+    background: #202020;
+    border-color: #2E2E2E;
+    color: #F3F3F3;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
   }
   .dark .btn:hover:not(:disabled) {
-    background: #273549;
-    border-color: #475569;
+    background: #282828;
+    border-color: #383838;
     color: #ffffff;
   }
   .btn:active:not(:disabled) {
@@ -158,14 +158,14 @@ input, select, textarea, button {
     color: #ffffff;
   }
   .dark .btn-primary {
-    background: #f8fafc;
-    border-color: #f8fafc;
-    color: #09090b;
+    background: #F3F3F3;
+    border-color: #F3F3F3;
+    color: #121212;
   }
   .dark .btn-primary:hover:not(:disabled) {
-    background: #e2e8f0;
-    border-color: #e2e8f0;
-    color: #09090b;
+    background: #E5E5E5;
+    border-color: #E5E5E5;
+    color: #121212;
   }
 
   .btn-accent {
@@ -180,9 +180,9 @@ input, select, textarea, button {
     color: #ffffff;
   }
   .dark .btn-accent {
-    background: #f8fafc;
-    border-color: #f8fafc;
-    color: #09090b;
+    background: #F3F3F3;
+    border-color: #F3F3F3;
+    color: #121212;
   }
 
   .btn-emerald {
@@ -208,11 +208,11 @@ input, select, textarea, button {
     color: #0f172a;
   }
   .dark .btn-quiet {
-    color: #94a3b8;
+    color: #A3A3A3;
   }
   .dark .btn-quiet:hover:not(:disabled) {
-    background: #1e293b;
-    color: #f8fafc;
+    background: #202020;
+    color: #F3F3F3;
   }
 
   /* Form Fields */
@@ -238,16 +238,16 @@ input, select, textarea, button {
     box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
   }
   .dark .field {
-    background: #0f172a;
-    border-color: #334155;
-    color: #f8fafc;
+    background: #141414;
+    border-color: #2E2E2E;
+    color: #F3F3F3;
   }
   .dark .field::placeholder {
-    color: #64748b;
+    color: #666666;
   }
   .dark .field:focus {
-    border-color: #38bdf8;
-    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    border-color: #555555;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
   }
 
   .label {
@@ -258,7 +258,7 @@ input, select, textarea, button {
     margin-bottom: 6px;
   }
   .dark .label {
-    color: #cbd5e1;
+    color: #D4D4D4;
   }
 
   /* Clean Pills & Badges */
@@ -276,9 +276,9 @@ input, select, textarea, button {
     color: #475569;
   }
   .dark .chip {
-    background: #1e293b;
-    border-color: #334155;
-    color: #cbd5e1;
+    background: #222222;
+    border-color: #2E2E2E;
+    color: #D4D4D4;
   }
 }
 
@@ -298,10 +298,10 @@ input, select, textarea, button {
   background: #94a3b8;
 }
 .dark ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #2E2E2E;
 }
 .dark ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #444444;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -104,30 +104,45 @@ export default function AuthView({
               : "Account created! Connect your X profile to start the AI studio."
           );
           onAuthenticated?.(user, token);
+          return;
         }
-      } else {
-        // Local simulation when Firebase keys are not in .env
-        setTimeout(() => {
-          setIsSubmitting(false);
-          setLocalMessage(
-            mode === "signin"
-              ? "Signed in! Now connect with X to link your workspace."
-              : "Account created! Connect your X profile to start the AI studio."
-          );
-          onAuthenticated?.({ uid: `tenant_${Date.now()}`, email }, "demo_token");
-        }, 500);
       }
+
+      // Direct FastAPI authentication with secure server-side salted hashing
+      const endpoint = mode === "signin" ? "/api/auth/signin" : "/api/auth/signup";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          name: email.split("@")[0],
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || "Authentication failed");
+      }
+
+      setLocalMessage(data.message || (mode === "signin" ? "Signed in successfully!" : "Account created successfully!"));
+      if (typeof window !== "undefined") {
+        localStorage.setItem("xvibebot_auth_token", data.token);
+        localStorage.setItem("xvibebot_tenant_id", data.tenant_id);
+        localStorage.setItem("xvibebot_user_email", data.user.email);
+      }
+      onAuthenticated?.(data.user, data.token);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Authentication error";
       setLocalMessage(msg);
       setIsError(true);
     } finally {
-      if (isFirebaseConfigured) setIsSubmitting(false);
+      setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 flex flex-col justify-between selection:bg-slate-900 selection:text-white transition-colors duration-200">
+    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#121212] text-slate-900 dark:text-[#F3F3F3] flex flex-col justify-between selection:bg-neutral-900 selection:text-white transition-colors duration-200">
       {/* Top minimal header */}
       <header className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 sm:py-6 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -141,11 +156,11 @@ export default function AuthView({
               <span className="font-semibold text-[15px] tracking-tight text-slate-900 dark:text-white">
                 X-VibeBot
               </span>
-              <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-[#222222] text-slate-600 dark:text-[#A3A3A3] border border-slate-200 dark:border-[#2E2E2E]">
                 Creator Studio 2.0
               </span>
             </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Autonomous X Growth & Voice Engine</p>
+            <p className="text-[11px] text-slate-500 dark:text-[#737373]">Autonomous X Growth & Voice Engine</p>
           </div>
         </div>
 
@@ -154,7 +169,7 @@ export default function AuthView({
             <button
               type="button"
               onClick={onToggleTheme}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-[#A3A3A3] hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#222222] transition-colors"
               title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
               aria-label="Toggle theme"
             >
@@ -165,7 +180,7 @@ export default function AuthView({
           {onExploreDemo && (
             <button
               onClick={onExploreDemo}
-              className="text-[13px] font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors flex items-center gap-1.5"
+              className="text-[13px] font-medium text-slate-600 dark:text-[#D4D4D4] hover:text-slate-900 dark:hover:text-white transition-colors flex items-center gap-1.5"
             >
               <span className="hidden sm:inline">Explore Studio in Demo Mode</span>
               <span className="sm:hidden">Demo Mode</span>
@@ -191,7 +206,7 @@ export default function AuthView({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ delay: 0.1 }}
-              className="text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto"
+              className="text-sm text-slate-500 dark:text-[#A3A3A3] max-w-sm mx-auto"
             >
               Autonomous feed intelligence, few-shot voice cloning, and organic engagement for builders on X.
             </motion.p>
@@ -202,7 +217,7 @@ export default function AuthView({
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.2 }}
-            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.4)] space-y-5"
+            className="bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#262626] rounded-2xl p-6 sm:p-8 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.7)] space-y-5"
           >
             {/* Primary OAuth Actions */}
             <div className="space-y-2.5">
@@ -211,7 +226,7 @@ export default function AuthView({
                 type="button"
                 onClick={handleTwitterAuth}
                 disabled={busyLogin || isSubmitting}
-                className="w-full h-11 px-4 rounded-xl bg-black hover:bg-neutral-900 dark:bg-white dark:hover:bg-slate-200 dark:text-black active:scale-[0.99] text-white font-medium text-[13.5px] transition-all flex items-center justify-center gap-3 shadow-sm disabled:opacity-60"
+                className="w-full h-11 px-4 rounded-xl bg-black hover:bg-neutral-900 dark:bg-white dark:hover:bg-[#EDEDED] dark:text-black active:scale-[0.99] text-white font-medium text-[13.5px] transition-all flex items-center justify-center gap-3 shadow-sm disabled:opacity-60"
               >
                 {busyLogin || isSubmitting ? (
                   <Loader2 className="w-4 h-4 animate-spin text-white dark:text-black" />
@@ -228,7 +243,7 @@ export default function AuthView({
                 type="button"
                 onClick={handleGoogleAuth}
                 disabled={isSubmitting}
-                className="w-full h-11 px-4 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/80 active:scale-[0.99] text-slate-800 dark:text-slate-100 font-medium text-[13.5px] border border-slate-200 dark:border-slate-700 transition-all flex items-center justify-center gap-3 shadow-xs disabled:opacity-60"
+                className="w-full h-11 px-4 rounded-xl bg-white dark:bg-[#202020] hover:bg-slate-50 dark:hover:bg-[#282828] active:scale-[0.99] text-slate-800 dark:text-[#E5E5E5] font-medium text-[13.5px] border border-slate-200 dark:border-[#2E2E2E] transition-all flex items-center justify-center gap-3 shadow-xs disabled:opacity-60"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path
@@ -254,20 +269,20 @@ export default function AuthView({
 
             {/* Subtle Divider */}
             <div className="relative flex items-center justify-center">
-              <div className="border-t border-slate-200 dark:border-slate-800 w-full" />
-              <span className="bg-white dark:bg-slate-900 px-3 text-[11px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+              <div className="border-t border-slate-200 dark:border-[#262626] w-full" />
+              <span className="bg-white dark:bg-[#181818] px-3 text-[11px] font-medium text-slate-400 dark:text-[#737373] uppercase tracking-wider">
                 or with email
               </span>
             </div>
 
             {/* Mode switch */}
-            <div className="flex p-1 bg-slate-100 dark:bg-slate-800 rounded-lg text-[12px] font-medium text-slate-600 dark:text-slate-400">
+            <div className="flex p-1 bg-slate-100 dark:bg-[#202020] rounded-lg text-[12px] font-medium text-slate-600 dark:text-[#A3A3A3]">
               <button
                 type="button"
                 onClick={() => setMode("signin")}
                 className={`flex-1 py-1.5 rounded-md transition-all ${
                   mode === "signin"
-                    ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold"
+                    ? "bg-white dark:bg-[#141414] text-slate-900 dark:text-white shadow-xs font-semibold"
                     : "hover:text-slate-900 dark:hover:text-white"
                 }`}
               >
@@ -278,7 +293,7 @@ export default function AuthView({
                 onClick={() => setMode("signup")}
                 className={`flex-1 py-1.5 rounded-md transition-all ${
                   mode === "signup"
-                    ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs font-semibold"
+                    ? "bg-white dark:bg-[#141414] text-slate-900 dark:text-white shadow-xs font-semibold"
                     : "hover:text-slate-900 dark:hover:text-white"
                 }`}
               >
@@ -289,7 +304,7 @@ export default function AuthView({
             {/* Email form */}
             <form onSubmit={handleEmailAuth} className="space-y-3.5">
               <div>
-                <label className="block text-[12px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                <label className="block text-[12px] font-medium text-slate-700 dark:text-[#D4D4D4] mb-1.5">
                   Work or Creator Email
                 </label>
                 <input
@@ -298,28 +313,29 @@ export default function AuthView({
                   placeholder="alex@buildspace.so"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full h-10 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-[13px] text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-slate-900 dark:focus:border-slate-400 focus:ring-2 focus:ring-slate-900/5 transition-all"
+                  className="w-full h-10 px-3.5 rounded-lg border border-slate-200 dark:border-[#2E2E2E] bg-white dark:bg-[#121212] text-[13px] text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-[#666666] focus:outline-none focus:border-slate-900 dark:focus:border-[#555555] focus:ring-2 focus:ring-slate-900/5 transition-all"
                 />
               </div>
 
               <div>
-                <label className="block text-[12px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Password
+                <label className="block text-[12px] font-medium text-slate-700 dark:text-[#D4D4D4] mb-1.5">
+                  Password {mode === "signup" && <span className="text-[11px] text-slate-400 dark:text-[#737373] font-normal">(min 6 characters)</span>}
                 </label>
                 <input
                   type="password"
                   required
+                  minLength={6}
                   placeholder="••••••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full h-10 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-[13px] text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-slate-900 dark:focus:border-slate-400 focus:ring-2 focus:ring-slate-900/5 transition-all"
+                  className="w-full h-10 px-3.5 rounded-lg border border-slate-200 dark:border-[#2E2E2E] bg-white dark:bg-[#121212] text-[13px] text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-[#666666] focus:outline-none focus:border-slate-900 dark:focus:border-[#555555] focus:ring-2 focus:ring-slate-900/5 transition-all"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full h-10 rounded-lg bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-200 text-white dark:text-black text-[13px] font-medium transition-all flex items-center justify-center gap-2"
+                className="w-full h-10 rounded-lg bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-[#EDEDED] text-white dark:text-black text-[13px] font-medium transition-all flex items-center justify-center gap-2"
               >
                 {isSubmitting ? (
                   <Loader2 className="w-4 h-4 animate-spin text-white dark:text-black" />
@@ -335,8 +351,8 @@ export default function AuthView({
                 animate={{ opacity: 1, y: 0 }}
                 className={`p-3 rounded-lg text-[12px] flex items-start gap-2 border ${
                   isError
-                    ? "bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200"
-                    : "bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200"
+                    ? "bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900/60 text-rose-800 dark:text-rose-200"
+                    : "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-200"
                 }`}
               >
                 {isError ? (
@@ -349,10 +365,10 @@ export default function AuthView({
             )}
 
             {/* Reassuring Security Notice */}
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-start gap-2.5 text-left">
+            <div className="pt-2 border-t border-slate-100 dark:border-[#262626] flex items-start gap-2.5 text-left">
               <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              <p className="text-[11.5px] leading-relaxed text-slate-500 dark:text-slate-400">
-                <strong className="text-slate-700 dark:text-slate-200 font-medium">Direct X sync:</strong> your
+              <p className="text-[11.5px] leading-relaxed text-slate-500 dark:text-[#A3A3A3]">
+                <strong className="text-slate-700 dark:text-[#E5E5E5] font-medium">Direct X sync:</strong> your
                 workspace and browser profile are isolated and 100% private. We never store or
                 share your credentials.
               </p>
@@ -360,14 +376,14 @@ export default function AuthView({
           </motion.div>
 
           {/* Bottom Security / Feature badges */}
-          <div className="flex items-center justify-center gap-4 text-[12px] text-slate-500 dark:text-slate-400 flex-wrap">
+          <div className="flex items-center justify-center gap-4 text-[12px] text-slate-500 dark:text-[#737373] flex-wrap">
             <span className="flex items-center gap-1.5">
-              <Lock className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+              <Lock className="w-3.5 h-3.5 text-slate-400 dark:text-[#666666]" />
               Isolated Browser Sandbox
             </span>
             <span>·</span>
             <span className="flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+              <Sparkles className="w-3.5 h-3.5 text-slate-400 dark:text-[#666666]" />
               Few-Shot Voice Cloning
             </span>
             <span>·</span>
@@ -380,7 +396,7 @@ export default function AuthView({
       </main>
 
       {/* Footer */}
-      <footer className="w-full max-w-6xl mx-auto px-6 py-4 text-center text-xs text-slate-400 dark:text-slate-500">
+      <footer className="w-full max-w-6xl mx-auto px-6 py-4 text-center text-xs text-slate-400 dark:text-[#666666]">
         X-VibeBot Studio · Built for Modern Founders and Creators on X
       </footer>
     </div>

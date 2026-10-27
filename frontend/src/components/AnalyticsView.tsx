@@ -138,12 +138,12 @@ function StudioTile({
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className={`bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-5 shadow-xs transition-shadow hover:shadow-sm ${className}`}
+      className={`bg-white dark:bg-[#181818] border border-slate-200/80 dark:border-[#262626] rounded-xl p-5 shadow-xs transition-shadow hover:shadow-sm ${className}`}
     >
       <header className="flex items-start justify-between gap-3 mb-4">
         <div>
           <h3 className="text-[13.5px] font-semibold text-slate-900 dark:text-white tracking-tight">{title}</h3>
-          {sub && <p className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5 leading-normal">{sub}</p>}
+          {sub && <p className="text-[12px] text-slate-500 dark:text-[#A3A3A3] mt-0.5 leading-normal">{sub}</p>}
         </div>
         {badge}
       </header>
@@ -171,11 +171,11 @@ export default function AnalyticsView({
       <div className="space-y-4">
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="h-28 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl animate-pulse" />
+            <div key={i} className="h-28 bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#262626] rounded-xl animate-pulse" />
           ))}
         </div>
-        <div className="h-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl flex flex-col items-center justify-center gap-3 text-slate-400 dark:text-slate-500">
-          <Loader2 className="w-5 h-5 animate-spin text-slate-500 dark:text-slate-400" />
+        <div className="h-64 bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#262626] rounded-xl flex flex-col items-center justify-center gap-3 text-slate-400 dark:text-[#737373]">
+          <Loader2 className="w-5 h-5 animate-spin text-slate-500 dark:text-[#A3A3A3]" />
           <span className="text-xs font-medium">Synchronizing creator telemetry...</span>
         </div>
       </div>
@@ -272,7 +272,7 @@ export default function AnalyticsView({
         <motion.div
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl p-4 shadow-xs"
+          className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-4 shadow-xs"
         >
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -285,9 +285,9 @@ export default function AnalyticsView({
                 {strategy_brief.headline}
               </span>
 
-              <span className="hidden md:inline text-slate-300 dark:text-slate-700">·</span>
+              <span className="hidden md:inline text-slate-300 dark:text-[#525252]">·</span>
 
-              <span className="hidden md:inline text-slate-500 dark:text-slate-400 text-[12.5px] truncate max-w-md">
+              <span className="hidden md:inline text-slate-500 dark:text-[#A3A3A3] text-[12.5px] truncate max-w-md">
                 {strategy_brief.recommended_action}
               </span>
             </div>
@@ -297,7 +297,7 @@ export default function AnalyticsView({
                 <button
                   type="button"
                   onClick={() => onApplySuggestedQuery(strategy_brief.suggested_query)}
-                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[12px] font-medium bg-slate-50 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 transition-colors"
+                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[12px] font-medium bg-slate-50 dark:bg-[#202020] hover:bg-slate-100 dark:hover:bg-[#262626] text-slate-800 dark:text-[#E5E5E5] border border-slate-200 dark:border-[#2E2E2E] transition-colors"
                   title="Switch active search query to this AI suggestion"
                 >
                   <Sparkles className="w-3 h-3 text-blue-600 dark:text-blue-400" />
@@ -310,7 +310,7 @@ export default function AnalyticsView({
                   type="button"
                   onClick={onRefreshBrief}
                   disabled={refreshingBrief}
-                  className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-[#F3F3F3] hover:bg-slate-100 dark:hover:bg-[#262626] transition-colors"
                   title="Generate fresh AI strategy brief"
                 >
                   {refreshingBrief ? (
@@ -326,8 +326,8 @@ export default function AnalyticsView({
                 onClick={() => setBriefOpen((o) => !o)}
                 className={`inline-flex items-center gap-1 h-7 px-3 rounded-lg text-[12px] font-medium transition-colors ${
                   briefOpen
-                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                    : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-black"
+                    : "text-slate-600 dark:text-[#D4D4D4] hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-[#262626]"
                 }`}
               >
                 <span>{briefOpen ? "Hide" : "Diagnosis"}</span>
@@ -347,17 +347,17 @@ export default function AnalyticsView({
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
-                className="overflow-hidden mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[12.5px] space-y-2.5"
+                className="overflow-hidden mt-3 pt-3 border-t border-slate-100 dark:border-[#262626] text-[12.5px] space-y-2.5"
               >
                 <div>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200 text-[12px]">Feed Analysis</span>
-                  <p className="text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">{strategy_brief.insight}</p>
+                  <span className="font-semibold text-slate-800 dark:text-[#E5E5E5] text-[12px]">Feed Analysis</span>
+                  <p className="text-slate-600 dark:text-[#A3A3A3] mt-0.5 leading-relaxed">{strategy_brief.insight}</p>
                 </div>
                 <div>
                   <span className="font-semibold text-emerald-700 dark:text-emerald-400 text-[12px]">Creator Action</span>
-                  <p className="text-slate-600 dark:text-slate-400 mt-0.5 leading-relaxed">{strategy_brief.recommended_action}</p>
+                  <p className="text-slate-600 dark:text-[#A3A3A3] mt-0.5 leading-relaxed">{strategy_brief.recommended_action}</p>
                 </div>
-                <div className="flex items-center gap-3 pt-1 text-[11.5px] text-slate-400 dark:text-slate-500 flex-wrap">
+                <div className="flex items-center gap-3 pt-1 text-[11.5px] text-slate-400 dark:text-[#737373] flex-wrap">
                   <span className="text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5" /> Bézier Humanized Movements Active
                   </span>
@@ -382,11 +382,11 @@ export default function AnalyticsView({
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.25, delay: i * 0.04 }}
-              className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl p-4 shadow-xs relative overflow-hidden"
+              className="bg-white dark:bg-[#181818] border border-slate-200/80 dark:border-[#262626] rounded-xl p-4 shadow-xs relative overflow-hidden"
             >
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">{card.label}</span>
-                <span className="text-[10.5px] font-medium px-2 py-0.5 rounded-md bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-700/60">
+                <span className="text-[12px] font-medium text-slate-500 dark:text-[#A3A3A3]">{card.label}</span>
+                <span className="text-[10.5px] font-medium px-2 py-0.5 rounded-md bg-slate-50 dark:bg-[#202020] text-slate-600 dark:text-[#D4D4D4] border border-slate-100 dark:border-[#2E2E2E]/60">
                   {card.badge}
                 </span>
               </div>
@@ -395,7 +395,7 @@ export default function AnalyticsView({
                   <div className="text-[26px] font-semibold text-slate-900 dark:text-white tracking-tight leading-none">
                     {card.value}
                   </div>
-                  <p className="text-[11.5px] text-slate-500 dark:text-slate-400 mt-2 font-normal">{card.subtext}</p>
+                  <p className="text-[11.5px] text-slate-500 dark:text-[#A3A3A3] mt-2 font-normal">{card.subtext}</p>
                 </div>
                 {card.spark && card.spark.some((v) => v > 0) && (
                   <SmoothSparkline points={card.spark} color={card.color} />
@@ -414,10 +414,10 @@ export default function AnalyticsView({
           className="lg:col-span-8"
           badge={
             <div className="flex items-center gap-3 text-xs">
-              <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+              <span className="flex items-center gap-1.5 text-slate-600 dark:text-[#D4D4D4]">
                 <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block" /> Feed Engagement
               </span>
-              <span className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+              <span className="flex items-center gap-1.5 text-slate-600 dark:text-[#D4D4D4]">
                 <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 inline-block" /> Drafts Generated
               </span>
             </div>
@@ -437,8 +437,8 @@ export default function AnalyticsView({
                 const yy = padT + r * (H - padT - padB);
                 return (
                   <g key={r}>
-                    <line x1={padL} x2={W - padR} y1={yy} y2={yy} className="stroke-slate-100 dark:stroke-slate-800" strokeWidth="1" />
-                    <text x={padL - 8} y={yy + 3.5} textAnchor="end" fontSize="10" className="fill-slate-400 dark:fill-slate-500">
+                    <line x1={padL} x2={W - padR} y1={yy} y2={yy} className="stroke-slate-100 dark:stroke-[#262626]" strokeWidth="1" />
+                    <text x={padL - 8} y={yy + 3.5} textAnchor="end" fontSize="10" className="fill-slate-400 dark:fill-[#737373]">
                       {Math.round((1 - r) * maxEng)}
                     </text>
                   </g>
@@ -489,7 +489,7 @@ export default function AnalyticsView({
                     height={H - padT - padB}
                     fill="transparent"
                   />
-                  <text x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" className="fill-slate-400 dark:fill-slate-500">
+                  <text x={x(i)} y={H - 8} textAnchor="middle" fontSize="10" className="fill-slate-400 dark:fill-[#737373]">
                     {t.time}
                   </text>
                   {hover === i && (
@@ -499,13 +499,13 @@ export default function AnalyticsView({
                         x2={x(i)}
                         y1={padT}
                         y2={H - padB}
-                        className="stroke-slate-300 dark:stroke-slate-700"
+                        className="stroke-slate-300 dark:stroke-[#2E2E2E]"
                         strokeDasharray="2 2"
                       />
                       <circle cx={x(i)} cy={yEng(t.engagement)} r="4" fill="#2563EB" stroke="#fff" strokeWidth="2" />
                       <circle cx={x(i)} cy={yDr(t.drafted)} r="3.5" fill="#6366F1" stroke="#fff" strokeWidth="2" />
                       <g transform={`translate(${Math.min(Math.max(x(i) - 60, padL), W - 140)}, ${padT + 4})`}>
-                        <rect width="130" height="48" rx="6" fill="#0F172A" stroke="#1E293B" strokeWidth="1" />
+                        <rect width="130" height="48" rx="6" fill="#181818" stroke="#262626" strokeWidth="1" />
                         <text x="10" y="16" fontSize="11" fontWeight="600" fill="#FFFFFF">
                           {t.time}
                         </text>
@@ -533,7 +533,7 @@ export default function AnalyticsView({
           <div className="flex items-center gap-5 pt-2">
             <div className="relative shrink-0">
               <svg width="128" height="128" viewBox="0 0 128 128" className="-rotate-90">
-                <circle cx="64" cy="64" r={R} fill="none" className="stroke-slate-100 dark:stroke-slate-800" strokeWidth="14" />
+                <circle cx="64" cy="64" r={R} fill="none" className="stroke-slate-100 dark:stroke-[#262626]" strokeWidth="14" />
                 {mixTotal > 0 &&
                   content_mix.map((seg) => {
                     const frac = seg.count / mixTotal;
@@ -559,14 +559,14 @@ export default function AnalyticsView({
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <span className="text-2xl font-bold text-slate-900 dark:text-white leading-none">{mixTotal}</span>
-                <span className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">Total items</span>
+                <span className="text-[11px] text-slate-400 dark:text-[#737373] mt-1">Total items</span>
               </div>
             </div>
 
             <ul className="flex-1 space-y-2.5">
               {content_mix.map((m) => (
                 <li key={m.key} className="flex items-center justify-between text-[12.5px]">
-                  <span className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                  <span className="flex items-center gap-2 text-slate-600 dark:text-[#D4D4D4]">
                     <span
                       className="w-2.5 h-2.5 rounded-full inline-block"
                       style={{ background: MIX_ACCENTS[m.key] || "#94A3B8" }}
@@ -575,7 +575,7 @@ export default function AnalyticsView({
                   </span>
                   <span className="font-semibold text-slate-900 dark:text-white">
                     {m.count}{" "}
-                    <span className="text-slate-400 dark:text-slate-500 font-normal text-[11px]">
+                    <span className="text-slate-400 dark:text-[#737373] font-normal text-[11px]">
                       ({mixTotal > 0 ? Math.round((m.count / mixTotal) * 100) : 0}%)
                     </span>
                   </span>
@@ -596,10 +596,10 @@ export default function AnalyticsView({
               return (
                 <li key={s.label}>
                   <div className="flex items-center justify-between text-[12.5px] mb-1.5">
-                    <span className="text-slate-600 dark:text-slate-300 font-medium">{s.label}</span>
+                    <span className="text-slate-600 dark:text-[#D4D4D4] font-medium">{s.label}</span>
                     <span className="font-semibold text-slate-900 dark:text-white">{s.count}</span>
                   </div>
-                  <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                  <div className="h-2 rounded-full bg-slate-100 dark:bg-[#222222] overflow-hidden">
                     <motion.div
                       className="h-full rounded-full"
                       style={{ background: colors[i % colors.length] }}
@@ -637,9 +637,9 @@ export default function AnalyticsView({
               );
             })}
           </div>
-          <div className="flex justify-between gap-2 mt-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+          <div className="flex justify-between gap-2 mt-2 pt-1 border-t border-slate-100 dark:border-[#262626]">
             {length_distribution.map((l) => (
-              <span key={l.label} className="flex-1 text-center text-[10.5px] text-slate-500 dark:text-slate-400 font-medium">
+              <span key={l.label} className="flex-1 text-center text-[10.5px] text-slate-500 dark:text-[#A3A3A3] font-medium">
                 {l.label.replace(/\s*\(.*\)/, "")}
               </span>
             ))}
@@ -653,28 +653,28 @@ export default function AnalyticsView({
           className="lg:col-span-5"
         >
           {top_authors.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500 py-6 text-center">
+            <p className="text-xs text-slate-400 dark:text-[#737373] py-6 text-center">
               Scan your feed to rank active niche conversations.
             </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-[12.5px]">
                 <thead>
-                  <tr className="text-left text-slate-400 dark:text-slate-500 text-[11px] font-medium border-b border-slate-100 dark:border-slate-800">
+                  <tr className="text-left text-slate-400 dark:text-[#737373] text-[11px] font-medium border-b border-slate-100 dark:border-[#262626]">
                     <th className="pb-2">Creator</th>
                     <th className="pb-2 text-right">Likes</th>
                     <th className="pb-2 text-right">Replies</th>
                     <th className="pb-2 text-right">Score</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-50 dark:divide-slate-800/50">
+                <tbody className="divide-y divide-slate-50 dark:divide-[#262626]/50">
                   {top_authors.map((a) => (
-                    <tr key={a.author} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                    <tr key={a.author} className="hover:bg-slate-50/70 dark:hover:bg-[#202020] transition-colors">
                       <td className="py-2 font-medium text-slate-900 dark:text-white truncate max-w-[140px]">
                         {a.author}
                       </td>
-                      <td className="py-2 text-right text-slate-600 dark:text-slate-400">{a.likes}</td>
-                      <td className="py-2 text-right text-slate-600 dark:text-slate-400">{a.replies}</td>
+                      <td className="py-2 text-right text-slate-600 dark:text-[#A3A3A3]">{a.likes}</td>
+                      <td className="py-2 text-right text-slate-600 dark:text-[#A3A3A3]">{a.replies}</td>
                       <td className="py-2 text-right font-semibold text-slate-900 dark:text-white">{a.score}</td>
                     </tr>
                   ))}
@@ -702,12 +702,12 @@ export default function AnalyticsView({
             {/* 60-min rolling cap */}
             <div>
               <div className="flex items-center justify-between text-[12px] mb-1.5">
-                <span className="text-slate-600 dark:text-slate-300 font-medium">Rolling 60-min velocity</span>
+                <span className="text-slate-600 dark:text-[#D4D4D4] font-medium">Rolling 60-min velocity</span>
                 <span className="font-semibold text-slate-900 dark:text-white">
                   {hourlyUsed} / {hourlyCap} actions (Safe)
                 </span>
               </div>
-              <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+              <div className="h-2 rounded-full bg-slate-100 dark:bg-[#222222] overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all"
                   style={{
@@ -721,12 +721,12 @@ export default function AnalyticsView({
             {/* Daily Cap */}
             <div>
               <div className="flex items-center justify-between text-[12px] mb-1.5">
-                <span className="text-slate-600 dark:text-slate-300 font-medium">Daily action quota</span>
+                <span className="text-slate-600 dark:text-[#D4D4D4] font-medium">Daily action quota</span>
                 <span className="font-semibold text-slate-900 dark:text-white">
                   {kpis.daily_used} / {kpis.daily_cap} actions
                 </span>
               </div>
-              <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+              <div className="h-2 rounded-full bg-slate-100 dark:bg-[#222222] overflow-hidden">
                 <div
                   className="h-full rounded-full bg-slate-800 dark:bg-blue-600 transition-all"
                   style={{
@@ -738,12 +738,12 @@ export default function AnalyticsView({
 
             {/* Biometric indicators */}
             <div className="grid grid-cols-2 gap-2.5 pt-1 text-[11.5px]">
-              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800 rounded-lg">
-                <span className="text-slate-500 dark:text-slate-400 block mb-1">Mouse Curve</span>
+              <div className="p-3 bg-slate-50 dark:bg-[#202020] border border-slate-200/70 dark:border-[#262626] rounded-lg">
+                <span className="text-slate-500 dark:text-[#A3A3A3] block mb-1">Mouse Curve</span>
                 <span className="font-semibold text-emerald-700 dark:text-emerald-400">Cubic Bézier Dynamics</span>
               </div>
-              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800 rounded-lg">
-                <span className="text-slate-500 dark:text-slate-400 block mb-1">Prefix Guard</span>
+              <div className="p-3 bg-slate-50 dark:bg-[#202020] border border-slate-200/70 dark:border-[#262626] rounded-lg">
+                <span className="text-slate-500 dark:text-[#A3A3A3] block mb-1">Prefix Guard</span>
                 <span className="font-semibold text-emerald-700 dark:text-emerald-400">65% Jaccard Diversity</span>
               </div>
             </div>
@@ -762,7 +762,7 @@ export default function AnalyticsView({
           }
         >
           {approvedSamples.length === 0 ? (
-            <div className="p-6 text-center text-slate-400 dark:text-slate-500 text-xs">
+            <div className="p-6 text-center text-slate-400 dark:text-[#737373] text-xs">
               Approve or edit a draft in the Queue to start building your few-shot voice memory.
             </div>
           ) : (
@@ -770,10 +770,10 @@ export default function AnalyticsView({
               {approvedSamples.slice(0, 4).map((sample, idx) => (
                 <div
                   key={idx}
-                  className="p-3 bg-slate-50/80 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-800 rounded-lg text-[12px] space-y-1.5"
+                  className="p-3 bg-slate-50/80 dark:bg-[#202020] border border-slate-200/70 dark:border-[#262626] rounded-lg text-[12px] space-y-1.5"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-slate-500 dark:text-slate-400 truncate max-w-[380px] font-normal">
+                    <span className="text-slate-500 dark:text-[#A3A3A3] truncate max-w-[380px] font-normal">
                       On: &ldquo;{sample.tweet_text}&rdquo;
                     </span>
                     <span
