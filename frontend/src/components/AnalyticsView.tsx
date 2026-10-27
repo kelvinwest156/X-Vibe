@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { motion } from "framer-motion";
+import { Loader2 } from "lucide-react";
 
 export interface AnalyticsData {
   kpis: {
@@ -116,10 +117,16 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
 
   if (!data) {
     return (
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="tile h-28 animate-pulse" />
-        ))}
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="tile h-28 animate-pulse" />
+          ))}
+        </div>
+        <div className="tile h-[300px] flex flex-col items-center justify-center gap-3 text-ink-2">
+          <Loader2 className="w-6 h-6 animate-spin" aria-label="Loading" />
+          <span className="caption">Loading analytics</span>
+        </div>
       </div>
     );
   }

@@ -19,8 +19,13 @@ import {
   Terminal,
   Feather,
   Layers,
+  Loader2,
 } from "lucide-react";
 import AnalyticsView, { AnalyticsData } from "@/components/AnalyticsView";
+
+const Spin = ({ className = "w-4 h-4" }: { className?: string }) => (
+  <Loader2 className={`${className} animate-spin`} aria-label="Loading" />
+);
 
 interface SystemLog {
   timestamp: string;
@@ -98,6 +103,8 @@ export default function HomePage() {
   const [cookieOpen, setCookieOpen] = useState(false);
   const [cookieJson, setCookieJson] = useState("");
   const [histFilter, setHistFilter] = useState("all");
+  const [ready, setReady] = useState(false);
+  const [histReady, setHistReady] = useState(false);
 
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gemini-3.8-flash");
@@ -143,7 +150,10 @@ export default function HomePage() {
           return next;
         });
       }
-    } catch {}
+    } catch {
+    } finally {
+      setReady(true);
+    }
   }, []);
 
   const loadConfig = useCallback(async () => {
@@ -169,7 +179,10 @@ export default function HomePage() {
     try {
       const res = await fetch("/api/history?limit=60");
       if (res.ok) setHistory(await res.json());
-    } catch {}
+    } catch {
+    } finally {
+      setHistReady(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -183,42 +196,52 @@ export default function HomePage() {
   const toggleAgent = async () => {
     if (!status) return;
     const next = !status.is_active;
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_active: next }),
-    });
-    if (res.ok) {
-      notify(next ? "Agent started" : "Agent paused");
-      refresh();
+    setBusy((p) => ({ ...p, toggle: true }));
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: next }),
+      });
+      if (res.ok) {
+        notify(next ? "Agent started" : "Agent paused");
+        await refresh();
+      }
+    } finally {
+      setBusy((p) => ({ ...p, toggle: false }));
     }
   };
 
   const saveSettings = async (silent = false) => {
-    const payload: Record<string, unknown> = {
-      auto_pilot_mode: autopilot,
-      polling_interval_minutes: Number(interval) || 20,
-      daily_action_cap: Number(cap) || 15,
-      min_cooldown_minutes: Number(minDelay) || 10,
-      max_cooldown_minutes: Number(maxDelay) || 45,
-      active_hours_start: Number(wake) || 0,
-      active_hours_end: Number(sleep) || 23,
-      search_query: query.trim(),
-      persona_prompt: persona.trim(),
-      selected_model: model,
-    };
-    if (apiKey.trim()) payload.api_key = apiKey.trim();
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (res.ok) {
-      setConfig(await res.json());
-      setApiKey("");
-      if (!silent) notify("Settings saved");
-      refresh();
-    } else if (!silent) notify("Could not save settings", true);
+    if (!silent) setBusy((p) => ({ ...p, save: true }));
+    try {
+      const payload: Record<string, unknown> = {
+        auto_pilot_mode: autopilot,
+        polling_interval_minutes: Number(interval) || 20,
+        daily_action_cap: Number(cap) || 15,
+        min_cooldown_minutes: Number(minDelay) || 10,
+        max_cooldown_minutes: Number(maxDelay) || 45,
+        active_hours_start: Number(wake) || 0,
+        active_hours_end: Number(sleep) || 23,
+        search_query: query.trim(),
+        persona_prompt: persona.trim(),
+        selected_model: model,
+      };
+      if (apiKey.trim()) payload.api_key = apiKey.trim();
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        setConfig(await res.json());
+        setApiKey("");
+        if (!silent) notify("Settings saved");
+        refresh();
+      } else if (!silent) notify("Could not save settings", true);
+    } finally {
+      if (!silent) setBusy((p) => ({ ...p, save: false }));
+    }
   };
 
   const verifyKey = async () => {
@@ -324,28 +347,44 @@ export default function HomePage() {
   };
 
   const login = async () => {
-    const res = await fetch("/api/browser/launch-login", { method: "POST" });
-    const d = await res.json();
-    notify(d.message || "Browser opened");
-    setTimeout(refresh, 4000);
+    setBusy((p) => ({ ...p, login: true }));
+    try {
+      const res = await fetch("/api/browser/launch-login", { method: "POST" });
+      const d = await res.json();
+      notify(d.message || "Browser opened");
+      setTimeout(refresh, 4000);
+    } finally {
+      setBusy((p) => ({ ...p, login: false }));
+    }
   };
 
   const checkSession = async () => {
-    const res = await fetch("/api/browser/check-session", { method: "POST" });
-    const d = await res.json();
-    if (d.is_logged_in) notify(`Connected as ${d.linked_username || "your account"}`);
-    else notify("Not logged in", true);
-    refresh();
+    setBusy((p) => ({ ...p, session: true }));
+    try {
+      const res = await fetch("/api/browser/check-session", { method: "POST" });
+      const d = await res.json();
+      if (d.is_logged_in) notify(`Connected as ${d.linked_username || "your account"}`);
+      else notify("Not logged in", true);
+      refresh();
+    } finally {
+      setBusy((p) => ({ ...p, session: false }));
+    }
   };
 
   const exportCookies = async () => {
-    const res = await fetch("/api/browser/cookies");
-    const d = await res.json();
-    setCookieJson(JSON.stringify(d.cookies || [], null, 2));
-    notify(`Exported ${d.count || 0} cookies`);
+    setBusy((p) => ({ ...p, cexp: true }));
+    try {
+      const res = await fetch("/api/browser/cookies");
+      const d = await res.json();
+      setCookieJson(JSON.stringify(d.cookies || [], null, 2));
+      notify(`Exported ${d.count || 0} cookies`);
+    } finally {
+      setBusy((p) => ({ ...p, cexp: false }));
+    }
   };
 
   const importCookies = async () => {
+    setBusy((p) => ({ ...p, cimp: true }));
     try {
       const res = await fetch("/api/browser/cookies", {
         method: "POST",
@@ -360,6 +399,8 @@ export default function HomePage() {
       } else notify("Imported, but the session is not signed in", true);
     } catch {
       notify("That is not valid JSON", true);
+    } finally {
+      setBusy((p) => ({ ...p, cimp: false }));
     }
   };
 
@@ -460,14 +501,20 @@ export default function HomePage() {
               <span className="chip gap-1.5 !h-8 !px-3 !text-[12px] !bg-white">
                 <i className="w-2 h-2 rounded-full bg-[#01b8aa] inline-block" />
                 <span className="font-semibold text-ink">{status.linked_username || "Linked"}</span>
-                <button onClick={checkSession} title="Re-check session" className="text-ink-3 hover:text-ink">
-                  <RefreshCw className="w-3 h-3" />
+                <button
+                  onClick={checkSession}
+                  disabled={busy.session}
+                  title="Re-check session"
+                  className="text-ink-3 hover:text-ink"
+                >
+                  {busy.session ? <Spin className="w-3 h-3" /> : <RefreshCw className="w-3 h-3" />}
                 </button>
               </span>
             ) : (
               status && (
-                <button onClick={login} className="btn btn-accent">
-                  Log in to X
+                <button onClick={login} disabled={busy.login} className="btn btn-accent">
+                  {busy.login && <Spin />}
+                  {busy.login ? "Opening browser" : "Log in to X"}
                 </button>
               )
             )}
@@ -475,11 +522,19 @@ export default function HomePage() {
               <Cookie className="w-4 h-4" />
             </button>
             <button onClick={scan} disabled={scanning} className="btn">
-              <Radar className={`w-4 h-4 ${scanning ? "animate-spin" : ""}`} />
+              {scanning ? <Spin /> : <Radar className="w-4 h-4" />}
               {scanning ? "Scanning" : "Scan feed"}
             </button>
-            <button onClick={toggleAgent} className={`btn ${status?.is_active ? "" : "btn-primary"}`}>
-              {status?.is_active ? (
+            <button
+              onClick={toggleAgent}
+              disabled={busy.toggle || !status}
+              className={`btn ${status?.is_active ? "" : "btn-primary"}`}
+            >
+              {busy.toggle ? (
+                <>
+                  <Spin /> {status?.is_active ? "Pausing" : "Starting"}
+                </>
+              ) : status?.is_active ? (
                 <>
                   <Pause className="w-4 h-4" /> Pause
                 </>
@@ -511,17 +566,22 @@ export default function HomePage() {
                     </p>
                     <div className="flex gap-2">
                       <button onClick={() => createOriginal("post")} disabled={creating !== null} className="btn">
-                        <Feather className="w-4 h-4" />
+                        {creating === "post" ? <Spin /> : <Feather className="w-4 h-4" />}
                         {creating === "post" ? "Writing" : "New post"}
                       </button>
                       <button onClick={() => createOriginal("thread")} disabled={creating !== null} className="btn">
-                        <Layers className="w-4 h-4" />
+                        {creating === "thread" ? <Spin /> : <Layers className="w-4 h-4" />}
                         {creating === "thread" ? "Writing" : "New thread"}
                       </button>
                     </div>
                   </div>
 
-                  {pending.length === 0 ? (
+                  {!ready ? (
+                    <div className="tile py-16 flex flex-col items-center gap-3 text-ink-2">
+                      <Spin className="w-6 h-6" />
+                      <span className="caption">Loading your queue</span>
+                    </div>
+                  ) : pending.length === 0 ? (
                     <div className="tile py-16 text-center">
                       <p className="text-[15px] font-semibold text-ink">Nothing waiting for review</p>
                       <p className="caption mt-1">
@@ -615,9 +675,10 @@ export default function HomePage() {
                               className="btn btn-quiet !h-7 !px-2"
                             >
                               <RefreshCw
-                                className={`w-3.5 h-3.5 ${busy[`r_${item.tweet_id}`] ? "animate-spin" : ""}`}
+                                className={`w-3.5 h-3.5 ${busy[`r_${item.tweet_id}`] ? "hidden" : ""}`}
                               />
-                              Rewrite
+                              {busy[`r_${item.tweet_id}`] && <Spin className="w-3.5 h-3.5" />}
+                              {busy[`r_${item.tweet_id}`] ? "Rewriting" : "Rewrite"}
                             </button>
                           </div>
 
@@ -625,7 +686,9 @@ export default function HomePage() {
                             rows={type === "thread" ? 6 : 3}
                             value={text}
                             onChange={(e) => setDrafts((p) => ({ ...p, [item.tweet_id]: e.target.value }))}
-                            className="field leading-relaxed resize-y"
+                            className={`field leading-relaxed resize-y transition-opacity ${
+                              busy[`r_${item.tweet_id}`] ? "opacity-50" : ""
+                            }`}
                           />
 
                           <div className="flex items-center justify-between mt-3">
@@ -636,18 +699,18 @@ export default function HomePage() {
                               </button>
                               <button
                                 onClick={() => approve(item.tweet_id, true)}
-                                disabled={busy[`s_${item.tweet_id}`]}
+                                disabled={busy[`s_${item.tweet_id}`] || busy[`p_${item.tweet_id}`]}
                                 className="btn"
                               >
-                                <Clock className="w-4 h-4" />
+                                {busy[`s_${item.tweet_id}`] ? <Spin /> : <Clock className="w-4 h-4" />}
                                 {busy[`s_${item.tweet_id}`] ? "Scheduling" : "Schedule randomly"}
                               </button>
                               <button
                                 onClick={() => approve(item.tweet_id, false)}
-                                disabled={busy[`p_${item.tweet_id}`]}
+                                disabled={busy[`p_${item.tweet_id}`] || busy[`s_${item.tweet_id}`]}
                                 className="btn btn-accent"
                               >
-                                <Send className="w-4 h-4" />
+                                {busy[`p_${item.tweet_id}`] ? <Spin /> : <Send className="w-4 h-4" />}
                                 {busy[`p_${item.tweet_id}`] ? "Posting" : "Post now"}
                               </button>
                             </div>
@@ -691,7 +754,16 @@ export default function HomePage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {shownHistory.length === 0 && (
+                        {!histReady && (
+                          <tr>
+                            <td colSpan={5} className="py-10">
+                              <div className="flex items-center justify-center gap-2 caption">
+                                <Spin /> Loading history
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        {histReady && shownHistory.length === 0 && (
                           <tr>
                             <td colSpan={5} className="py-10 text-center caption">
                               Nothing here yet.
@@ -770,6 +842,7 @@ export default function HomePage() {
                           placeholder="Paste a new key"
                         />
                         <button onClick={verifyKey} disabled={busy.key} className="btn">
+                          {busy.key && <Spin />}
                           {busy.key ? "Checking" : "Verify"}
                         </button>
                       </div>
@@ -822,8 +895,13 @@ export default function HomePage() {
                         </span>
                       </span>
                     </label>
-                    <button onClick={() => saveSettings(false)} className="btn btn-primary w-full justify-center">
-                      Save settings
+                    <button
+                      onClick={() => saveSettings(false)}
+                      disabled={busy.save}
+                      className="btn btn-primary w-full justify-center"
+                    >
+                      {busy.save && <Spin />}
+                      {busy.save ? "Saving" : "Save settings"}
                     </button>
                   </section>
                 </div>
@@ -920,11 +998,13 @@ export default function HomePage() {
                 placeholder='[{"name": "auth_token", ...}]'
               />
               <div className="flex justify-end gap-2">
-                <button onClick={exportCookies} className="btn">
+                <button onClick={exportCookies} disabled={busy.cexp} className="btn">
+                  {busy.cexp && <Spin />}
                   Export current
                 </button>
-                <button onClick={importCookies} className="btn btn-primary">
-                  Import and verify
+                <button onClick={importCookies} disabled={busy.cimp} className="btn btn-primary">
+                  {busy.cimp && <Spin />}
+                  {busy.cimp ? "Verifying" : "Import and verify"}
                 </button>
               </div>
             </motion.div>
