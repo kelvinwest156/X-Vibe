@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw, Sparkles, ShieldCheck, Brain } from "lucide-react";
 
 export interface AnalyticsData {
   kpis: {
@@ -28,6 +28,11 @@ export interface AnalyticsData {
     insight: string;
     recommended_action: string;
     suggested_query: string;
+  };
+  learning_memory?: {
+    approved: Array<{ tweet_text: string; reply_text: string; user_edited: boolean }>;
+    skipped: Array<{ tweet_text: string; reason: string }>;
+    total_learned: number;
   };
   velocity_shield?: {
     hourly_used: number;
@@ -131,7 +136,17 @@ function Tile({
   );
 }
 
-export default function AnalyticsView({ data }: { data: AnalyticsData | null }) {
+export default function AnalyticsView({
+  data,
+  onApplySuggestedQuery,
+  onRefreshBrief,
+  refreshingBrief = false,
+}: {
+  data: AnalyticsData | null;
+  onApplySuggestedQuery?: (suggestedQuery: string) => void;
+  onRefreshBrief?: () => void;
+  refreshingBrief?: boolean;
+}) {
   const [hover, setHover] = useState<number | null>(null);
 
   if (!data) {
@@ -153,6 +168,7 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
   const {
     kpis,
     strategy_brief,
+    learning_memory,
     velocity_shield,
     content_mix,
     status_funnel,
@@ -166,6 +182,7 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
   const hourlyUsed = velocity_shield?.hourly_used ?? kpis.hourly_used ?? 0;
   const hourlyCap = velocity_shield?.hourly_cap ?? kpis.hourly_cap ?? 6;
   const learnedCount = velocity_shield?.learned_examples_count ?? kpis.learned_examples_count ?? 0;
+  const approvedSamples = learning_memory?.approved || [];
 
   const kpiTiles = [
     {
@@ -235,7 +252,7 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
           />
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1 max-w-3xl">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="tag" style={{ background: "#fff8d6", color: "#5c4800" }}>
                   AI Strategy Brief
                 </span>
@@ -259,13 +276,36 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
                 {strategy_brief.recommended_action}
               </p>
             </div>
-            <div className="flex flex-col items-end gap-1 text-right shrink-0">
-              <span className="caption">2026 Biometric & Velocity Shield</span>
-              <span className="text-[12px] font-semibold text-[#107c41]">
+            <div className="flex flex-col items-end gap-1.5 text-right shrink-0">
+              <div className="flex items-center gap-1.5">
+                {strategy_brief.suggested_query && onApplySuggestedQuery && (
+                  <button
+                    onClick={() => onApplySuggestedQuery(strategy_brief.suggested_query)}
+                    className="btn !h-7 !px-2.5 !text-[11.5px]"
+                    title="Set this AI-recommended pulse as your active X search topic"
+                  >
+                    <Sparkles className="w-3 h-3 text-[#8a6d00]" />
+                    Use pulse: &ldquo;{strategy_brief.suggested_query}&rdquo;
+                  </button>
+                )}
+                {onRefreshBrief && (
+                  <button
+                    onClick={onRefreshBrief}
+                    disabled={refreshingBrief}
+                    className="btn btn-quiet !h-7 !px-2 !text-[11.5px]"
+                    title="Generate a fresh AI Strategy Brief"
+                  >
+                    {refreshingBrief ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    {refreshingBrief ? "Analyzing" : "Refresh"}
+                  </button>
+                )}
+              </div>
+              <span className="text-[11.5px] font-semibold text-[#107c41]">
                 Bezier Mouse · Dwell Time · {hourlyUsed}/{hourlyCap} Hourly Cap
-              </span>
-              <span className="caption">
-                Suggested Pulse: &ldquo;{strategy_brief.suggested_query}&rdquo;
               </span>
             </div>
           </div>
@@ -526,6 +566,110 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
                 ))}
               </tbody>
             </table>
+          )}
+        </Tile>
+      </div>
+
+      {/* 2026 Anti-Detection Biometrics & Self-Learning Voice Memory Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+        <Tile
+          title="2026 Anti-Detection & Biometric Shield"
+          sub="Live behavioral protections preventing automated reply flags and deboosting"
+          className="lg:col-span-5"
+          delay={0.35}
+        >
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center justify-between text-[12.5px] mb-1">
+                <span className="text-ink-2 flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-[#107c41]" />
+                  Rolling 60-min velocity cap (Safe &le; 6/hr)
+                </span>
+                <span className="font-semibold text-ink">
+                  {hourlyUsed} / {hourlyCap} hr
+                </span>
+              </div>
+              <div className="h-[8px] bg-[#f3f2f1]">
+                <div
+                  className="h-full transition-all"
+                  style={{
+                    width: `${Math.min(100, (hourlyUsed / Math.max(hourlyCap, 1)) * 100)}%`,
+                    background: hourlyUsed >= hourlyCap ? C.coral : C.teal,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between text-[12.5px] mb-1">
+                <span className="text-ink-2">Daily volume budget</span>
+                <span className="font-semibold text-ink">
+                  {kpis.daily_used} / {kpis.daily_cap} day
+                </span>
+              </div>
+              <div className="h-[8px] bg-[#f3f2f1]">
+                <div
+                  className="h-full transition-all"
+                  style={{
+                    width: `${Math.min(100, (kpis.daily_used / Math.max(kpis.daily_cap, 1)) * 100)}%`,
+                    background: C.slate,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1 text-[12px]">
+              <div className="p-2.5 bg-[#faf9f8] border border-line-soft rounded-[2px]">
+                <span className="caption block">Mouse &amp; Dwell Telemetry</span>
+                <span className="font-semibold text-[#107c41]">Cubic Bézier + Read Pause</span>
+              </div>
+              <div className="p-2.5 bg-[#faf9f8] border border-line-soft rounded-[2px]">
+                <span className="caption block">Template Similarity Shield</span>
+                <span className="font-semibold text-[#107c41]">65% Jaccard + Prefix Guard</span>
+              </div>
+            </div>
+          </div>
+        </Tile>
+
+        <Tile
+          title="Self-Learning Voice Memory (Few-Shot Cloning)"
+          sub={`${learnedCount} approved or edited replies actively teaching Gemini your exact style`}
+          className="lg:col-span-7"
+          delay={0.4}
+        >
+          {approvedSamples.length === 0 ? (
+            <p className="caption py-6">
+              Approve or edit a draft in the Queue to start building your few-shot voice memory.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-[168px] overflow-y-auto pr-1">
+              {approvedSamples.slice(0, 4).map((sample, idx) => (
+                <div
+                  key={idx}
+                  className="p-2.5 bg-[#faf9f8] border border-line-soft rounded-[2px] text-[12.5px]"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="caption truncate max-w-[380px]">
+                      On: &ldquo;{sample.tweet_text}&rdquo;
+                    </span>
+                    <span
+                      className="tag !text-[10px] !py-0"
+                      style={
+                        sample.user_edited
+                          ? { background: "#fff8d6", color: "#5c4800" }
+                          : { background: "#dff6dd", color: "#107c41" }
+                      }
+                    >
+                      {sample.user_edited ? "User-Edited Gold" : "Approved Voice"}
+                    </span>
+                  </div>
+                  <p className="font-medium text-ink flex items-start gap-1.5">
+                    <Brain className="w-3.5 h-3.5 text-[#01b8aa] shrink-0 mt-0.5" />
+                    <span>{sample.reply_text}</span>
+                  </p>
+                </div>
+              ))}
+            </div>
           )}
         </Tile>
       </div>

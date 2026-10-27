@@ -106,6 +106,10 @@ export default function HomePage() {
   const [history, setHistory] = useState<TweetItem[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [variantSel, setVariantSel] = useState<Record<string, string>>({});
+  const [likeOverrides, setLikeOverrides] = useState<Record<string, boolean>>({});
+  const [queueSort, setQueueSort] = useState<"urgency" | "newest">("urgency");
+  const [customTopic, setCustomTopic] = useState("");
+  const [refreshingBrief, setRefreshingBrief] = useState(false);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [scanning, setScanning] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
@@ -300,16 +304,45 @@ export default function HomePage() {
     }
   };
 
+  const refreshBrief = async () => {
+    setRefreshingBrief(true);
+    try {
+      const res = await fetch("/api/analytics?refresh_brief=true");
+      if (res.ok) {
+        setAnalytics(await res.json());
+        notify("AI Strategy Brief refreshed");
+      }
+    } finally {
+      setRefreshingBrief(false);
+    }
+  };
+
+  const applySuggestedQuery = async (suggested: string) => {
+    setQuery(suggested);
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ search_query: suggested }),
+    });
+    if (res.ok) {
+      setConfig(await res.json());
+      notify(`Applied search pulse: "${suggested}"`);
+      refresh();
+    }
+  };
+
   const createOriginal = async (mode: "auto" | "post" | "thread") => {
     setCreating(mode);
     try {
+      const topicSeed = customTopic.trim() || query.trim() || null;
       const res = await fetch("/api/generate-original", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, custom_topic: query.trim() || null }),
+        body: JSON.stringify({ mode, custom_topic: topicSeed }),
       });
       if (res.ok) {
         const c = await res.json();
+        setCustomTopic("");
         notify(`New ${c.action_type || mode} added to the queue`);
         setTab("queue");
         await refresh();
@@ -337,14 +370,20 @@ export default function HomePage() {
     }
   };
 
-  const approve = async (id: string, random: boolean) => {
+  const approve = async (id: string, random: boolean, defaultLike?: boolean) => {
     const key = `${random ? "s" : "p"}_${id}`;
     setBusy((p) => ({ ...p, [key]: true }));
+    const shouldLikeVal =
+      likeOverrides[id] !== undefined ? likeOverrides[id] : Boolean(defaultLike);
     try {
       const res = await fetch(`/api/approve/${id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ custom_text: (drafts[id] || "").trim(), schedule_random: random }),
+        body: JSON.stringify({
+          custom_text: (drafts[id] || "").trim(),
+          schedule_random: random,
+          should_like: shouldLikeVal,
+        }),
       });
       const d = await res.json();
       if (res.ok) {
@@ -577,15 +616,36 @@ export default function HomePage() {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.18 }}
             >
-              {tab === "dashboard" && <AnalyticsView data={analytics} />}
+              {tab === "dashboard" && (
+                <AnalyticsView
+                  data={analytics}
+                  onApplySuggestedQuery={applySuggestedQuery}
+                  onRefreshBrief={refreshBrief}
+                  refreshingBrief={refreshingBrief}
+                />
+              )}
 
               {tab === "queue" && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <p className="caption">
-                      Every edit you make teaches the AI your voice. Post now or schedule with urgency-weighted pacing.
-                    </p>
-                    <div className="flex gap-2">
+                  <div className="tile p-3 flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                      <input
+                        className="field !h-8 max-w-[340px]"
+                        value={customTopic}
+                        onChange={(e) => setCustomTopic(e.target.value)}
+                        placeholder={`Custom topic or angle (default: ${query || "your niche"})`}
+                      />
+                      <button
+                        onClick={() =>
+                          setQueueSort((s) => (s === "urgency" ? "newest" : "urgency"))
+                        }
+                        className="btn !h-8 !px-2.5 text-[12px]"
+                        title="Toggle queue sort order"
+                      >
+                        Sort: {queueSort === "urgency" ? "Urgency (High → Low)" : "Newest"}
+                      </button>
+                    </div>
+                    <div className="flex gap-2 flex-wrap">
                       <button onClick={() => createOriginal("auto")} disabled={creating !== null} className="btn btn-accent">
                         {creating === "auto" ? <Spin /> : <Radar className="w-4 h-4" />}
                         {creating === "auto" ? "AI deciding..." : "Smart Auto-Draft"}
@@ -614,173 +674,214 @@ export default function HomePage() {
                       </p>
                     </div>
                   ) : (
-                    pending.map((item, idx) => {
-                      let variants: Record<string, string> = {};
-                      try {
-                        if (item.variants_json) variants = JSON.parse(item.variants_json);
-                      } catch {}
-                      const keys = Object.keys(variants);
-                      const type = item.action_type || "reply";
-                      const text = drafts[item.tweet_id] ?? item.generated_text ?? "";
-                      const parts = text.split("---").filter((p) => p.trim()).length;
-                      const typeColor =
-                        type === "thread" ? "#f2c811" : type === "post" ? "#01b8aa" : "#374649";
-                      const typeLabel =
-                        type === "thread" ? `Thread, ${parts} posts` : type === "post" ? "Original post" : "Reply";
-                      const urgency = item.urgency_score ?? 5;
+                    [...pending]
+                      .sort((a, b) =>
+                        queueSort === "urgency"
+                          ? (b.urgency_score ?? 5) - (a.urgency_score ?? 5)
+                          : new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+                      )
+                      .map((item, idx) => {
+                        let variants: Record<string, string> = {};
+                        try {
+                          if (item.variants_json) variants = JSON.parse(item.variants_json);
+                        } catch {}
+                        const keys = Object.keys(variants);
+                        const type = item.action_type || "reply";
+                        const text = drafts[item.tweet_id] ?? item.generated_text ?? "";
+                        const isEdited =
+                          text.trim() !== "" &&
+                          text.trim() !== (item.generated_text || "").trim();
+                        const effectiveLike =
+                          likeOverrides[item.tweet_id] !== undefined
+                            ? likeOverrides[item.tweet_id]
+                            : Boolean(item.should_like);
+                        const parts = text.split("---").filter((p) => p.trim()).length;
+                        const typeColor =
+                          type === "thread" ? "#f2c811" : type === "post" ? "#01b8aa" : "#374649";
+                        const typeLabel =
+                          type === "thread" ? `Thread, ${parts} posts` : type === "post" ? "Original post" : "Reply";
+                        const urgency = item.urgency_score ?? 5;
 
-                      return (
-                        <motion.article
-                          key={item.tweet_id}
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ duration: 0.25, delay: Math.min(idx, 6) * 0.04 }}
-                          className="tile relative p-4"
-                        >
-                          <span
-                            className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[4px]"
-                            style={{ background: typeColor }}
-                          />
-                          <div className="flex items-center justify-between gap-3 mb-2.5">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-[13px] font-semibold text-ink">{typeLabel}</span>
-                              <span className="caption">@{item.tweet_author || "user"}</span>
-                              {item.tweet_metrics && <span className="chip">{item.tweet_metrics}</span>}
-                              <span
-                                className="chip"
-                                style={
-                                  urgency >= 8
-                                    ? { background: "#fff4ce", color: "#8a6d00", borderColor: "transparent" }
-                                    : undefined
-                                }
-                              >
-                                Urgency {urgency}/10
-                              </span>
-                              {item.should_like && (
-                                <span className="chip !bg-[#dff6dd] !text-[#107c41] !border-transparent">
-                                  + AI Auto-Like
+                        return (
+                          <motion.article
+                            key={item.tweet_id}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.25, delay: Math.min(idx, 6) * 0.04 }}
+                            className="tile relative p-4"
+                          >
+                            <span
+                              className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[4px]"
+                              style={{ background: typeColor }}
+                            />
+                            <div className="flex items-center justify-between gap-3 mb-2.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[13px] font-semibold text-ink">{typeLabel}</span>
+                                <span className="caption">@{item.tweet_author || "user"}</span>
+                                {item.tweet_metrics && <span className="chip">{item.tweet_metrics}</span>}
+                                <span
+                                  className="chip"
+                                  style={
+                                    urgency >= 8
+                                      ? { background: "#fff4ce", color: "#8a6d00", borderColor: "transparent" }
+                                      : undefined
+                                  }
+                                >
+                                  Urgency {urgency}/10
                                 </span>
-                              )}
-                              {item.media_url && (
-                                <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent">
-                                  Vision Analyzed
-                                </span>
-                              )}
-                              {item.status === "scheduled" && (
-                                <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent gap-1">
-                                  <Clock className="w-3 h-3" /> {schedLabel(item.scheduled_for)}
-                                </span>
-                              )}
-                            </div>
-                            {type === "reply" && item.tweet_url && (
-                              <a
-                                href={item.tweet_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="caption inline-flex items-center gap-1 hover:text-ink"
-                              >
-                                Original <ExternalLink className="w-3 h-3" />
-                              </a>
-                            )}
-                          </div>
-
-                          {item.tweet_text && (
-                            <div className="bg-[#faf9f8] border border-line-soft rounded-[2px] px-3 py-2 mb-3 flex items-start gap-3">
-                              <p className="text-[13px] font-light text-ink-2 whitespace-pre-line flex-1">
-                                {item.tweet_text}
-                              </p>
-                              {item.media_url && (
+                                {type === "reply" && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setLikeOverrides((p) => ({
+                                        ...p,
+                                        [item.tweet_id]: !effectiveLike,
+                                      }))
+                                    }
+                                    title="Toggle whether VibeBot also likes this post before replying"
+                                    className={`chip cursor-pointer transition-colors ${
+                                      effectiveLike
+                                        ? "!bg-[#dff6dd] !text-[#107c41] !border-transparent font-semibold"
+                                        : "opacity-65 hover:opacity-100"
+                                    }`}
+                                  >
+                                    {effectiveLike ? "♥ + Auto-Like ON" : "♡ Auto-Like OFF"}
+                                  </button>
+                                )}
+                                {item.media_url && (
+                                  <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent">
+                                    Vision Analyzed
+                                  </span>
+                                )}
+                                {item.status === "scheduled" && (
+                                  <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent gap-1">
+                                    <Clock className="w-3 h-3" /> {schedLabel(item.scheduled_for)}
+                                  </span>
+                                )}
+                              </div>
+                              {type === "reply" && item.tweet_url && (
                                 <a
-                                  href={item.media_url}
+                                  href={item.tweet_url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="shrink-0 block"
-                                  title="Attached tweet image analyzed by Gemini Vision"
+                                  className="caption inline-flex items-center gap-1 hover:text-ink"
                                 >
-                                  <img
-                                    src={item.media_url}
-                                    alt="Tweet media"
-                                    className="w-16 h-16 object-cover rounded-[2px] border border-line"
-                                  />
+                                  Original <ExternalLink className="w-3 h-3" />
                                 </a>
                               )}
                             </div>
-                          )}
 
-                          <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-                            <div className="flex items-center gap-1 flex-wrap">
-                              {keys.map((k) => {
-                                const sel = (variantSel[item.tweet_id] || keys[0]) === k;
-                                return (
-                                  <button
-                                    key={k}
-                                    onClick={() => {
-                                      setVariantSel((p) => ({ ...p, [item.tweet_id]: k }));
-                                      setDrafts((p) => ({ ...p, [item.tweet_id]: variants[k] }));
-                                    }}
-                                    className={`h-7 px-2.5 text-[12px] capitalize rounded-[2px] border transition-colors ${
-                                      sel
-                                        ? "bg-[#252423] border-[#252423] text-white font-semibold"
-                                        : "bg-white border-[#c8c6c4] text-ink-2 hover:bg-[#f3f2f1]"
-                                    }`}
+                            {item.tweet_text && (
+                              <div className="bg-[#faf9f8] border border-line-soft rounded-[2px] px-3 py-2 mb-2.5 flex items-start gap-3">
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[13px] font-light text-ink-2 whitespace-pre-line">
+                                    {item.tweet_text}
+                                  </p>
+                                  {item.error_message && (
+                                    <p className="text-[11px] text-[#0f548c] mt-1.5 pt-1.5 border-t border-line-soft">
+                                      <span className="font-semibold">AI Insight:</span> {item.error_message}
+                                    </p>
+                                  )}
+                                </div>
+                                {item.media_url && (
+                                  <a
+                                    href={item.media_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="shrink-0 block"
+                                    title="Attached tweet image analyzed by Gemini Vision"
                                   >
-                                    {k}
-                                  </button>
-                                );
-                              })}
-                              {type === "thread" && (
-                                <span className="caption ml-2">Split posts with ---</span>
-                              )}
-                            </div>
-                            <button
-                              onClick={() => regenerate(item.tweet_id)}
-                              disabled={busy[`r_${item.tweet_id}`]}
-                              className="btn btn-quiet !h-7 !px-2"
-                            >
-                              <RefreshCw
-                                className={`w-3.5 h-3.5 ${busy[`r_${item.tweet_id}`] ? "hidden" : ""}`}
-                              />
-                              {busy[`r_${item.tweet_id}`] && <Spin className="w-3.5 h-3.5" />}
-                              {busy[`r_${item.tweet_id}`] ? "Rewriting" : "Rewrite"}
-                            </button>
-                          </div>
+                                    <img
+                                      src={item.media_url}
+                                      alt="Tweet media"
+                                      className="w-16 h-16 object-cover rounded-[2px] border border-line"
+                                    />
+                                  </a>
+                                )}
+                              </div>
+                            )}
 
-                          <textarea
-                            rows={type === "thread" ? 6 : 3}
-                            value={text}
-                            onChange={(e) => setDrafts((p) => ({ ...p, [item.tweet_id]: e.target.value }))}
-                            className={`field leading-relaxed resize-y transition-opacity ${
-                              busy[`r_${item.tweet_id}`] ? "opacity-50" : ""
-                            }`}
-                          />
-
-                          <div className="flex items-center justify-between mt-3">
-                            <span className="caption">{text.length} characters</span>
-                            <div className="flex items-center gap-2">
-                              <button onClick={() => skip(item.tweet_id)} className="btn btn-quiet">
-                                <X className="w-4 h-4" /> Skip
-                              </button>
+                            <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                              <div className="flex items-center gap-1 flex-wrap">
+                                {keys.map((k) => {
+                                  const sel = (variantSel[item.tweet_id] || keys[0]) === k;
+                                  return (
+                                    <button
+                                      key={k}
+                                      onClick={() => {
+                                        setVariantSel((p) => ({ ...p, [item.tweet_id]: k }));
+                                        setDrafts((p) => ({ ...p, [item.tweet_id]: variants[k] }));
+                                      }}
+                                      className={`h-7 px-2.5 text-[12px] capitalize rounded-[2px] border transition-colors ${
+                                        sel
+                                          ? "bg-[#252423] border-[#252423] text-white font-semibold"
+                                          : "bg-white border-[#c8c6c4] text-ink-2 hover:bg-[#f3f2f1]"
+                                      }`}
+                                    >
+                                      {k}
+                                    </button>
+                                  );
+                                })}
+                                {type === "thread" && (
+                                  <span className="caption ml-2">Split posts with ---</span>
+                                )}
+                              </div>
                               <button
-                                onClick={() => approve(item.tweet_id, true)}
-                                disabled={busy[`s_${item.tweet_id}`] || busy[`p_${item.tweet_id}`]}
-                                className="btn"
+                                onClick={() => regenerate(item.tweet_id)}
+                                disabled={busy[`r_${item.tweet_id}`]}
+                                className="btn btn-quiet !h-7 !px-2"
                               >
-                                {busy[`s_${item.tweet_id}`] ? <Spin /> : <Clock className="w-4 h-4" />}
-                                {busy[`s_${item.tweet_id}`] ? "Scheduling" : "Schedule randomly"}
-                              </button>
-                              <button
-                                onClick={() => approve(item.tweet_id, false)}
-                                disabled={busy[`p_${item.tweet_id}`] || busy[`s_${item.tweet_id}`]}
-                                className="btn btn-accent"
-                              >
-                                {busy[`p_${item.tweet_id}`] ? <Spin /> : <Send className="w-4 h-4" />}
-                                {busy[`p_${item.tweet_id}`] ? "Posting" : "Post now"}
+                                <RefreshCw
+                                  className={`w-3.5 h-3.5 ${busy[`r_${item.tweet_id}`] ? "hidden" : ""}`}
+                                />
+                                {busy[`r_${item.tweet_id}`] && <Spin className="w-3.5 h-3.5" />}
+                                {busy[`r_${item.tweet_id}`] ? "Rewriting" : "Rewrite"}
                               </button>
                             </div>
-                          </div>
-                        </motion.article>
-                      );
-                    })
+
+                            <textarea
+                              rows={type === "thread" ? 6 : 3}
+                              value={text}
+                              onChange={(e) => setDrafts((p) => ({ ...p, [item.tweet_id]: e.target.value }))}
+                              className={`field leading-relaxed resize-y transition-opacity ${
+                                busy[`r_${item.tweet_id}`] ? "opacity-50" : ""
+                              }`}
+                            />
+
+                            <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="caption">{text.length} characters</span>
+                                {isEdited && (
+                                  <span className="chip !bg-[#fff4ce] !text-[#8a6d00] !border-transparent">
+                                    Edited · Will train Voice Memory
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => skip(item.tweet_id)} className="btn btn-quiet">
+                                  <X className="w-4 h-4" /> Skip
+                                </button>
+                                <button
+                                  onClick={() => approve(item.tweet_id, true, item.should_like)}
+                                  disabled={busy[`s_${item.tweet_id}`] || busy[`p_${item.tweet_id}`]}
+                                  className="btn"
+                                >
+                                  {busy[`s_${item.tweet_id}`] ? <Spin /> : <Clock className="w-4 h-4" />}
+                                  {busy[`s_${item.tweet_id}`] ? "Scheduling" : "Schedule randomly"}
+                                </button>
+                                <button
+                                  onClick={() => approve(item.tweet_id, false, item.should_like)}
+                                  disabled={busy[`p_${item.tweet_id}`] || busy[`s_${item.tweet_id}`]}
+                                  className="btn btn-accent"
+                                >
+                                  {busy[`p_${item.tweet_id}`] ? <Spin /> : <Send className="w-4 h-4" />}
+                                  {busy[`p_${item.tweet_id}`] ? "Posting" : "Post now"}
+                                </button>
+                              </div>
+                            </div>
+                          </motion.article>
+                        );
+                      })
                   )}
                 </div>
               )}
@@ -810,7 +911,7 @@ export default function HomePage() {
                       <thead>
                         <tr className="bg-[#faf9f8] caption border-b border-line">
                           <th className="py-2 px-4 font-medium">Status</th>
-                          <th className="py-2 px-4 font-medium">Type</th>
+                          <th className="py-2 px-4 font-medium">Type & Signals</th>
                           <th className="py-2 px-4 font-medium">Source</th>
                           <th className="py-2 px-4 font-medium">Draft or reason</th>
                           <th className="py-2 px-4 font-medium text-right">Time</th>
@@ -844,7 +945,31 @@ export default function HomePage() {
                                 {h.status === "pending_approval" ? "pending" : h.status}
                               </span>
                             </td>
-                            <td className="py-2.5 px-4 capitalize text-ink-2">{h.action_type || "reply"}</td>
+                            <td className="py-2.5 px-4">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="capitalize text-ink font-medium">{h.action_type || "reply"}</span>
+                                {h.urgency_score !== undefined && (
+                                  <span className="chip !h-5 !px-1.5 !text-[10px]">
+                                    U{h.urgency_score}/10
+                                  </span>
+                                )}
+                                {h.should_like && (
+                                  <span className="chip !h-5 !px-1.5 !text-[10px] !bg-[#dff6dd] !text-[#107c41] !border-transparent">
+                                    ♥ Liked
+                                  </span>
+                                )}
+                                {h.user_edited && (
+                                  <span className="chip !h-5 !px-1.5 !text-[10px] !bg-[#fff4ce] !text-[#8a6d00] !border-transparent">
+                                    Voice Learned
+                                  </span>
+                                )}
+                                {h.media_url && (
+                                  <span className="chip !h-5 !px-1.5 !text-[10px] !bg-[#deecf9] !text-[#0f548c] !border-transparent">
+                                    Vision
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="py-2.5 px-4 max-w-[260px]">
                               <span className="font-semibold text-ink block">@{h.tweet_author || "user"}</span>
                               <span className="text-ink-2 font-light block truncate">{h.tweet_text}</span>
@@ -904,6 +1029,23 @@ export default function HomePage() {
                         onChange={(e) => setPersona(e.target.value)}
                         placeholder="Casual, dry humor, short sentences"
                       />
+                    </div>
+                    <div className="bg-[#faf9f8] border border-line-soft rounded-[2px] p-3 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[12px] font-semibold text-ink">
+                          Active Few-Shot Voice Memory
+                        </span>
+                        <span className="chip !h-5 !px-2 !text-[11px] !bg-[#dff6dd] !text-[#107c41] !border-transparent">
+                          {analytics?.learning_memory?.total_learned ?? status?.learned_examples_count ?? 0} voice samples
+                        </span>
+                      </div>
+                      <p className="caption">
+                        Every reply you edit or approve in the Queue is automatically injected into Gemini&apos;s prompt as a gold-standard reference, while your last{" "}
+                        <span className="font-semibold text-ink">
+                          {analytics?.learning_memory?.skipped?.length ?? 0} skipped posts
+                        </span>{" "}
+                        train the negative filter.
+                      </p>
                     </div>
                     <div>
                       <label className="label">

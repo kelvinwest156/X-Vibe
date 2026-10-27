@@ -137,6 +137,7 @@ class AgentConfigResponse(BaseModel):
 class ApproveDraftRequest(BaseModel):
     custom_text: Optional[str] = None
     schedule_random: bool = False
+    should_like: Optional[bool] = None
 
 
 class SystemLogEntry(BaseModel):

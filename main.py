@@ -802,7 +802,7 @@ def _parse_metric_numbers(metrics_str: Optional[str]) -> Dict[str, int]:
 
 
 @app.get("/api/analytics")
-async def get_analytics_endpoint(db: Session = Depends(get_db)):
+async def get_analytics_endpoint(refresh_brief: bool = False, db: Session = Depends(get_db)):
     """
     Computes rich Power-BI style analytics on posts, replies, threads,
     target feed engagement, hourly velocity, author leaderboards, and AI Strategy Brief.
@@ -929,12 +929,14 @@ async def get_analytics_endpoint(db: Session = Depends(get_db)):
         top_authors=top_authors,
         learning_memory=learning_memory,
         niche=active_search_query_state or cfg.search_query or "AI & Tech",
-        model_name=cfg.selected_model or "gemini-3.8-flash"
+        model_name=cfg.selected_model or "gemini-3.8-flash",
+        force_refresh=refresh_brief
     )
 
     return {
         "kpis": kpis_dict,
         "strategy_brief": strategy_brief,
+        "learning_memory": learning_memory,
         "velocity_shield": {
             "hourly_used": hourly_used,
             "hourly_cap": hourly_cap,
@@ -995,6 +997,11 @@ async def approve_tweet(
     was_user_edited = bool(
         payload and payload.custom_text and payload.custom_text.strip() != (tweet.generated_text or "").strip()
     )
+    effective_like = (
+        bool(payload.should_like)
+        if (payload and payload.should_like is not None)
+        else bool(getattr(tweet, "should_like", False))
+    )
     urgency_val = int(getattr(tweet, "urgency_score", 5) or 5)
 
     if payload and payload.schedule_random:
@@ -1005,7 +1012,8 @@ async def approve_tweet(
             status="scheduled",
             generated_text=text_to_post,
             scheduled_for=sched_utc,
-            user_edited=was_user_edited
+            user_edited=was_user_edited,
+            should_like=effective_like
         )
         mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
         logger.info(f"Scheduled reply to @{tweet.tweet_author} for random time (~{mins_away}m from now, edited={was_user_edited}).")
@@ -1028,19 +1036,26 @@ async def approve_tweet(
         )
 
     act_type = tweet.action_type or "reply"
-    logger.info(f"Publishing approved {act_type} ({tweet_id}) [edited={was_user_edited}]...")
+    logger.info(f"Publishing approved {act_type} ({tweet_id}) [edited={was_user_edited}, like={effective_like}]...")
     success = await browser_worker.execute_tweet_action(
         act_type,
         tweet_id,
         text_to_post,
         tweet.tweet_url,
-        should_like=bool(getattr(tweet, "should_like", False))
+        should_like=effective_like
     )
     sync_detected_username(db)
 
     if success:
         set_new_random_cooldown(config.min_cooldown_minutes or 10, config.max_cooldown_minutes or 45)
-        update_tweet_status(db, tweet_id, status="posted", generated_text=text_to_post, user_edited=was_user_edited)
+        update_tweet_status(
+            db,
+            tweet_id,
+            status="posted",
+            generated_text=text_to_post,
+            user_edited=was_user_edited,
+            should_like=effective_like
+        )
         logger.info(f"Successfully published {act_type} ({tweet_id})!")
         return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
     else:

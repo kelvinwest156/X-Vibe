@@ -940,7 +940,8 @@ async def generate_strategy_brief(
     learning_memory: Dict[str, Any],
     niche: str,
     model_name: Optional[str] = None,
-    custom_key: Optional[str] = None
+    custom_key: Optional[str] = None,
+    force_refresh: bool = False
 ) -> Dict[str, str]:
     """
     Generates an executive AI Strategy Brief for the Power BI Analytics tab.
@@ -948,12 +949,12 @@ async def generate_strategy_brief(
     """
     global _strategy_brief_cache
     now_ts = time.time()
-    if _strategy_brief_cache.get("data") and (now_ts - float(_strategy_brief_cache.get("timestamp", 0))) < 600:
+    if not force_refresh and _strategy_brief_cache.get("data") and (now_ts - float(_strategy_brief_cache.get("timestamp", 0))) < 600:
         return _strategy_brief_cache["data"]
 
     fallback_brief = {
         "headline": f"Active Growth & Anti-Detection Telemetry on '{niche or 'Timeline'}'",
-        "insight": f"Processed {kpis.get('total_evaluated', 0)} posts with {kpis.get('total_published', 0)} organic engagements published and {learning_memory.get('total_learned', 0)} learned voice samples.",
+        "insight": f"Processed {kpis.get('total_evaluated', 0)} posts with {kpis.get('published_count', 0)} organic engagements published and {learning_memory.get('total_learned', 0)} learned voice samples.",
         "recommended_action": "Edit 1-2 queued drafts before approving to further sharpen few-shot voice cloning, and keep hourly velocity under 6/hr.",
         "suggested_query": niche or "AI agents coding"
     }
@@ -962,7 +963,7 @@ async def generate_strategy_brief(
     if not client:
         return fallback_brief
 
-    top_handles = ", ".join([f"@{a.get('author')} ({a.get('AvgEng', 0)} avg eng)" for a in (top_authors or [])[:4]]) or "Building initial author sample"
+    top_handles = ", ".join([f"{a.get('author')} ({a.get('score', 0)} score)" for a in (top_authors or [])[:4]]) or "Building initial author sample"
     prompt = f"""You are an executive X (Twitter) Growth Strategist analyzing live telemetry for an autonomous browser agent.
 Niche: {niche or 'General Tech & AI'}
 KPIs: {json.dumps(kpis)}
@@ -979,32 +980,44 @@ Write a crisp, high-signal executive brief in JSON with these exact keys:
 
     try:
         from google.genai import types
-        chosen = (model_name or "gemini-3.6-flash").replace("models/", "")
-        resp = await asyncio.wait_for(
-            client.aio.models.generate_content(
-                model=chosen,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.7,
-                    max_output_tokens=300
-                )
-            ),
-            timeout=5.5
-        )
-        if resp and resp.text:
-            parsed = json.loads(_clean_json_markdown(resp.text))
-            brief = {
-                "headline": str(parsed.get("headline") or fallback_brief["headline"]).strip(),
-                "insight": str(parsed.get("insight") or fallback_brief["insight"]).strip(),
-                "recommended_action": str(parsed.get("recommended_action") or fallback_brief["recommended_action"]).strip(),
-                "suggested_query": str(parsed.get("suggested_query") or fallback_brief["suggested_query"]).strip(),
-            }
+        chosen = (model_name or _last_working_gemini_model or "gemini-2.5-flash").replace("models/", "")
+        candidates = list(dict.fromkeys([chosen, "gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.5-flash"]))
+
+        async def _try_candidates() -> Optional[Dict[str, str]]:
+            for cand in candidates:
+                try:
+                    resp = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=cand,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                temperature=0.75,
+                                max_output_tokens=300
+                            )
+                        ),
+                        timeout=3.5
+                    )
+                    if resp and resp.text:
+                        parsed = json.loads(_clean_json_markdown(resp.text))
+                        return {
+                            "headline": str(parsed.get("headline") or fallback_brief["headline"]).strip(),
+                            "insight": str(parsed.get("insight") or fallback_brief["insight"]).strip(),
+                            "recommended_action": str(parsed.get("recommended_action") or fallback_brief["recommended_action"]).strip(),
+                            "suggested_query": str(parsed.get("suggested_query") or fallback_brief["suggested_query"]).strip(),
+                        }
+                except Exception:
+                    continue
+            return None
+
+        brief = await asyncio.wait_for(_try_candidates(), timeout=5.0)
+        if brief:
             _strategy_brief_cache = {"timestamp": now_ts, "data": brief}
             return brief
     except Exception as e:
         logger.debug(f"Strategy brief fallback notice: {e}")
 
+    _strategy_brief_cache = {"timestamp": now_ts, "data": fallback_brief}
     return fallback_brief
 
 

@@ -272,7 +272,8 @@ def update_tweet_status(
     error_message: Optional[str] = None,
     variants_json: Optional[str] = None,
     scheduled_for: Optional[datetime] = None,
-    user_edited: Optional[bool] = None
+    user_edited: Optional[bool] = None,
+    should_like: Optional[bool] = None
 ) -> Optional[ProcessedTweet]:
     """Updates the status and optional text/error/schedule of an existing tweet record."""
     item = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
@@ -286,6 +287,8 @@ def update_tweet_status(
             item.variants_json = variants_json
         if user_edited is not None:
             item.user_edited = user_edited
+        if should_like is not None:
+            item.should_like = should_like
         if status != "scheduled":
             item.scheduled_for = None
         elif scheduled_for is not None:
