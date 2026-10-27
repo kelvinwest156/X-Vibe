@@ -1,145 +1,312 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@200;300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/*
-  Power BI report language:
-  charcoal rail, light grey canvas, flat white tiles, yellow as the single accent,
-  teal / slate / coral for data.
-*/
 :root {
-  --canvas: #f3f2f1;
-  --tile: #ffffff;
-  --line: #e1dfdd;
-  --line-soft: #edebe9;
-  --ink: #252423;
-  --ink-2: #605e5c;
-  --ink-3: #8a8886;
-  --rail: #252423;
-  --yellow: #f2c811;
-  --teal: #01b8aa;
-  --slate: #374649;
-  --coral: #fd625e;
-  --sky: #8ad4eb;
-  --orange: #fe9666;
-  --plum: #a66999;
+  --canvas: #f8fafc;
+  --card: #ffffff;
+  --card-hover: #f1f5f9;
+  --line: #e2e8f0;
+  --line-soft: #f1f5f9;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --ink-3: #94a3b8;
+  --brand-black: #09090b;
+}
+
+.dark {
+  --canvas: #090d16;
+  --card: #0f172a;
+  --card-hover: #1e293b;
+  --line: #1e293b;
+  --line-soft: #141f33;
+  --ink: #f8fafc;
+  --ink-2: #94a3b8;
+  --ink-3: #64748b;
+  --brand-black: #f8fafc;
 }
 
 html, body {
   background: var(--canvas);
   color: var(--ink);
-  font-family: 'Manrope', system-ui, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-weight: 400;
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums;
+  transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-input, select, textarea, button { font-family: inherit; }
+input, select, textarea, button {
+  font-family: inherit;
+}
 
 @layer components {
+  /* Modern Creator Studio Card */
+  .studio-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.02);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  }
+  .studio-card:hover {
+    border-color: #cbd5e1;
+  }
+  .dark .studio-card {
+    background: #0f172a;
+    border-color: #1e293b;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+  }
+  .dark .studio-card:hover {
+    border-color: #334155;
+  }
+
+  /* Legacy tile aliases mapped to studio-card for smooth compatibility */
   .tile {
-    background: var(--tile);
-    border: 1px solid var(--line);
-    border-radius: 4px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04);
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .dark .tile {
+    background: #0f172a;
+    border-color: #1e293b;
   }
   .tile-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
-    color: var(--ink);
+    color: #0f172a;
+    letter-spacing: -0.01em;
+  }
+  .dark .tile-title {
+    color: #f8fafc;
   }
   .tile-sub {
     font-size: 12px;
-    font-weight: 300;
-    color: var(--ink-2);
+    font-weight: 400;
+    color: #64748b;
+  }
+  .dark .tile-sub {
+    color: #94a3b8;
   }
   .caption {
     font-size: 12px;
     font-weight: 400;
-    color: var(--ink-2);
+    color: #64748b;
+  }
+  .dark .caption {
+    color: #94a3b8;
   }
 
+  /* Refined Modern Buttons */
   .btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 32px;
-    padding: 0 12px;
-    border-radius: 2px;
-    border: 1px solid #c8c6c4;
-    background: #fff;
-    color: var(--ink);
+    justify-content: center;
+    gap: 7px;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    color: #0f172a;
     font-size: 13px;
     font-weight: 500;
-    transition: background 0.15s, border-color 0.15s;
+    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
     white-space: nowrap;
+    cursor: pointer;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
   }
-  .btn:hover:not(:disabled) { background: #f3f2f1; border-color: #8a8886; }
-  .btn:disabled { opacity: 0.5; cursor: default; }
+  .btn:hover:not(:disabled) {
+    background: #f8fafc;
+    border-color: #cbd5e1;
+    color: #0f172a;
+  }
+  .dark .btn {
+    background: #1e293b;
+    border-color: #334155;
+    color: #f8fafc;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.2);
+  }
+  .dark .btn:hover:not(:disabled) {
+    background: #273549;
+    border-color: #475569;
+    color: #ffffff;
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.985);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
   .btn-primary {
-    background: var(--ink);
-    border-color: var(--ink);
-    color: #fff;
+    background: #09090b;
+    border-color: #09090b;
+    color: #ffffff;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.12), 0 1px 2px -1px rgba(0, 0, 0, 0.08);
   }
-  .btn-primary:hover:not(:disabled) { background: #000; border-color: #000; }
+  .btn-primary:hover:not(:disabled) {
+    background: #27272a;
+    border-color: #27272a;
+    color: #ffffff;
+  }
+  .dark .btn-primary {
+    background: #f8fafc;
+    border-color: #f8fafc;
+    color: #09090b;
+  }
+  .dark .btn-primary:hover:not(:disabled) {
+    background: #e2e8f0;
+    border-color: #e2e8f0;
+    color: #09090b;
+  }
+
   .btn-accent {
-    background: var(--yellow);
-    border-color: var(--yellow);
-    color: var(--ink);
-    font-weight: 700;
+    background: #09090b;
+    border-color: #09090b;
+    color: #ffffff;
+    font-weight: 600;
   }
-  .btn-accent:hover:not(:disabled) { background: #e0b800; border-color: #e0b800; }
+  .btn-accent:hover:not(:disabled) {
+    background: #18181b;
+    border-color: #18181b;
+    color: #ffffff;
+  }
+  .dark .btn-accent {
+    background: #f8fafc;
+    border-color: #f8fafc;
+    color: #09090b;
+  }
+
+  .btn-emerald {
+    background: #10b981;
+    border-color: #10b981;
+    color: #ffffff;
+    font-weight: 600;
+  }
+  .btn-emerald:hover:not(:disabled) {
+    background: #059669;
+    border-color: #059669;
+  }
+
   .btn-quiet {
     border-color: transparent;
     background: transparent;
-    color: var(--ink-2);
+    color: #64748b;
+    box-shadow: none;
   }
-  .btn-quiet:hover:not(:disabled) { background: #edebe9; border-color: transparent; color: var(--ink); }
+  .btn-quiet:hover:not(:disabled) {
+    background: #f1f5f9;
+    border-color: transparent;
+    color: #0f172a;
+  }
+  .dark .btn-quiet {
+    color: #94a3b8;
+  }
+  .dark .btn-quiet:hover:not(:disabled) {
+    background: #1e293b;
+    color: #f8fafc;
+  }
 
+  /* Form Fields */
   .field {
     width: 100%;
-    background: #fff;
-    border: 1px solid #c8c6c4;
-    border-radius: 2px;
-    padding: 7px 10px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 8px 12px;
     font-size: 13px;
     font-weight: 400;
-    color: var(--ink);
+    color: #0f172a;
     outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: all 0.15s ease;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.02);
   }
-  .field::placeholder { color: var(--ink-3); font-weight: 300; }
-  .field:focus { border-color: var(--ink); box-shadow: 0 0 0 2px rgba(242, 200, 17, 0.55); }
+  .field::placeholder {
+    color: #94a3b8;
+    font-weight: 400;
+  }
+  .field:focus {
+    border-color: #0f172a;
+    box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+  }
+  .dark .field {
+    background: #0f172a;
+    border-color: #334155;
+    color: #f8fafc;
+  }
+  .dark .field::placeholder {
+    color: #64748b;
+  }
+  .dark .field:focus {
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+  }
 
   .label {
     display: block;
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 500;
-    color: var(--ink-2);
-    margin-bottom: 4px;
+    color: #334155;
+    margin-bottom: 6px;
+  }
+  .dark .label {
+    color: #cbd5e1;
   }
 
+  /* Clean Pills & Badges */
   .chip {
     display: inline-flex;
     align-items: center;
-    height: 22px;
-    padding: 0 8px;
-    border-radius: 2px;
-    background: #f3f2f1;
-    border: 1px solid var(--line);
-    font-size: 11px;
+    gap: 5px;
+    height: 24px;
+    padding: 0 9px;
+    border-radius: 6px;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    font-size: 11.5px;
     font-weight: 500;
-    color: var(--ink-2);
+    color: #475569;
+  }
+  .dark .chip {
+    background: #1e293b;
+    border-color: #334155;
+    color: #cbd5e1;
   }
 }
 
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #c8c6c4; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #8a8886; }
+/* Subtle modern scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

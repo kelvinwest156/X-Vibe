@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -116,6 +116,45 @@ logger = logging.getLogger("x_vibebot.main")
 
 HEADLESS = os.getenv("HEADLESS", "false").lower() in ("true", "1", "yes")
 browser_worker = XBrowserWorker(headless=HEADLESS)
+
+# Multi-Tenancy Browser Profile & Tenant Isolation Registry
+DEFAULT_PROFILE_DIR = os.path.abspath(os.getenv("BROWSER_PROFILE_DIR", "./x_browser_profile"))
+tenant_workers: Dict[str, XBrowserWorker] = {"default": browser_worker}
+
+
+def get_tenant_browser_worker(tenant_id: str = "default") -> XBrowserWorker:
+    """Returns an isolated XBrowserWorker instance with an isolated profile directory per tenant."""
+    clean_tenant = re.sub(r"[^a-zA-Z0-9_\-]", "_", tenant_id or "default")
+    if clean_tenant not in tenant_workers:
+        profile_dir = (
+            DEFAULT_PROFILE_DIR
+            if clean_tenant == "default"
+            else os.path.abspath(f"./x_browser_profile_{clean_tenant}")
+        )
+        tenant_workers[clean_tenant] = XBrowserWorker(profile_dir=profile_dir, headless=HEADLESS)
+    return tenant_workers[clean_tenant]
+
+
+async def get_current_tenant(
+    authorization: Optional[str] = Header(None),
+    x_tenant_id: Optional[str] = Header(None)
+) -> str:
+    """
+    Multi-tenancy isolation dependency:
+    Extracts tenant ID from Firebase JWT Bearer token or 'X-Tenant-Id' header.
+    Defaults cleanly to 'default' when running in single-user or local mode.
+    """
+    if x_tenant_id and x_tenant_id.strip():
+        return x_tenant_id.strip()
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split("Bearer ", 1)[1].strip()
+        try:
+            import firebase_admin.auth
+            decoded = firebase_admin.auth.verify_id_token(token)
+            return decoded.get("uid") or "default"
+        except Exception:
+            pass
+    return "default"
 
 last_interaction_timestamp: float = 0.0
 current_random_cooldown_seconds: int = 0
@@ -209,11 +248,12 @@ async def scheduled_queue_dispatcher_loop():
                         update_tweet_status(db, target.tweet_id, status="posted")
                         logger.info(f"Successfully published scheduled {act_type} ({target.tweet_id})!")
                     else:
+                        err_msg = getattr(browser_worker, "last_error", None) or f"Browser failed while publishing scheduled {act_type}"
                         update_tweet_status(
                             db,
                             target.tweet_id,
                             status="failed",
-                            error_message=f"Browser failed while publishing scheduled {act_type}"
+                            error_message=err_msg
                         )
                 finally:
                     db.close()
@@ -623,32 +663,33 @@ def update_env_variable(key: str, value: str):
 
 
 @app.get("/api/status", response_model=AgentStatusResponse)
-async def get_status(db: Session = Depends(get_db)):
-    config = get_agent_config(db)
-    if browser_worker.logged_in_username and config.linked_username != browser_worker.logged_in_username:
-        config.linked_username = browser_worker.logged_in_username
+async def get_status(tenant_id: str = Depends(get_current_tenant), db: Session = Depends(get_db)):
+    config = get_agent_config(db, tenant_id=tenant_id)
+    worker = get_tenant_browser_worker(tenant_id)
+    if worker.logged_in_username and config.linked_username != worker.logged_in_username:
+        config.linked_username = worker.logged_in_username
         db.commit()
 
     warmup = bool(getattr(config, "warmup_mode", False))
-    daily_used = get_daily_actions_count(db)
+    daily_used = get_daily_actions_count(db, tenant_id=tenant_id)
     effective_daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
-    hourly_used = get_hourly_actions_count(db)
+    hourly_used = get_hourly_actions_count(db, tenant_id=tenant_id)
     effective_hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
-    learning_mem = get_learning_memory(db, limit_approved=1, limit_skipped=1)
+    learning_mem = get_learning_memory(db, limit_approved=1, limit_skipped=1, tenant_id=tenant_id)
 
     cooldown_rem = get_cooldown_remaining()
-    pending_items = get_pending_tweets(db)
-    sched_count = get_scheduled_count(db)
-    total_processed = db.query(ProcessedTweet).count()
+    pending_items = get_pending_tweets(db, tenant_id=tenant_id)
+    sched_count = get_scheduled_count(db, tenant_id=tenant_id)
+    total_processed = db.query(ProcessedTweet).filter(ProcessedTweet.tenant_id == tenant_id).count()
     within_hours = is_within_active_hours(
         config.active_hours_start if config.active_hours_start is not None else 8,
         config.active_hours_end if config.active_hours_end is not None else 23
     )
 
     has_profile_cookies = (
-        os.path.isfile(browser_worker.cookies_backup_path)
-        or os.path.isfile(os.path.join(browser_worker.profile_dir, "Default", "Network", "Cookies"))
-        or os.path.isfile(os.path.join(browser_worker.profile_dir, "Default", "Cookies"))
+        os.path.isfile(worker.cookies_backup_path)
+        or os.path.isfile(os.path.join(worker.profile_dir, "Default", "Network", "Cookies"))
+        or os.path.isfile(os.path.join(worker.profile_dir, "Default", "Cookies"))
     )
 
     return AgentStatusResponse(
@@ -667,9 +708,9 @@ async def get_status(db: Session = Depends(get_db)):
         cooldown_seconds_remaining=cooldown_rem,
         within_active_hours=within_hours,
         scheduled_count=sched_count,
-        browser_connected=browser_worker.is_running,
+        browser_connected=worker.is_running,
         is_logged_in=is_session_logged_in or bool(config.linked_username) or has_profile_cookies,
-        linked_username=browser_worker.logged_in_username or config.linked_username,
+        linked_username=worker.logged_in_username or config.linked_username,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
         selected_model=config.selected_model or "gemini-3.8-flash",
@@ -685,8 +726,9 @@ async def get_status(db: Session = Depends(get_db)):
 
 
 @app.get("/api/config", response_model=AgentConfigResponse)
-async def get_config(db: Session = Depends(get_db)):
-    cfg = get_agent_config(db)
+async def get_config(tenant_id: str = Depends(get_current_tenant), db: Session = Depends(get_db)):
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+    worker = get_tenant_browser_worker(tenant_id)
     current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
@@ -705,14 +747,18 @@ async def get_config(db: Session = Depends(get_db)):
         warmup_mode=bool(getattr(cfg, "warmup_mode", False)),
         persona_prompt=cfg.persona_prompt or "",
         selected_model=cfg.selected_model or "gemini-3.8-flash",
-        linked_username=browser_worker.logged_in_username or cfg.linked_username,
+        linked_username=worker.logged_in_username or cfg.linked_username,
         masked_api_key=masked_key,
         updated_at=cfg.updated_at
     )
 
 
 @app.post("/api/config", response_model=AgentConfigResponse)
-async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depends(get_db)):
+async def update_config_endpoint(
+    payload: AgentConfigUpdate,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
     if payload.api_key is not None and payload.api_key.strip():
         clean_key = payload.api_key.strip()
         if clean_key.startswith("sk-"):
@@ -721,8 +767,9 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
             update_env_variable("GEMINI_API_KEY", clean_key)
 
     updates = payload.model_dump(exclude_unset=True, exclude={"api_key"})
-    updated = update_agent_config(db, updates)
-    logger.info("Settings updated.")
+    updated = update_agent_config(db, updates, tenant_id=tenant_id)
+    worker = get_tenant_browser_worker(tenant_id)
+    logger.info(f"Settings updated for tenant '{tenant_id}'.")
 
     current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
@@ -742,7 +789,7 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
         warmup_mode=bool(getattr(updated, "warmup_mode", False)),
         persona_prompt=updated.persona_prompt or "",
         selected_model=updated.selected_model or "gemini-3.8-flash",
-        linked_username=browser_worker.logged_in_username or updated.linked_username,
+        linked_username=worker.logged_in_username or updated.linked_username,
         masked_api_key=masked_key,
         updated_at=updated.updated_at
     )
@@ -773,13 +820,20 @@ async def test_key_endpoint(payload: TestKeyPayload, db: Session = Depends(get_d
 
 
 @app.get("/api/pending", response_model=List[ProcessedTweetResponse])
-async def get_pending_approvals_endpoint(db: Session = Depends(get_db)):
-    return get_pending_tweets(db)
+async def get_pending_approvals_endpoint(
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    return get_pending_tweets(db, tenant_id=tenant_id)
 
 
 @app.get("/api/history", response_model=List[ProcessedTweetResponse])
-async def get_history_endpoint(limit: int = 50, db: Session = Depends(get_db)):
-    return get_recent_tweets(db, limit=limit)
+async def get_history_endpoint(
+    limit: int = 50,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    return get_recent_tweets(db, limit=limit, tenant_id=tenant_id)
 
 
 def _parse_metric_numbers(metrics_str: Optional[str]) -> Dict[str, int]:
@@ -802,13 +856,22 @@ def _parse_metric_numbers(metrics_str: Optional[str]) -> Dict[str, int]:
 
 
 @app.get("/api/analytics")
-async def get_analytics_endpoint(refresh_brief: bool = False, db: Session = Depends(get_db)):
+async def get_analytics_endpoint(
+    refresh_brief: bool = False,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
     """
     Computes rich Power-BI style analytics on posts, replies, threads,
     target feed engagement, hourly velocity, author leaderboards, and AI Strategy Brief.
     """
-    all_rows = db.query(ProcessedTweet).order_by(ProcessedTweet.timestamp.desc()).all()
-    cfg = get_agent_config(db)
+    all_rows = (
+        db.query(ProcessedTweet)
+        .filter(ProcessedTweet.tenant_id == tenant_id)
+        .order_by(ProcessedTweet.timestamp.desc())
+        .all()
+    )
+    cfg = get_agent_config(db, tenant_id=tenant_id)
 
     total = len(all_rows)
     posted = sum(1 for r in all_rows if r.status == "posted")
@@ -899,11 +962,11 @@ async def get_analytics_endpoint(refresh_brief: bool = False, db: Session = Depe
     ]
 
     warmup = bool(getattr(cfg, "warmup_mode", False))
-    daily_used = get_daily_actions_count(db)
+    daily_used = get_daily_actions_count(db, tenant_id=tenant_id)
     daily_cap = min(8, cfg.daily_action_cap or 15) if warmup else (cfg.daily_action_cap or 15)
-    hourly_used = get_hourly_actions_count(db)
+    hourly_used = get_hourly_actions_count(db, tenant_id=tenant_id)
     hourly_cap = 3 if warmup else (getattr(cfg, "hourly_action_cap", 6) or 6)
-    learning_memory = get_learning_memory(db)
+    learning_memory = get_learning_memory(db, tenant_id=tenant_id)
 
     kpis_dict = {
         "total_evaluated": total,
@@ -972,6 +1035,7 @@ async def get_analytics_endpoint(refresh_brief: bool = False, db: Session = Depe
 async def approve_tweet(
     tweet_id: str,
     payload: Optional[ApproveDraftRequest] = None,
+    tenant_id: str = Depends(get_current_tenant),
     db: Session = Depends(get_db)
 ):
     """
@@ -979,15 +1043,20 @@ async def approve_tweet(
     - Tracks whether the user edited the draft so Self-Learning Voice Memory can prioritize it.
     - Enforces rolling 60-minute and daily anti-detection caps.
     """
-    tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+    tweet = db.query(ProcessedTweet).filter(
+        ProcessedTweet.tweet_id == tweet_id,
+        ProcessedTweet.tenant_id == tenant_id
+    ).first()
+    if not tweet:
+        tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
-    config = get_agent_config(db)
+    config = get_agent_config(db, tenant_id=tenant_id)
     warmup = bool(getattr(config, "warmup_mode", False))
-    daily_used = get_daily_actions_count(db)
+    daily_used = get_daily_actions_count(db, tenant_id=tenant_id)
     daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
-    hourly_used = get_hourly_actions_count(db)
+    hourly_used = get_hourly_actions_count(db, tenant_id=tenant_id)
     hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
 
     text_to_post = payload.custom_text.strip() if (payload and payload.custom_text) else tweet.generated_text
@@ -1036,8 +1105,9 @@ async def approve_tweet(
         )
 
     act_type = tweet.action_type or "reply"
-    logger.info(f"Publishing approved {act_type} ({tweet_id}) [edited={was_user_edited}, like={effective_like}]...")
-    success = await browser_worker.execute_tweet_action(
+    logger.info(f"Publishing approved {act_type} ({tweet_id}) [edited={was_user_edited}, like={effective_like}, tenant={tenant_id}]...")
+    worker = get_tenant_browser_worker(tenant_id)
+    success = await worker.execute_tweet_action(
         act_type,
         tweet_id,
         text_to_post,
@@ -1059,14 +1129,15 @@ async def approve_tweet(
         logger.info(f"Successfully published {act_type} ({tweet_id})!")
         return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
     else:
+        err_msg = getattr(worker, "last_error", None) or f"Browser failed during {act_type} submission"
         update_tweet_status(
             db,
             tweet_id,
             status="failed",
             generated_text=text_to_post,
-            error_message=f"Browser failed during {act_type} submission"
+            error_message=err_msg
         )
-        raise HTTPException(status_code=500, detail=f"Failed to publish {act_type} via browser.")
+        raise HTTPException(status_code=500, detail=f"Failed to publish {act_type}: {err_msg}")
 
 
 class GenerateOriginalPayload(BaseModel):
@@ -1075,12 +1146,16 @@ class GenerateOriginalPayload(BaseModel):
 
 
 @app.post("/api/generate-original")
-async def generate_original_endpoint(payload: GenerateOriginalPayload, db: Session = Depends(get_db)):
+async def generate_original_endpoint(
+    payload: GenerateOriginalPayload,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
     """
     Generates a fresh Original Post or Multi-Post Thread from real-time conversations,
     user voice memory, and current Google Search information, adding it directly to the Queue.
     """
-    cfg = get_agent_config(db)
+    cfg = get_agent_config(db, tenant_id=tenant_id)
     req_mode = payload.mode if payload.mode in ("auto", "post", "thread") else "auto"
     topic = (payload.custom_topic or active_search_query_state or cfg.search_query or "tech & culture").strip()
 
@@ -1105,7 +1180,11 @@ async def generate_original_endpoint(payload: GenerateOriginalPayload, db: Sessi
         learning_memory=learning_memory
     )
     if not gen.get("success") or not gen.get("text"):
-        raise HTTPException(status_code=500, detail=gen.get("topic_summary") or "Failed to generate content")
+        err_msg = gen.get("error") or gen.get("topic_summary") or "Failed to generate content"
+        err_code = gen.get("error_code")
+        if not err_code:
+            err_code = 429 if ("quota" in err_msg.lower() or "429" in err_msg or "resource_exhausted" in err_msg.lower()) else 500
+        raise HTTPException(status_code=err_code, detail=err_msg)
 
     final_mode = gen.get("action_type") or ("thread" if req_mode == "thread" else "post")
     orig_id = f"{final_mode}_{int(time.time() * 1000)}"
@@ -1152,7 +1231,11 @@ async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
             learning_memory=learning_memory
         )
         if not gen.get("success") or not gen.get("text"):
-            raise HTTPException(status_code=500, detail="Failed to regenerate")
+            err_msg = gen.get("error") or gen.get("topic_summary") or "Failed to regenerate"
+            err_code = gen.get("error_code")
+            if not err_code:
+                err_code = 429 if ("quota" in err_msg.lower() or "429" in err_msg or "resource_exhausted" in err_msg.lower()) else 500
+            raise HTTPException(status_code=err_code, detail=err_msg)
         updated = update_tweet_status(
             db,
             tweet_id,
@@ -1180,7 +1263,9 @@ async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
     )
 
     if not ai_result.get("reply_text"):
-        raise HTTPException(status_code=500, detail=ai_result.get("reasoning") or "Failed to regenerate draft")
+        reason = ai_result.get("reasoning") or "Failed to regenerate draft"
+        status_code = 429 if ("quota" in reason.lower() or "429" in reason or "resource_exhausted" in reason.lower()) else 500
+        raise HTTPException(status_code=status_code, detail=reason)
 
     updated = update_tweet_status(
         db,
@@ -1259,11 +1344,12 @@ def is_on_default_desktop() -> bool:
 
 
 @app.post("/api/browser/launch-login")
-async def launch_headful_login():
+async def launch_headful_login(tenant_id: str = Depends(get_current_tenant)):
     global is_manual_login_active
     try:
         is_manual_login_active = True
-        await browser_worker.open_headful_for_login()
+        worker = get_tenant_browser_worker(tenant_id)
+        await worker.open_headful_for_login()
         on_default = is_on_default_desktop()
         msg = (
             "Browser window opened! Sign into X on your desktop."
@@ -1281,24 +1367,29 @@ async def launch_headful_login():
 
 
 @app.post("/api/browser/release")
-async def release_browser_profile():
+async def release_browser_profile(tenant_id: str = Depends(get_current_tenant)):
     global is_manual_login_active
     is_manual_login_active = True
-    await browser_worker.stop()
+    worker = get_tenant_browser_worker(tenant_id)
+    await worker.stop()
     return {"status": "released"}
 
 
 @app.post("/api/browser/check-session")
-async def check_session(db: Session = Depends(get_db)):
+async def check_session(
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
     global is_session_logged_in, is_manual_login_active
     is_manual_login_active = False
-    is_session_logged_in = await browser_worker.check_login_status()
+    worker = get_tenant_browser_worker(tenant_id)
+    is_session_logged_in = await worker.check_login_status()
     if is_session_logged_in:
         sync_detected_username(db)
-    cfg = get_agent_config(db)
+    cfg = get_agent_config(db, tenant_id=tenant_id)
     return {
         "is_logged_in": is_session_logged_in,
-        "linked_username": browser_worker.logged_in_username or cfg.linked_username
+        "linked_username": worker.logged_in_username or cfg.linked_username
     }
 
 

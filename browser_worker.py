@@ -118,6 +118,7 @@ class XBrowserWorker:
         self._lock = asyncio.Lock()
         self.is_running = False
         self.logged_in_username: Optional[str] = None
+        self.last_error: Optional[str] = None
         self._mouse_x: float = 640.0
         self._mouse_y: float = 400.0
 
@@ -629,11 +630,19 @@ class XBrowserWorker:
         """
         async with self._lock:
             page = await self._get_page_internal()
-            target_url = tweet_url or f"https://x.com/i/status/{tweet_id}"
+            target_url = tweet_url
+            if not target_url or target_url.endswith("/home") or "/status/" not in target_url:
+                target_url = f"https://x.com/i/status/{tweet_id}"
 
             try:
-                logger.info(f"Opening post {tweet_id} for natural biometric reply flow...")
+                logger.info(f"Opening post {tweet_id} ({target_url}) for natural biometric reply flow...")
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+
+                # Check if session redirected to login
+                if "login" in page.url or "i/flow/login" in page.url:
+                    self.last_error = "Browser session is not logged into X (redirected to login)."
+                    logger.error(self.last_error)
+                    return False
 
                 # Simulate proportional human reading dwell time + curved mouse movement
                 await self.simulate_reading_dwell(page, text_length=max(120, len(reply_text) * 2))
@@ -670,7 +679,8 @@ class XBrowserWorker:
                         input_box = await page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=10000)
 
                 if not input_box:
-                    logger.error("Could not find reply input box on the page.")
+                    self.last_error = "Could not find reply input box on the page."
+                    logger.error(self.last_error)
                     return False
 
                 await self.human_type(page, '[data-testid="tweetTextarea_0"]', reply_text)
@@ -679,20 +689,27 @@ class XBrowserWorker:
                 submit_selectors = [
                     '[data-testid="tweetButtonInline"]',
                     '[data-testid="tweetButton"]',
-                    'button[data-testid="tweetButtonInline"]'
+                    'button[data-testid="tweetButtonInline"]',
+                    'button[data-testid="tweetButton"]'
                 ]
 
                 submit_btn = None
-                for s in submit_selectors:
-                    submit_btn = await page.query_selector(s)
+                for _ in range(12):  # Poll up to 6 seconds for X to validate and enable the submit button
+                    for s in submit_selectors:
+                        btn = await page.query_selector(s)
+                        if btn:
+                            is_disabled = await btn.get_attribute("disabled")
+                            aria_disabled = await btn.get_attribute("aria-disabled")
+                            if not is_disabled and aria_disabled != "true":
+                                submit_btn = btn
+                                break
                     if submit_btn:
-                        is_disabled = await submit_btn.get_attribute("disabled")
-                        aria_disabled = await submit_btn.get_attribute("aria-disabled")
-                        if not is_disabled and aria_disabled != "true":
-                            break
+                        break
+                    await asyncio.sleep(0.5)
 
                 if not submit_btn:
-                    logger.error("Could not find active submit button.")
+                    self.last_error = "Could not find active submit button (it may be disabled or missing)."
+                    logger.error(self.last_error)
                     return False
 
                 await self.human_click(page, submit_btn)
@@ -702,6 +719,7 @@ class XBrowserWorker:
                 return True
 
             except Exception as e:
+                self.last_error = str(e)
                 logger.error(f"Failed to post reply to {tweet_id}: {e}", exc_info=True)
                 return False
 
@@ -714,6 +732,12 @@ class XBrowserWorker:
             try:
                 logger.info("Navigating to X home to compose original post...")
                 await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
+
+                if "login" in page.url or "i/flow/login" in page.url:
+                    self.last_error = "Browser session is not logged into X (redirected to login)."
+                    logger.error(self.last_error)
+                    return False
+
                 await self.simulate_reading_dwell(page, text_length=120)
 
                 box = await page.query_selector('[data-testid="tweetTextarea_0"]')
@@ -728,20 +752,27 @@ class XBrowserWorker:
 
                 submit_selectors = [
                     '[data-testid="tweetButtonInline"]',
-                    '[data-testid="tweetButton"]'
+                    '[data-testid="tweetButton"]',
+                    'button[data-testid="tweetButtonInline"]',
+                    'button[data-testid="tweetButton"]'
                 ]
                 submit_btn = None
-                for s in submit_selectors:
-                    btn = await page.query_selector(s)
-                    if btn:
-                        is_dis = await btn.get_attribute("disabled")
-                        aria_dis = await btn.get_attribute("aria-disabled")
-                        if not is_dis and aria_dis != "true":
-                            submit_btn = btn
-                            break
+                for _ in range(12):  # Poll up to 6 seconds for X to validate and enable the submit button
+                    for s in submit_selectors:
+                        btn = await page.query_selector(s)
+                        if btn:
+                            is_dis = await btn.get_attribute("disabled")
+                            aria_dis = await btn.get_attribute("aria-disabled")
+                            if not is_dis and aria_dis != "true":
+                                submit_btn = btn
+                                break
+                    if submit_btn:
+                        break
+                    await asyncio.sleep(0.5)
 
                 if not submit_btn:
-                    logger.error("Could not find active Post button.")
+                    self.last_error = "Could not find active Post button (it may be disabled or missing)."
+                    logger.error(self.last_error)
                     return False
 
                 await self.human_click(page, submit_btn)
@@ -749,6 +780,7 @@ class XBrowserWorker:
                 logger.info("Successfully published original post!")
                 return True
             except Exception as e:
+                self.last_error = str(e)
                 logger.error(f"Failed to publish original post: {e}", exc_info=True)
                 return False
 
@@ -759,6 +791,7 @@ class XBrowserWorker:
         """
         posts = [p.strip() for p in re.split(r'\n?---\n?', thread_text) if p.strip()]
         if not posts:
+            self.last_error = "Thread text has no posts to publish."
             return False
         if len(posts) == 1:
             return await self.post_original(posts[0])
@@ -768,6 +801,12 @@ class XBrowserWorker:
             try:
                 logger.info(f"Composing {len(posts)}-post thread on X...")
                 await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
+
+                if "login" in page.url or "i/flow/login" in page.url:
+                    self.last_error = "Browser session is not logged into X (redirected to login)."
+                    logger.error(self.last_error)
+                    return False
+
                 await self.simulate_reading_dwell(page, text_length=140)
 
                 # Open modal composer for multi-tweet thread
@@ -790,12 +829,36 @@ class XBrowserWorker:
                         await self.human_click(page, add_btn)
                         await self.human_delay(1.0, 1.8)
 
-                submit_btn = await page.wait_for_selector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', timeout=10000)
+                submit_selectors = [
+                    '[data-testid="tweetButton"]',
+                    '[data-testid="tweetButtonInline"]',
+                    'button[data-testid="tweetButton"]'
+                ]
+                submit_btn = None
+                for _ in range(12):
+                    for s in submit_selectors:
+                        btn = await page.query_selector(s)
+                        if btn:
+                            is_dis = await btn.get_attribute("disabled")
+                            aria_dis = await btn.get_attribute("aria-disabled")
+                            if not is_dis and aria_dis != "true":
+                                submit_btn = btn
+                                break
+                    if submit_btn:
+                        break
+                    await asyncio.sleep(0.5)
+
+                if not submit_btn:
+                    self.last_error = "Could not find active submit button for thread."
+                    logger.error(self.last_error)
+                    return False
+
                 await self.human_click(page, submit_btn)
                 await self.human_delay(3.5, 5.5)
                 logger.info(f"Successfully published {len(posts)}-post thread!")
                 return True
             except Exception as e:
+                self.last_error = str(e)
                 logger.error(f"Failed to publish thread: {e}", exc_info=True)
                 return False
 
@@ -808,6 +871,7 @@ class XBrowserWorker:
         should_like: Optional[bool] = None
     ) -> bool:
         """Unified dispatcher for replies, original posts, and multi-post threads."""
+        self.last_error = None
         if action_type == "thread":
             return await self.post_thread(text)
         elif action_type == "post":

@@ -217,6 +217,28 @@ def get_deepseek_client(custom_key: Optional[str] = None):
         return None
 
 
+def format_ai_error(err: Any) -> str:
+    """Translates raw AI provider error objects into clean, helpful, human-readable explanations."""
+    err_str = str(err)
+    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+        m_delay = re.search(r"retry in ([\d\w\.]+)", err_str, re.IGNORECASE)
+        delay_info = f" (resets in {m_delay.group(1)})" if m_delay else ""
+        return (
+            f"Google Gemini Free Tier daily quota limit reached (20 requests/day limit){delay_info}. "
+            f"Switch your API key or model in Settings, or configure DeepSeek API for higher capacity."
+        )
+    if "400" in err_str or "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
+        return "Invalid Gemini API key. Please check or replace your key in Settings."
+    if "403" in err_str or "PERMISSION_DENIED" in err_str:
+        return "Gemini API permission denied. Ensure Generative Language API is enabled on your Google Cloud project."
+    if "503" in err_str or "UNAVAILABLE" in err_str:
+        return "Google Gemini models are temporarily busy. Retrying automatically in a moment..."
+    if "Timeout" in err_str or "timed out" in err_str.lower():
+        return "AI model response timed out. Please try again or switch model in Settings."
+    clean = re.sub(r"\{.*?\}", "", err_str).replace("\n", " ").strip()
+    return clean[:180] if clean else err_str[:180]
+
+
 async def test_ai_api(custom_key: Optional[str] = None) -> Dict[str, Any]:
     """Tests the AI credentials against Google Gemini (or DeepSeek if key starts with sk-)."""
     provider = get_active_provider(custom_key)
@@ -543,6 +565,7 @@ async def _evaluate_with_gemini(
     except Exception as e:
         err_msg = str(e)
         logger.error(f"Error calling Google Gemini API ({clean_model}): {err_msg}")
+        clean_err = format_ai_error(e)
         return {
             "should_reply": False,
             "reply_text": None,
@@ -550,7 +573,7 @@ async def _evaluate_with_gemini(
             "variants_json": None,
             "should_like": False,
             "urgency_score": 1,
-            "reasoning": f"Google Gemini Error: {err_msg[:120]}",
+            "reasoning": clean_err,
             "raw_response": f"ERROR: {err_msg}"
         }
 
@@ -699,36 +722,14 @@ Rules:
     return base_niche
 
 
-async def generate_original_content(
-    mode: str = "auto",
-    search_query: Optional[str] = None,
-    persona_prompt: Optional[str] = None,
+def _build_original_prompt_and_instructions(
+    mode: str,
+    topic: str,
+    voice: str,
     live_tweets: Optional[List[Dict[str, Any]]] = None,
-    model_name: Optional[str] = None,
-    custom_key: Optional[str] = None,
     learning_memory: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    Generates an original standalone X post (mode='post'), a multi-post thread (mode='thread'),
-    or lets the AI autonomously choose the best format (mode='auto') synthesized from real-time
-    X conversations, user voice memory, and live Google Search grounding.
-    """
-    client = get_gemini_client(custom_key=custom_key)
-    if not client:
-        fallback_mode = "post" if mode == "auto" else mode
-        return {
-            "success": False,
-            "action_type": fallback_mode,
-            "text": None,
-            "variants_json": None,
-            "urgency_score": 5,
-            "topic_summary": "Google Gemini API key not configured"
-        }
-
-    topic = (search_query or "tech, AI, and culture").strip()
-    voice = (persona_prompt or "Casual, sharp, dry humor, short sentences, zero corporate buzzwords").strip()
-
-    # Format real-time scraped X conversations
+) -> Tuple[str, str]:
+    """Helper to assemble prompt and formatting instructions for original posts and threads."""
     live_feed_context = ""
     if live_tweets:
         snippets = []
@@ -816,6 +817,166 @@ Current Date: {os.popen('date /t').read().strip() if os.name == 'nt' else 'Today
 {live_feed_context}
 
 {format_instructions}"""
+    return prompt, format_instructions
+
+
+def _parse_original_json_payload(raw_text: str, requested_mode: str, topic: str) -> Dict[str, Any]:
+    """Safely extracts JSON payload from Gemini or DeepSeek output."""
+    cleaned = _clean_json_markdown(raw_text)
+    data = json.loads(cleaned)
+
+    resolved_mode = str(data.get("chosen_mode") or ("post" if requested_mode == "auto" else requested_mode)).strip().lower()
+    if resolved_mode not in ("post", "thread"):
+        resolved_mode = "post" if requested_mode == "auto" else requested_mode
+
+    try:
+        urgency_score = max(1, min(10, int(data.get("urgency_score", 6))))
+    except Exception:
+        urgency_score = 6
+
+    def clean_item(val: str) -> str:
+        if resolved_mode == "thread":
+            parts = [_sanitize_ai_tells(p.strip()) for p in val.split("---") if p.strip()]
+            return "\n---\n".join(parts)
+        return _sanitize_ai_tells(val)
+
+    raw_variants = data.get("variants") if isinstance(data.get("variants"), dict) else {}
+    variants = {}
+    for k, v in list(raw_variants.items())[:4]:
+        if v and str(v).strip():
+            variants[str(k).strip()] = clean_item(str(v))
+
+    primary = clean_item(str(data.get("text", "") or ""))
+    if not primary and variants:
+        primary = next(iter(variants.values()))
+    if primary and not variants:
+        variants["Primary Angle"] = primary
+
+    topic_summary = str(data.get("topic_summary", f"Live pulse on {topic}")).strip()
+
+    return {
+        "success": True,
+        "action_type": resolved_mode,
+        "text": primary,
+        "variants": variants,
+        "variants_json": json.dumps(variants, ensure_ascii=False),
+        "urgency_score": urgency_score,
+        "topic_summary": topic_summary
+    }
+
+
+async def _generate_original_with_deepseek(
+    mode: str = "auto",
+    search_query: Optional[str] = None,
+    persona_prompt: Optional[str] = None,
+    live_tweets: Optional[List[Dict[str, Any]]] = None,
+    model_name: Optional[str] = None,
+    custom_key: Optional[str] = None,
+    learning_memory: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Generates original post or thread with DeepSeek API."""
+    client = get_deepseek_client(custom_key=custom_key)
+    if not client:
+        return {
+            "success": False,
+            "action_type": "post" if mode == "auto" else mode,
+            "text": None,
+            "variants_json": None,
+            "urgency_score": 5,
+            "topic_summary": "DeepSeek API key is not configured",
+            "error": "DeepSeek API key is not configured",
+            "error_code": 401
+        }
+    topic = (search_query or "tech, AI, and culture").strip()
+    voice = (persona_prompt or "Casual, sharp, dry humor, short sentences, zero corporate buzzwords").strip()
+    prompt, _ = _build_original_prompt_and_instructions(
+        mode=mode,
+        topic=topic,
+        voice=voice,
+        live_tweets=live_tweets,
+        learning_memory=learning_memory
+    )
+    chosen_model = model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    kwargs = {
+        "model": chosen_model,
+        "messages": [
+            {"role": "system", "content": "You are a professional social media strategist writing real, punchy X posts."},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 1500
+    }
+    if "reasoner" not in chosen_model.lower():
+        kwargs["response_format"] = {"type": "json_object"}
+        kwargs["temperature"] = 0.82
+
+    response = await client.chat.completions.create(**kwargs)
+    raw_text = response.choices[0].message.content or ""
+    return _parse_original_json_payload(raw_text, requested_mode=mode, topic=topic)
+
+
+async def generate_original_content(
+    mode: str = "auto",
+    search_query: Optional[str] = None,
+    persona_prompt: Optional[str] = None,
+    live_tweets: Optional[List[Dict[str, Any]]] = None,
+    model_name: Optional[str] = None,
+    custom_key: Optional[str] = None,
+    learning_memory: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Generates an original standalone X post (mode='post'), a multi-post thread (mode='thread'),
+    or lets the AI autonomously choose the best format (mode='auto') synthesized from real-time
+    X conversations, user voice memory, and live Google Search grounding.
+    """
+    provider = get_active_provider(custom_key=custom_key)
+    if provider == "deepseek":
+        return await _generate_original_with_deepseek(
+            mode=mode,
+            search_query=search_query,
+            persona_prompt=persona_prompt,
+            live_tweets=live_tweets,
+            model_name=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            custom_key=custom_key,
+            learning_memory=learning_memory
+        )
+
+    client = get_gemini_client(custom_key=custom_key)
+    if not client:
+        # Check if DeepSeek fallback is configured
+        if get_deepseek_client(custom_key=custom_key):
+            logger.info("Gemini key missing; falling back to configured DeepSeek API for original content generation.")
+            return await _generate_original_with_deepseek(
+                mode=mode,
+                search_query=search_query,
+                persona_prompt=persona_prompt,
+                live_tweets=live_tweets,
+                model_name=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                custom_key=custom_key,
+                learning_memory=learning_memory
+            )
+        fallback_mode = "post" if mode == "auto" else mode
+        msg = "Google Gemini API key not configured. Enter your key in Settings to generate content."
+        return {
+            "success": False,
+            "action_type": fallback_mode,
+            "text": None,
+            "variants_json": None,
+            "urgency_score": 5,
+            "topic_summary": msg,
+            "error": msg,
+            "error_code": 401
+        }
+
+    topic = (search_query or "tech, AI, and culture").strip()
+    voice = (persona_prompt or "Casual, sharp, dry humor, short sentences, zero corporate buzzwords").strip()
+    prompt, _ = _build_original_prompt_and_instructions(
+        mode=mode,
+        topic=topic,
+        voice=voice,
+        live_tweets=live_tweets,
+        learning_memory=learning_memory
+    )
 
     chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")).replace("models/", "")
 
@@ -880,57 +1041,37 @@ Current Date: {os.popen('date /t').read().strip() if os.name == 'nt' else 'Today
         if not response or not response.text:
             raise last_err or RuntimeError("Empty response from Gemini")
 
-        cleaned = _clean_json_markdown(response.text)
-        data = json.loads(cleaned)
-
-        resolved_mode = str(data.get("chosen_mode") or ("post" if mode == "auto" else mode)).strip().lower()
-        if resolved_mode not in ("post", "thread"):
-            resolved_mode = "post" if mode == "auto" else mode
-
-        try:
-            urgency_score = max(1, min(10, int(data.get("urgency_score", 6))))
-        except Exception:
-            urgency_score = 6
-
-        def clean_item(val: str) -> str:
-            if resolved_mode == "thread":
-                parts = [_sanitize_ai_tells(p.strip()) for p in val.split("---") if p.strip()]
-                return "\n---\n".join(parts)
-            return _sanitize_ai_tells(val)
-
-        raw_variants = data.get("variants") if isinstance(data.get("variants"), dict) else {}
-        variants = {}
-        for k, v in list(raw_variants.items())[:4]:
-            if v and str(v).strip():
-                variants[str(k).strip()] = clean_item(str(v))
-
-        primary = clean_item(str(data.get("text", "") or ""))
-        if not primary and variants:
-            primary = next(iter(variants.values()))
-        if primary and not variants:
-            variants["Primary Angle"] = primary
-
-        topic_summary = str(data.get("topic_summary", f"Live pulse on {topic}")).strip()
-
-        return {
-            "success": True,
-            "action_type": resolved_mode,
-            "text": primary,
-            "variants": variants,
-            "variants_json": json.dumps(variants, ensure_ascii=False),
-            "urgency_score": urgency_score,
-            "topic_summary": topic_summary
-        }
+        return _parse_original_json_payload(response.text, requested_mode=mode, topic=topic)
 
     except Exception as e:
         logger.error(f"Error generating original {mode}: {e}")
+        # If Gemini hit quota or 429, attempt seamless failover to DeepSeek if key is present
+        is_quota = "429" in str(e) or "quota" in str(e).lower() or "RESOURCE_EXHAUSTED" in str(e)
+        if is_quota and get_deepseek_client(custom_key=custom_key):
+            try:
+                logger.info("Gemini quota exhausted; attempting failover to DeepSeek...")
+                return await _generate_original_with_deepseek(
+                    mode=mode,
+                    search_query=search_query,
+                    persona_prompt=persona_prompt,
+                    live_tweets=live_tweets,
+                    model_name=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                    custom_key=custom_key,
+                    learning_memory=learning_memory
+                )
+            except Exception as ds_err:
+                logger.error(f"DeepSeek failover error: {ds_err}")
+
+        clean_err = format_ai_error(e)
         return {
             "success": False,
             "action_type": "post" if mode == "auto" else mode,
             "text": None,
             "variants_json": None,
             "urgency_score": 5,
-            "topic_summary": f"Error: {str(e)[:100]}"
+            "topic_summary": clean_err,
+            "error": clean_err,
+            "error_code": 429 if is_quota else 500
         }
 
 

@@ -24,6 +24,7 @@ class ProcessedTweet(Base):
     __tablename__ = "processed_tweets"
 
     tweet_id = Column(String(64), primary_key=True, index=True)
+    tenant_id = Column(String(128), default="default", index=True, nullable=False)
     action_type = Column(String(32), default="reply")  # "reply" or "post"
     tweet_text = Column(Text, nullable=True)           # Original scraped tweet
     tweet_author = Column(String(128), nullable=True)  # @handle
@@ -44,11 +45,12 @@ class ProcessedTweet(Base):
 class AgentConfig(Base):
     """
     Persists runtime configuration toggles for the bot in SQLite.
-    Maintains a single configuration record (id=1).
+    Maintains a configuration record per tenant_id (default='default').
     """
     __tablename__ = "agent_config"
 
-    id = Column(Integer, primary_key=True, default=1)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(128), default="default", unique=True, index=True, nullable=False)
     is_active = Column(Boolean, default=False)                # Master switch
     auto_pilot_mode = Column(Boolean, default=False)          # Human-in-the-loop vs random auto-schedule
     polling_interval_minutes = Column(Integer, default=20)    # Base interval between scans (jittered randomly)

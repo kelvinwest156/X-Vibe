@@ -32,6 +32,7 @@ def init_db():
         try:
             cfg_cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(agent_config)").fetchall()]
             migrations_cfg = [
+                ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
                 ("selected_model", "VARCHAR(64) DEFAULT 'gemini-3.8-flash'"),
                 ("max_cooldown_minutes", "INTEGER DEFAULT 45"),
                 ("active_hours_start", "INTEGER DEFAULT 8"),
@@ -49,6 +50,7 @@ def init_db():
 
             tweet_cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(processed_tweets)").fetchall()]
             migrations_tweet = [
+                ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
                 ("variants_json", "TEXT"),
                 ("tweet_metrics", "VARCHAR(128)"),
                 ("scheduled_for", "DATETIME"),
@@ -66,10 +68,11 @@ def init_db():
 
     db = SessionLocal()
     try:
-        config = db.query(AgentConfig).filter(AgentConfig.id == 1).first()
+        config = db.query(AgentConfig).filter((AgentConfig.id == 1) | (AgentConfig.tenant_id == "default")).first()
         if not config:
             config = AgentConfig(
                 id=1,
+                tenant_id="default",
                 is_active=False,
                 auto_pilot_mode=False,
                 polling_interval_minutes=20,
@@ -89,6 +92,9 @@ def init_db():
             db.commit()
         else:
             changed = False
+            if not getattr(config, "tenant_id", None):
+                config.tenant_id = "default"
+                changed = True
             if not config.selected_model or "deepseek" in config.selected_model or config.selected_model == "gemini-2.5-flash":
                 config.selected_model = "gemini-3.8-flash"
                 changed = True
@@ -207,12 +213,16 @@ def compute_random_schedule_time(db: Session, config: AgentConfig, urgency_score
 # Helper Queries
 # ==============================================================================
 
-def is_tweet_already_processed(db: Session, tweet_id: str) -> bool:
+def is_tweet_already_processed(db: Session, tweet_id: str, tenant_id: str = "default") -> bool:
     """
-    Returns True if this tweet_id has already been genuinely evaluated or replied to.
+    Returns True if this tweet_id has already been genuinely evaluated or replied to for this tenant.
     If it was previously skipped solely due to a missing/invalid API key or transient error, allow re-evaluation.
     """
-    existing = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+    existing = (
+        db.query(ProcessedTweet)
+        .filter(ProcessedTweet.tweet_id == tweet_id, ProcessedTweet.tenant_id == tenant_id)
+        .first()
+    )
     if not existing:
         return False
     if existing.status == "skipped" and existing.error_message:
@@ -238,11 +248,13 @@ def record_processed_tweet(
     media_url: Optional[str] = None,
     should_like: Optional[bool] = False,
     urgency_score: Optional[int] = 5,
-    user_edited: Optional[bool] = False
+    user_edited: Optional[bool] = False,
+    tenant_id: str = "default"
 ) -> ProcessedTweet:
-    """Saves a tweet interaction or evaluation record."""
+    """Saves a tweet interaction or evaluation record scoped to a tenant."""
     item = ProcessedTweet(
         tweet_id=tweet_id,
+        tenant_id=tenant_id,
         action_type=action_type,
         tweet_text=tweet_text,
         tweet_author=tweet_author,
@@ -298,55 +310,58 @@ def update_tweet_status(
     return item
 
 
-def get_daily_actions_count(db: Session) -> int:
+def get_daily_actions_count(db: Session, tenant_id: Optional[str] = None) -> int:
     """Counts how many actions (replies or posts) were posted today UTC."""
     today_start = datetime.combine(date.today(), datetime.min.time())
-    return (
-        db.query(func.count(ProcessedTweet.tweet_id))
-        .filter(ProcessedTweet.status == "posted")
-        .filter(ProcessedTweet.timestamp >= today_start)
-        .scalar() or 0
+    q = db.query(func.count(ProcessedTweet.tweet_id)).filter(
+        ProcessedTweet.status == "posted",
+        ProcessedTweet.timestamp >= today_start
     )
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    return q.scalar() or 0
 
 
-def get_hourly_actions_count(db: Session) -> int:
+def get_hourly_actions_count(db: Session, tenant_id: Optional[str] = None) -> int:
     """Counts how many actions were posted in the rolling last 60 minutes (anti-detection velocity cap)."""
     one_hour_ago = datetime.utcnow() - timedelta(minutes=60)
-    return (
-        db.query(func.count(ProcessedTweet.tweet_id))
-        .filter(ProcessedTweet.status == "posted")
-        .filter(ProcessedTweet.timestamp >= one_hour_ago)
-        .scalar() or 0
+    q = db.query(func.count(ProcessedTweet.tweet_id)).filter(
+        ProcessedTweet.status == "posted",
+        ProcessedTweet.timestamp >= one_hour_ago
     )
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    return q.scalar() or 0
 
 
-def get_learning_memory(db: Session, limit_approved: int = 5, limit_skipped: int = 5) -> dict:
+def get_learning_memory(db: Session, limit_approved: int = 5, limit_skipped: int = 5, tenant_id: Optional[str] = None) -> dict:
     """
     Retrieves recent approved/posted drafts (prioritizing user-edited replies) and skipped tweets
     so the AI engine can continuously learn the user's exact voice and preferences.
     """
-    approved_rows = (
+    q_app = (
         db.query(ProcessedTweet)
         .filter(ProcessedTweet.status.in_(["posted", "scheduled"]))
         .filter(ProcessedTweet.generated_text.isnot(None))
-        .order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc())
-        .limit(limit_approved)
-        .all()
     )
-    skipped_rows = (
+    q_skip = (
         db.query(ProcessedTweet)
         .filter(ProcessedTweet.status == "skipped")
         .filter(ProcessedTweet.tweet_text.isnot(None))
-        .order_by(ProcessedTweet.timestamp.desc())
-        .limit(limit_skipped)
-        .all()
     )
-    total_learned = (
+    q_total = (
         db.query(func.count(ProcessedTweet.tweet_id))
         .filter(ProcessedTweet.status.in_(["posted", "scheduled"]))
         .filter(ProcessedTweet.generated_text.isnot(None))
-        .scalar() or 0
     )
+    if tenant_id:
+        q_app = q_app.filter(ProcessedTweet.tenant_id == tenant_id)
+        q_skip = q_skip.filter(ProcessedTweet.tenant_id == tenant_id)
+        q_total = q_total.filter(ProcessedTweet.tenant_id == tenant_id)
+
+    approved_rows = q_app.order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc()).limit(limit_approved).all()
+    skipped_rows = q_skip.order_by(ProcessedTweet.timestamp.desc()).limit(limit_skipped).all()
+    total_learned = q_total.scalar() or 0
     return {
         "approved": [
             {
@@ -369,7 +384,7 @@ def get_learning_memory(db: Session, limit_approved: int = 5, limit_skipped: int
     }
 
 
-def is_reply_too_similar(db: Session, candidate_text: str) -> bool:
+def is_reply_too_similar(db: Session, candidate_text: str, tenant_id: Optional[str] = None) -> bool:
     """
     Anti-Detection Duplicate & Template Guard:
     Checks whether a candidate reply shares the exact same 3-word opening prefix
@@ -384,14 +399,15 @@ def is_reply_too_similar(db: Session, candidate_text: str) -> bool:
     cand_prefix = " ".join(cand_words[:3]) if len(cand_words) >= 3 else ""
     cand_set = set(cand_words)
 
-    recent_items = (
+    q = (
         db.query(ProcessedTweet)
         .filter(ProcessedTweet.status.in_(["posted", "scheduled", "pending_approval"]))
         .filter(ProcessedTweet.generated_text.isnot(None))
-        .order_by(ProcessedTweet.timestamp.desc())
-        .limit(20)
-        .all()
     )
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    recent_items = q.order_by(ProcessedTweet.timestamp.desc()).limit(20).all()
+
     for item in recent_items:
         existing_clean = (item.generated_text or "").strip().lower()
         if not existing_clean:
@@ -411,61 +427,56 @@ def is_reply_too_similar(db: Session, candidate_text: str) -> bool:
     return False
 
 
-def get_pending_tweets(db: Session) -> List[ProcessedTweet]:
+def get_pending_tweets(db: Session, tenant_id: Optional[str] = None) -> List[ProcessedTweet]:
     """Retrieves all tweets waiting for manual approval OR scheduled in the queue."""
-    return (
-        db.query(ProcessedTweet)
-        .filter(ProcessedTweet.status.in_(["pending_approval", "scheduled"]))
-        .order_by(ProcessedTweet.timestamp.desc())
-        .all()
-    )
+    q = db.query(ProcessedTweet).filter(ProcessedTweet.status.in_(["pending_approval", "scheduled"]))
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    return q.order_by(ProcessedTweet.timestamp.desc()).all()
 
 
-def get_due_scheduled_tweets(db: Session) -> List[ProcessedTweet]:
+def get_due_scheduled_tweets(db: Session, tenant_id: Optional[str] = None) -> List[ProcessedTweet]:
     """Retrieves scheduled tweets whose randomized scheduled_for time has arrived."""
     now_utc = datetime.utcnow()
-    return (
-        db.query(ProcessedTweet)
-        .filter(ProcessedTweet.status == "scheduled")
-        .filter(ProcessedTweet.scheduled_for <= now_utc)
-        .order_by(ProcessedTweet.scheduled_for.asc())
-        .all()
+    q = db.query(ProcessedTweet).filter(
+        ProcessedTweet.status == "scheduled",
+        ProcessedTweet.scheduled_for <= now_utc
     )
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    return q.order_by(ProcessedTweet.scheduled_for.asc()).all()
 
 
-def get_scheduled_count(db: Session) -> int:
+def get_scheduled_count(db: Session, tenant_id: Optional[str] = None) -> int:
     """Counts how many tweets are currently queued for random future posting."""
-    return (
-        db.query(func.count(ProcessedTweet.tweet_id))
-        .filter(ProcessedTweet.status == "scheduled")
-        .scalar() or 0
-    )
+    q = db.query(func.count(ProcessedTweet.tweet_id)).filter(ProcessedTweet.status == "scheduled")
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    return q.scalar() or 0
 
 
-def get_recent_tweets(db: Session, limit: int = 50) -> List[ProcessedTweet]:
+def get_recent_tweets(db: Session, limit: int = 50, tenant_id: Optional[str] = None) -> List[ProcessedTweet]:
     """Retrieves recent tweet interactions (posted, skipped, failed, pending, scheduled)."""
-    return (
-        db.query(ProcessedTweet)
-        .order_by(ProcessedTweet.timestamp.desc())
-        .limit(limit)
-        .all()
-    )
+    q = db.query(ProcessedTweet)
+    if tenant_id:
+        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    return q.order_by(ProcessedTweet.timestamp.desc()).limit(limit).all()
 
 
-def get_agent_config(db: Session) -> AgentConfig:
-    """Retrieves the singleton agent configuration row."""
-    config = db.query(AgentConfig).filter(AgentConfig.id == 1).first()
+def get_agent_config(db: Session, tenant_id: str = "default") -> AgentConfig:
+    """Retrieves the configuration row for a specific tenant (defaults to 'default')."""
+    config = db.query(AgentConfig).filter(AgentConfig.tenant_id == tenant_id).first()
     if not config:
-        config = AgentConfig(id=1)
+        config = AgentConfig(tenant_id=tenant_id)
         db.add(config)
         db.commit()
         db.refresh(config)
     return config
 
 
-def update_agent_config(db: Session, updates: dict) -> AgentConfig:
-    """Updates runtime configuration toggles."""
-    config = get_agent_config(db)
+def update_agent_config(db: Session, updates: dict, tenant_id: str = "default") -> AgentConfig:
+    """Updates runtime configuration toggles for a tenant."""
+    config = get_agent_config(db, tenant_id=tenant_id)
     for key, value in updates.items():
         if value is not None and hasattr(config, key):
             setattr(config, key, value)
