@@ -19,6 +19,25 @@ export interface AnalyticsData {
     avg_draft_length: number;
     daily_used: number;
     daily_cap: number;
+    hourly_used?: number;
+    hourly_cap?: number;
+    learned_examples_count?: number;
+  };
+  strategy_brief?: {
+    headline: string;
+    insight: string;
+    recommended_action: string;
+    suggested_query: string;
+  };
+  velocity_shield?: {
+    hourly_used: number;
+    hourly_cap: number;
+    daily_used: number;
+    daily_cap: number;
+    warmup_mode: boolean;
+    smart_query_enabled: boolean;
+    active_search_query: string;
+    learned_examples_count: number;
   };
   content_mix: Array<{ label: string; key: string; count: number; color: string }>;
   status_funnel: Array<{ label: string; count: number; color: string }>;
@@ -131,10 +150,22 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
     );
   }
 
-  const { kpis, content_mix, status_funnel, length_distribution, timeline, top_authors } = data;
+  const {
+    kpis,
+    strategy_brief,
+    velocity_shield,
+    content_mix,
+    status_funnel,
+    length_distribution,
+    timeline,
+    top_authors,
+  } = data;
 
   const pipeline = kpis.published_count + kpis.scheduled_count + kpis.pending_count;
   const mixTotal = content_mix.reduce((a, b) => a + b.count, 0);
+  const hourlyUsed = velocity_shield?.hourly_used ?? kpis.hourly_used ?? 0;
+  const hourlyCap = velocity_shield?.hourly_cap ?? kpis.hourly_cap ?? 6;
+  const learnedCount = velocity_shield?.learned_examples_count ?? kpis.learned_examples_count ?? 0;
 
   const kpiTiles = [
     {
@@ -147,7 +178,7 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
     {
       label: "Approval rate",
       value: `${kpis.approval_rate}%`,
-      note: `${kpis.total_evaluated} posts reviewed, ${kpis.skipped_count} skipped`,
+      note: `${kpis.total_evaluated} posts reviewed · ${learnedCount} voice samples`,
       color: C.slate,
     },
     {
@@ -158,9 +189,9 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
       color: C.yellow,
     },
     {
-      label: "Today's actions",
-      value: `${kpis.daily_used}/${kpis.daily_cap}`,
-      note: `Avg draft ${kpis.avg_draft_length} characters`,
+      label: "Anti-detection pace",
+      value: `${hourlyUsed}/${hourlyCap} hr`,
+      note: `Today ${kpis.daily_used}/${kpis.daily_cap} · Avg ${kpis.avg_draft_length}c`,
       color: C.coral,
     },
   ];
@@ -192,6 +223,55 @@ export default function AnalyticsView({ data }: { data: AnalyticsData | null }) 
 
   return (
     <div className="space-y-3">
+      {strategy_brief && (
+        <motion.section
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="tile p-4 relative"
+        >
+          <span
+            className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[4px]"
+            style={{ background: C.yellow }}
+          />
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1 max-w-3xl">
+              <div className="flex items-center gap-2">
+                <span className="tag" style={{ background: "#fff8d6", color: "#5c4800" }}>
+                  AI Strategy Brief
+                </span>
+                {velocity_shield?.smart_query_enabled && (
+                  <span className="tag">
+                    Smart Query: {velocity_shield.active_search_query}
+                  </span>
+                )}
+                {velocity_shield?.warmup_mode && (
+                  <span className="tag" style={{ background: "#dff6dd", color: "#107c41" }}>
+                    Warmup Shield Active
+                  </span>
+                )}
+              </div>
+              <h3 className="text-[14px] font-semibold text-ink pt-0.5">
+                {strategy_brief.headline}
+              </h3>
+              <p className="text-[12.5px] text-ink-2 leading-relaxed">
+                {strategy_brief.insight}{" "}
+                <strong className="font-semibold text-ink">Next step:</strong>{" "}
+                {strategy_brief.recommended_action}
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-1 text-right shrink-0">
+              <span className="caption">2026 Biometric & Velocity Shield</span>
+              <span className="text-[12px] font-semibold text-[#107c41]">
+                Bezier Mouse · Dwell Time · {hourlyUsed}/{hourlyCap} Hourly Cap
+              </span>
+              <span className="caption">
+                Suggested Pulse: &ldquo;{strategy_brief.suggested_query}&rdquo;
+              </span>
+            </div>
+          </div>
+        </motion.section>
+      )}
+
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {kpiTiles.map((k, i) => (
           <motion.div

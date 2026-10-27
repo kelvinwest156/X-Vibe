@@ -118,6 +118,8 @@ class XBrowserWorker:
         self._lock = asyncio.Lock()
         self.is_running = False
         self.logged_in_username: Optional[str] = None
+        self._mouse_x: float = 640.0
+        self._mouse_y: float = 400.0
 
     @property
     def cookies_backup_path(self) -> str:
@@ -259,13 +261,91 @@ class XBrowserWorker:
         """Randomized human-like pause."""
         await asyncio.sleep(random.uniform(min_sec, max_sec))
 
+    async def move_mouse_humanlike(self, page: Page, target_x: float, target_y: float):
+        """
+        Anti-Detection Biometrics: Moves the cursor along a randomized Cubic Bézier curve
+        with variable steps (18-30) and natural hand micro-jitter (±2.5px).
+        """
+        start_x, start_y = self._mouse_x, self._mouse_y
+        steps = random.randint(18, 30)
+        ctrl1_x = start_x + (target_x - start_x) * random.uniform(0.20, 0.45) + random.uniform(-45, 45)
+        ctrl1_y = start_y + (target_y - start_y) * random.uniform(0.15, 0.40) + random.uniform(-45, 45)
+        ctrl2_x = start_x + (target_x - start_x) * random.uniform(0.55, 0.85) + random.uniform(-35, 35)
+        ctrl2_y = start_y + (target_y - start_y) * random.uniform(0.60, 0.85) + random.uniform(-35, 35)
+
+        for step in range(1, steps + 1):
+            t = step / steps
+            inv = 1.0 - t
+            bx = (inv ** 3) * start_x + 3 * (inv ** 2) * t * ctrl1_x + 3 * inv * (t ** 2) * ctrl2_x + (t ** 3) * target_x
+            by = (inv ** 3) * start_y + 3 * (inv ** 2) * t * ctrl1_y + 3 * inv * (t ** 2) * ctrl2_y + (t ** 3) * target_y
+            if step < steps:
+                bx += random.uniform(-2.5, 2.5)
+                by += random.uniform(-2.5, 2.5)
+            try:
+                await page.mouse.move(max(1.0, bx), max(1.0, by))
+            except Exception:
+                pass
+            await asyncio.sleep(random.uniform(0.006, 0.019))
+
+        self._mouse_x, self._mouse_y = target_x, target_y
+
+    async def human_click(self, page: Page, element):
+        """
+        Glides the mouse along a Bézier curve into a randomized inner coordinate of `element`,
+        pauses briefly like a human finger, and clicks.
+        """
+        try:
+            await element.scroll_into_view_if_needed(timeout=4000)
+        except Exception:
+            pass
+        box = None
+        try:
+            box = await element.bounding_box()
+        except Exception:
+            box = None
+
+        if box and box.get("width", 0) > 4 and box.get("height", 0) > 4:
+            tx = box["x"] + box["width"] * random.uniform(0.25, 0.75)
+            ty = box["y"] + box["height"] * random.uniform(0.25, 0.75)
+            await self.move_mouse_humanlike(page, tx, ty)
+            await asyncio.sleep(random.uniform(0.12, 0.36))
+            await page.mouse.click(tx, ty, delay=random.randint(35, 95))
+        else:
+            await element.click()
+
+    async def simulate_reading_dwell(self, page: Page, text_length: int = 140):
+        """
+        Simulates proportional human reading time and viewport dwell before any interaction.
+        """
+        read_seconds = max(2.4, min(8.5, text_length / 26.0)) + random.uniform(0.8, 2.2)
+        await asyncio.sleep(read_seconds * 0.45)
+        try:
+            await self.move_mouse_humanlike(
+                page,
+                random.uniform(360, 820),
+                random.uniform(240, 560)
+            )
+            await page.mouse.wheel(0, random.randint(75, 210))
+        except Exception:
+            pass
+        await asyncio.sleep(read_seconds * 0.55)
+
     async def human_type(self, page: Page, selector: str, text: str):
-        """Types text character-by-character with natural bursts and pauses."""
+        """Types text character-by-character with natural bursts, curved mouse focus, and occasional typo/backspace."""
         element = await page.wait_for_selector(selector, state="visible", timeout=15000)
-        await element.click()
+        await self.human_click(page, element)
         await self.human_delay(0.4, 1.0)
 
         for i, char in enumerate(text):
+            # 1.5% chance on lowercase letters to make a human key-slip and immediately backspace
+            if char.isalpha() and char.islower() and random.random() < 0.015:
+                wrong_char = random.choice("aeiourstln")
+                if wrong_char != char:
+                    await page.keyboard.type(wrong_char)
+                    await asyncio.sleep(random.uniform(0.06, 0.16))
+                    await page.keyboard.press("Backspace")
+                    await asyncio.sleep(random.uniform(0.05, 0.14))
+
             await page.keyboard.type(char)
             delay = random.uniform(0.03, 0.13)
             if char in " ,.!?":
@@ -480,10 +560,14 @@ class XBrowserWorker:
                         if len(text_elems) > 1:
                             quoted_text = (await text_elems[1].inner_text() or "").strip()
 
-                        # Extract image alt text if present
-                        img_elems = await article.query_selector_all('img[alt]')
+                        # Extract image alt text and media URL if present (for Multimodal Vision AI)
+                        img_elems = await article.query_selector_all('img')
                         img_alts = []
+                        media_url = None
                         for img in img_elems:
+                            src = (await img.get_attribute("src") or "").strip()
+                            if not media_url and "pbs.twimg.com/media/" in src:
+                                media_url = src
                             alt = (await img.get_attribute("alt") or "").strip()
                             if alt and alt.lower() not in ("image", "embedded video", "") and len(alt) > 4:
                                 img_alts.append(alt)
@@ -506,6 +590,8 @@ class XBrowserWorker:
                             extra_parts.append(f"Quoted post: '{quoted_text[:160]}'")
                         if img_alts:
                             extra_parts.append(f"Image description: '{'; '.join(img_alts[:2])}'")
+                        if media_url:
+                            extra_parts.append("Attached visual media included")
                         extra_parts.append(f"Engagement: {metrics_str}")
 
                         raw_candidates.append({
@@ -513,6 +599,7 @@ class XBrowserWorker:
                             "author": author,
                             "text": tweet_text,
                             "url": tweet_url or f"https://x.com/i/status/{tweet_id}",
+                            "media_url": media_url,
                             "metrics": metrics_str,
                             "engagement_score": likes + (replies * 2),
                             "extra_context": " | ".join(extra_parts)
@@ -529,33 +616,36 @@ class XBrowserWorker:
             raw_candidates.sort(key=lambda x: (x["engagement_score"] > 0, len(x["text"]) > 25), reverse=True)
             return raw_candidates[:limit]
 
-    async def post_reply(self, tweet_id: str, reply_text: str, tweet_url: Optional[str] = None) -> bool:
+    async def post_reply(
+        self,
+        tweet_id: str,
+        reply_text: str,
+        tweet_url: Optional[str] = None,
+        should_like: Optional[bool] = None
+    ) -> bool:
         """
-        Navigates to the tweet, pauses to 'read', optionally likes it (~40% chance),
-        types a humanized reply, and submits.
+        Navigates to the tweet, simulates proportional human reading dwell & curved mouse trajectory,
+        likes the post when directed by AI (`should_like`), types a humanized reply, and submits.
         """
         async with self._lock:
             page = await self._get_page_internal()
             target_url = tweet_url or f"https://x.com/i/status/{tweet_id}"
 
             try:
-                logger.info(f"Opening post {tweet_id} for natural reply flow...")
+                logger.info(f"Opening post {tweet_id} for natural biometric reply flow...")
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
 
-                # Simulate human reading time + slight scroll
-                await self.human_delay(2.5, 4.8)
-                await page.mouse.wheel(0, random.randint(80, 220))
-                await self.human_delay(0.8, 1.8)
+                # Simulate proportional human reading dwell time + curved mouse movement
+                await self.simulate_reading_dwell(page, text_length=max(120, len(reply_text) * 2))
 
-                # 40% chance to naturally Like the post before replying
-                if random.random() < 0.40:
+                # AI-directed Like decision (or 35% fallback if unspecified)
+                do_like = should_like if should_like is not None else (random.random() < 0.35)
+                if do_like:
                     try:
                         like_btn = await page.query_selector('article[data-testid="tweet"] [data-testid="like"]')
                         if like_btn:
-                            await like_btn.hover()
-                            await self.human_delay(0.3, 0.8)
-                            await like_btn.click()
-                            logger.info(f"Naturally liked post {tweet_id} before replying.")
+                            await self.human_click(page, like_btn)
+                            logger.info(f"AI-directed Like executed on post {tweet_id} before replying.")
                             await self.human_delay(1.0, 2.2)
                     except Exception:
                         pass
@@ -575,7 +665,7 @@ class XBrowserWorker:
                 if not input_box:
                     reply_btn = await page.query_selector('[data-testid="reply"]')
                     if reply_btn:
-                        await reply_btn.click()
+                        await self.human_click(page, reply_btn)
                         await self.human_delay(1.2, 2.2)
                         input_box = await page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=10000)
 
@@ -605,9 +695,7 @@ class XBrowserWorker:
                     logger.error("Could not find active submit button.")
                     return False
 
-                await submit_btn.hover()
-                await self.human_delay(0.4, 1.1)
-                await submit_btn.click()
+                await self.human_click(page, submit_btn)
 
                 await self.human_delay(3.0, 5.0)
                 logger.info(f"Posted reply to tweet {tweet_id}")
@@ -619,20 +707,20 @@ class XBrowserWorker:
 
     async def post_original(self, post_text: str) -> bool:
         """
-        Publishes a standalone original post on X with humanized typing.
+        Publishes a standalone original post on X with humanized typing and curved mouse clicks.
         """
         async with self._lock:
             page = await self._get_page_internal()
             try:
                 logger.info("Navigating to X home to compose original post...")
                 await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
-                await self.human_delay(2.5, 4.5)
+                await self.simulate_reading_dwell(page, text_length=120)
 
                 box = await page.query_selector('[data-testid="tweetTextarea_0"]')
                 if not box:
                     compose_btn = await page.query_selector('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/post"]')
                     if compose_btn:
-                        await compose_btn.click()
+                        await self.human_click(page, compose_btn)
                         await self.human_delay(1.2, 2.2)
 
                 await self.human_type(page, '[data-testid="tweetTextarea_0"]', post_text.strip())
@@ -656,9 +744,7 @@ class XBrowserWorker:
                     logger.error("Could not find active Post button.")
                     return False
 
-                await submit_btn.hover()
-                await self.human_delay(0.4, 1.0)
-                await submit_btn.click()
+                await self.human_click(page, submit_btn)
                 await self.human_delay(3.0, 5.0)
                 logger.info("Successfully published original post!")
                 return True
@@ -682,12 +768,12 @@ class XBrowserWorker:
             try:
                 logger.info(f"Composing {len(posts)}-post thread on X...")
                 await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=45000)
-                await self.human_delay(2.5, 4.2)
+                await self.simulate_reading_dwell(page, text_length=140)
 
                 # Open modal composer for multi-tweet thread
                 compose_btn = await page.query_selector('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/post"]')
                 if compose_btn:
-                    await compose_btn.click()
+                    await self.human_click(page, compose_btn)
                     await self.human_delay(1.5, 2.5)
                 else:
                     await page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=30000)
@@ -701,15 +787,11 @@ class XBrowserWorker:
                     # If there is another post in the thread, click the '+' Add post button
                     if idx < len(posts) - 1:
                         add_btn = await page.wait_for_selector('[data-testid="addButton"]', state="visible", timeout=10000)
-                        await add_btn.hover()
-                        await self.human_delay(0.3, 0.8)
-                        await add_btn.click()
+                        await self.human_click(page, add_btn)
                         await self.human_delay(1.0, 1.8)
 
                 submit_btn = await page.wait_for_selector('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]', timeout=10000)
-                await submit_btn.hover()
-                await self.human_delay(0.5, 1.2)
-                await submit_btn.click()
+                await self.human_click(page, submit_btn)
                 await self.human_delay(3.5, 5.5)
                 logger.info(f"Successfully published {len(posts)}-post thread!")
                 return True
@@ -722,7 +804,8 @@ class XBrowserWorker:
         action_type: str,
         tweet_id: str,
         text: str,
-        tweet_url: Optional[str] = None
+        tweet_url: Optional[str] = None,
+        should_like: Optional[bool] = None
     ) -> bool:
         """Unified dispatcher for replies, original posts, and multi-post threads."""
         if action_type == "thread":
@@ -730,7 +813,7 @@ class XBrowserWorker:
         elif action_type == "post":
             return await self.post_original(text)
         else:
-            return await self.post_reply(tweet_id, text, tweet_url)
+            return await self.post_reply(tweet_id, text, tweet_url, should_like=should_like)
 
     async def open_headful_for_login(self):
         """Closes any existing session and opens a visible browser window to x.com/login."""

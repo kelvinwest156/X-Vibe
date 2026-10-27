@@ -38,6 +38,12 @@ interface AgentStatus {
   auto_pilot_mode: boolean;
   daily_action_cap: number;
   daily_actions_used: number;
+  hourly_action_cap?: number;
+  hourly_actions_used?: number;
+  smart_query_enabled?: boolean;
+  warmup_mode?: boolean;
+  active_search_query?: string | null;
+  learned_examples_count?: number;
   cooldown_active: boolean;
   cooldown_seconds_remaining: number;
   within_active_hours: boolean;
@@ -61,9 +67,13 @@ interface TweetItem {
   tweet_text?: string | null;
   tweet_author?: string | null;
   tweet_url?: string | null;
+  media_url?: string | null;
   generated_text?: string | null;
   variants_json?: string | null;
   tweet_metrics?: string | null;
+  should_like?: boolean | null;
+  urgency_score?: number | null;
+  user_edited?: boolean | null;
   status: string;
   scheduled_for?: string | null;
   error_message?: string | null;
@@ -111,6 +121,9 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [persona, setPersona] = useState("");
   const [cap, setCap] = useState(15);
+  const [hourlyCap, setHourlyCap] = useState(6);
+  const [smartQuery, setSmartQuery] = useState(true);
+  const [warmupMode, setWarmupMode] = useState(false);
   const [interval, setIntervalMin] = useState(20);
   const [minDelay, setMinDelay] = useState(10);
   const [maxDelay, setMaxDelay] = useState(45);
@@ -166,6 +179,9 @@ export default function HomePage() {
       setQuery(c.search_query || "");
       setPersona(c.persona_prompt || "");
       setCap(c.daily_action_cap || 15);
+      setHourlyCap(c.hourly_action_cap || 6);
+      setSmartQuery(c.smart_query_enabled ?? true);
+      setWarmupMode(Boolean(c.warmup_mode));
       setIntervalMin(c.polling_interval_minutes || 20);
       setMinDelay(c.min_cooldown_minutes || 10);
       setMaxDelay(c.max_cooldown_minutes || 45);
@@ -219,6 +235,9 @@ export default function HomePage() {
         auto_pilot_mode: autopilot,
         polling_interval_minutes: Number(interval) || 20,
         daily_action_cap: Number(cap) || 15,
+        hourly_action_cap: Number(hourlyCap) || 6,
+        smart_query_enabled: smartQuery,
+        warmup_mode: warmupMode,
         min_cooldown_minutes: Number(minDelay) || 10,
         max_cooldown_minutes: Number(maxDelay) || 45,
         active_hours_start: Number(wake) || 0,
@@ -281,7 +300,7 @@ export default function HomePage() {
     }
   };
 
-  const createOriginal = async (mode: "post" | "thread") => {
+  const createOriginal = async (mode: "auto" | "post" | "thread") => {
     setCreating(mode);
     try {
       const res = await fetch("/api/generate-original", {
@@ -290,9 +309,8 @@ export default function HomePage() {
         body: JSON.stringify({ mode, custom_topic: query.trim() || null }),
       });
       if (res.ok) {
-        const c: TweetItem = await res.json();
-        setDrafts((p) => ({ ...p, [c.tweet_id]: c.generated_text || "" }));
-        notify(`New ${mode} added to the queue`);
+        const c = await res.json();
+        notify(`New ${c.action_type || mode} added to the queue`);
         setTab("queue");
         await refresh();
       } else {
@@ -487,12 +505,15 @@ export default function HomePage() {
         <header className="h-14 bg-white border-b border-line px-6 flex items-center justify-between gap-4 sticky top-0 z-20">
           <div className="flex items-center gap-4 min-w-0">
             <h1 className="text-[18px] font-semibold text-ink">{pageTitle}</h1>
-            <span className="hidden md:inline caption">
-              {status ? `${status.daily_actions_used} of ${status.daily_action_cap} actions today` : ""}
-              {status && status.scheduled_count ? `, ${status.scheduled_count} scheduled` : ""}
-              {status?.cooldown_active
-                ? `, cooldown ${Math.ceil((status.cooldown_seconds_remaining || 0) / 60)} min`
+            <span className="hidden md:inline caption truncate">
+              {status
+                ? `Hourly ${status.hourly_actions_used ?? 0}/${status.hourly_action_cap ?? 6} · Today ${status.daily_actions_used}/${status.daily_action_cap}`
                 : ""}
+              {status && status.learned_examples_count !== undefined
+                ? ` · ${status.learned_examples_count} voice samples`
+                : ""}
+              {status && status.scheduled_count ? ` · ${status.scheduled_count} scheduled` : ""}
+              {status?.active_search_query ? ` · Query: "${status.active_search_query}"` : ""}
             </span>
           </div>
 
@@ -560,11 +581,15 @@ export default function HomePage() {
 
               {tab === "queue" && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
                     <p className="caption">
-                      Edit a draft, then post it now or let it go out at a random time.
+                      Every edit you make teaches the AI your voice. Post now or schedule with urgency-weighted pacing.
                     </p>
                     <div className="flex gap-2">
+                      <button onClick={() => createOriginal("auto")} disabled={creating !== null} className="btn btn-accent">
+                        {creating === "auto" ? <Spin /> : <Radar className="w-4 h-4" />}
+                        {creating === "auto" ? "AI deciding..." : "Smart Auto-Draft"}
+                      </button>
                       <button onClick={() => createOriginal("post")} disabled={creating !== null} className="btn">
                         {creating === "post" ? <Spin /> : <Feather className="w-4 h-4" />}
                         {creating === "post" ? "Writing" : "New post"}
@@ -585,7 +610,7 @@ export default function HomePage() {
                     <div className="tile py-16 text-center">
                       <p className="text-[15px] font-semibold text-ink">Nothing waiting for review</p>
                       <p className="caption mt-1">
-                        Scan your feed for replies, or write a new post or thread.
+                        Scan your feed for replies, or click Smart Auto-Draft to let Gemini pick a Post or Thread.
                       </p>
                     </div>
                   ) : (
@@ -602,6 +627,7 @@ export default function HomePage() {
                         type === "thread" ? "#f2c811" : type === "post" ? "#01b8aa" : "#374649";
                       const typeLabel =
                         type === "thread" ? `Thread, ${parts} posts` : type === "post" ? "Original post" : "Reply";
+                      const urgency = item.urgency_score ?? 5;
 
                       return (
                         <motion.article
@@ -620,6 +646,26 @@ export default function HomePage() {
                               <span className="text-[13px] font-semibold text-ink">{typeLabel}</span>
                               <span className="caption">@{item.tweet_author || "user"}</span>
                               {item.tweet_metrics && <span className="chip">{item.tweet_metrics}</span>}
+                              <span
+                                className="chip"
+                                style={
+                                  urgency >= 8
+                                    ? { background: "#fff4ce", color: "#8a6d00", borderColor: "transparent" }
+                                    : undefined
+                                }
+                              >
+                                Urgency {urgency}/10
+                              </span>
+                              {item.should_like && (
+                                <span className="chip !bg-[#dff6dd] !text-[#107c41] !border-transparent">
+                                  + AI Auto-Like
+                                </span>
+                              )}
+                              {item.media_url && (
+                                <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent">
+                                  Vision Analyzed
+                                </span>
+                              )}
                               {item.status === "scheduled" && (
                                 <span className="chip !bg-[#deecf9] !text-[#0f548c] !border-transparent gap-1">
                                   <Clock className="w-3 h-3" /> {schedLabel(item.scheduled_for)}
@@ -639,13 +685,30 @@ export default function HomePage() {
                           </div>
 
                           {item.tweet_text && (
-                            <p className="text-[13px] font-light text-ink-2 bg-[#faf9f8] border border-line-soft rounded-[2px] px-3 py-2 mb-3 whitespace-pre-line">
-                              {item.tweet_text}
-                            </p>
+                            <div className="bg-[#faf9f8] border border-line-soft rounded-[2px] px-3 py-2 mb-3 flex items-start gap-3">
+                              <p className="text-[13px] font-light text-ink-2 whitespace-pre-line flex-1">
+                                {item.tweet_text}
+                              </p>
+                              {item.media_url && (
+                                <a
+                                  href={item.media_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="shrink-0 block"
+                                  title="Attached tweet image analyzed by Gemini Vision"
+                                >
+                                  <img
+                                    src={item.media_url}
+                                    alt="Tweet media"
+                                    className="w-16 h-16 object-cover rounded-[2px] border border-line"
+                                  />
+                                </a>
+                              )}
+                            </div>
                           )}
 
-                          <div className="flex items-center justify-between mb-1.5">
-                            <div className="flex items-center gap-1">
+                          <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                            <div className="flex items-center gap-1 flex-wrap">
                               {keys.map((k) => {
                                 const sel = (variantSel[item.tweet_id] || keys[0]) === k;
                                 return (
@@ -806,18 +869,34 @@ export default function HomePage() {
               {tab === "settings" && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
                   <section className="tile p-5 space-y-4">
-                    <h3 className="tile-title">Voice and topic</h3>
+                    <h3 className="tile-title">Voice, Smart Discovery & AI</h3>
                     <div>
-                      <label className="label">Search topic on X</label>
+                      <label className="label">Niche / Topic seed on X</label>
                       <input
                         className="field"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        placeholder="#elclassico OR buildinpublic"
+                        placeholder="AI agents, SaaS builders, Next.js"
                       />
                     </div>
+                    <label className="flex items-start gap-3 p-3 border border-line rounded-[2px] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={smartQuery}
+                        onChange={(e) => setSmartQuery(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-[#252423]"
+                      />
+                      <span>
+                        <span className="block text-[13px] font-semibold text-ink">
+                          Smart AI Search Discovery
+                        </span>
+                        <span className="caption">
+                          Let Gemini invent fresh 2-4 word X search queries around your niche on each scan so you never camp on one stale keyword.
+                        </span>
+                      </span>
+                    </label>
                     <div>
-                      <label className="label">How you write</label>
+                      <label className="label">How you write (Self-learning base voice)</label>
                       <textarea
                         rows={3}
                         className="field"
@@ -860,9 +939,10 @@ export default function HomePage() {
                   </section>
 
                   <section className="tile p-5 space-y-4">
-                    <h3 className="tile-title">Timing and limits</h3>
+                    <h3 className="tile-title">2026 Anti-Detection & Pacing Limits</h3>
                     <div className="grid grid-cols-2 gap-3">
                       {[
+                        ["Hourly velocity cap (safe <=6)", hourlyCap, setHourlyCap],
                         ["Daily action limit", cap, setCap],
                         ["Scan every (min)", interval, setIntervalMin],
                         ["Shortest random delay (min)", minDelay, setMinDelay],
@@ -884,6 +964,22 @@ export default function HomePage() {
                     <label className="flex items-start gap-3 p-3 border border-line rounded-[2px] cursor-pointer">
                       <input
                         type="checkbox"
+                        checked={warmupMode}
+                        onChange={(e) => setWarmupMode(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-[#252423]"
+                      />
+                      <span>
+                        <span className="block text-[13px] font-semibold text-ink">
+                          Account Warmup Shield
+                        </span>
+                        <span className="caption">
+                          Recommended for new or recovering accounts: caps velocity to 3/hr and 8/day with 1.5x longer reading & scheduling pauses.
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-3 p-3 border border-line rounded-[2px] cursor-pointer">
+                      <input
+                        type="checkbox"
                         checked={autopilot}
                         onChange={(e) => setAutopilot(e.target.checked)}
                         className="mt-0.5 w-4 h-4 accent-[#252423]"
@@ -891,7 +987,7 @@ export default function HomePage() {
                       <span>
                         <span className="block text-[13px] font-semibold text-ink">Autopilot</span>
                         <span className="caption">
-                          Schedule new drafts at random times without waiting for approval.
+                          Schedule new drafts at urgency-weighted random times without waiting for manual approval.
                         </span>
                       </span>
                     </label>

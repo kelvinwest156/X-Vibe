@@ -53,6 +53,9 @@ from database import (
     record_processed_tweet,
     update_tweet_status,
     get_daily_actions_count,
+    get_hourly_actions_count,
+    get_learning_memory,
+    is_reply_too_similar,
     get_pending_tweets,
     get_due_scheduled_tweets,
     get_scheduled_count,
@@ -63,7 +66,14 @@ from database import (
     compute_random_schedule_time,
     SessionLocal
 )
-from ai_engine import evaluate_tweet, generate_original_content, test_ai_api, KNOWN_GEMINI_MODELS
+from ai_engine import (
+    evaluate_tweet,
+    generate_original_content,
+    generate_smart_search_query,
+    generate_strategy_brief,
+    test_ai_api,
+    KNOWN_GEMINI_MODELS
+)
 from browser_worker import XBrowserWorker
 
 load_dotenv()
@@ -111,6 +121,7 @@ last_interaction_timestamp: float = 0.0
 current_random_cooldown_seconds: int = 0
 is_session_logged_in: bool = False
 is_manual_login_active: bool = False
+active_search_query_state: Optional[str] = None
 bg_worker_task: Optional[asyncio.Task] = None
 scheduler_worker_task: Optional[asyncio.Task] = None
 scrape_now_flag = asyncio.Event()
@@ -149,7 +160,8 @@ def sync_detected_username(db: Session):
 async def scheduled_queue_dispatcher_loop():
     """
     Continuously checks for scheduled replies whose randomized `scheduled_for`
-    timestamp has arrived and dispatches them organically.
+    timestamp has arrived and dispatches them organically while respecting
+    the rolling 60-minute anti-detection velocity cap and warmup mode.
     """
     logger.info("Random schedule dispatcher initialized.")
     await asyncio.sleep(5)
@@ -167,23 +179,27 @@ async def scheduled_queue_dispatcher_loop():
                     config.active_hours_start or 8,
                     config.active_hours_end or 23
                 )
+                warmup = bool(getattr(config, "warmup_mode", False))
                 daily_used = get_daily_actions_count(db)
-                daily_cap = config.daily_action_cap or 15
+                daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+                hourly_used = get_hourly_actions_count(db)
+                hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
                 min_cd = config.min_cooldown_minutes or 10
                 max_cd = config.max_cooldown_minutes or 45
                 due_items = get_due_scheduled_tweets(db) if within_hours else []
             finally:
                 db.close()
 
-            if due_items and daily_used < daily_cap:
+            if due_items and daily_used < daily_cap and hourly_used < hourly_cap:
                 target = due_items[0]
                 act_type = target.action_type or "reply"
-                logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}). Publishing now...")
+                logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}). Publishing now (hourly {hourly_used + 1}/{hourly_cap})...")
                 success = await browser_worker.execute_tweet_action(
                     act_type,
                     target.tweet_id,
                     target.generated_text,
-                    target.tweet_url
+                    target.tweet_url,
+                    should_like=bool(getattr(target, "should_like", False))
                 )
                 db = SessionLocal()
                 try:
@@ -214,10 +230,10 @@ async def scheduled_queue_dispatcher_loop():
 
 async def background_automation_loop():
     """
-    Continuous background loop with randomized jitter, active hours sleep window,
-    and automatic random scheduling when Autopilot is enabled.
+    Continuous background loop with Smart AI Search Discovery, Multimodal Vision,
+    Self-Learning Voice Memory, Duplicate Similarity Filtering, and Urgency Scheduling.
     """
-    global is_session_logged_in
+    global is_session_logged_in, active_search_query_state
     logger.info("Background automation worker loop initialized.")
     await asyncio.sleep(3)
 
@@ -229,13 +245,20 @@ async def background_automation_loop():
                 is_active = config.is_active
                 auto_pilot = config.auto_pilot_mode
                 base_interval_secs = max(1, config.polling_interval_minutes) * 60
-                daily_cap = config.daily_action_cap
-                query = config.search_query
+                warmup = bool(getattr(config, "warmup_mode", False))
+                daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+                hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
+                smart_query_on = bool(getattr(config, "smart_query_enabled", True))
+                base_query = config.search_query
                 persona = config.persona_prompt
                 selected_model = config.selected_model or "gemini-3.8-flash"
                 start_hr = config.active_hours_start if config.active_hours_start is not None else 8
                 end_hr = config.active_hours_end if config.active_hours_end is not None else 23
                 daily_used = get_daily_actions_count(db)
+                hourly_used = get_hourly_actions_count(db)
+                learning_memory = get_learning_memory(db)
+                recent_rows = get_recent_tweets(db, limit=6)
+                recent_sample_dicts = [{"text": r.tweet_text} for r in recent_rows if r.tweet_text]
             finally:
                 db.close()
 
@@ -269,6 +292,11 @@ async def background_automation_loop():
                 await asyncio.sleep(300)
                 continue
 
+            if hourly_used >= hourly_cap and not scrape_now_flag.is_set():
+                logger.info(f"Hourly anti-detection cap reached ({hourly_used}/{hourly_cap} in last 60m). Cooling down...")
+                await asyncio.sleep(180)
+                continue
+
             # Verify X Login
             try:
                 is_session_logged_in = await browser_worker.check_login_status()
@@ -293,8 +321,19 @@ async def background_automation_loop():
 
             # Consume manual scrape trigger right as scan starts
             scrape_now_flag.clear()
-            logger.info(f"Scanning X feed for '{query}'...")
-            tweets = await browser_worker.scrape_feed(search_query=query, limit=8)
+
+            # Smart AI Search Query Discovery
+            effective_query = base_query
+            if smart_query_on and base_query and base_query.strip():
+                effective_query = await generate_smart_search_query(
+                    niche_topic=base_query,
+                    recent_tweets=recent_sample_dicts,
+                    model_name=selected_model
+                )
+            active_search_query_state = effective_query or "Home Timeline"
+
+            logger.info(f"Scanning X feed for '{effective_query}' (learned samples: {learning_memory.get('total_learned', 0)})...")
+            tweets = await browser_worker.scrape_feed(search_query=effective_query, limit=8)
             logger.info(f"Collected {len(tweets)} candidate posts.")
 
             db = SessionLocal()
@@ -323,9 +362,11 @@ async def background_automation_loop():
                     tweet_text=t["text"],
                     tweet_author=t["author"],
                     model_name=selected_model,
-                    search_query=query,
+                    search_query=base_query or effective_query,
                     persona_prompt=persona,
-                    extra_context=t.get("extra_context")
+                    extra_context=t.get("extra_context"),
+                    media_url=t.get("media_url"),
+                    learning_memory=learning_memory
                 )
 
                 if ai_result.get("raw_response") == "NO_API_KEY":
@@ -343,6 +384,7 @@ async def background_automation_loop():
                             tweet_text=t["text"],
                             tweet_author=t["author"],
                             tweet_url=t["url"],
+                            media_url=t.get("media_url"),
                             generated_text=None,
                             variants_json=None,
                             tweet_metrics=t.get("metrics"),
@@ -352,8 +394,38 @@ async def background_automation_loop():
                         continue
 
                     reply_text = ai_result["reply_text"]
+                    variants_dict = ai_result.get("variants") or {}
                     variants_json = ai_result.get("variants_json")
-                    logger.info(f"Drafted for @{t['author']}: '{reply_text}'")
+                    should_like = bool(ai_result.get("should_like", False))
+                    urgency_score = int(ai_result.get("urgency_score", 5))
+
+                    # Anti-Detection Duplicate & Template Similarity Filter
+                    if is_reply_too_similar(db, reply_text):
+                        alt_chosen = None
+                        for alt_text in variants_dict.values():
+                            if alt_text and not is_reply_too_similar(db, alt_text):
+                                alt_chosen = alt_text
+                                break
+                        if alt_chosen:
+                            logger.info("Primary draft shared opening words with a recent reply; switched to fresh variant.")
+                            reply_text = alt_chosen
+                        else:
+                            logger.info(f"Skipped @{t['author']}: Draft too similar to recent replies (anti-template shield).")
+                            record_processed_tweet(
+                                db=db,
+                                tweet_id=tweet_id,
+                                action_type="reply",
+                                tweet_text=t["text"],
+                                tweet_author=t["author"],
+                                tweet_url=t["url"],
+                                media_url=t.get("media_url"),
+                                generated_text=None,
+                                status="skipped",
+                                error_message="Filtered by Anti-Detection Similarity Shield"
+                            )
+                            continue
+
+                    logger.info(f"Drafted for @{t['author']} [urgency {urgency_score}/10, like={should_like}]: '{reply_text}'")
 
                     if not auto_pilot:
                         record_processed_tweet(
@@ -363,18 +435,21 @@ async def background_automation_loop():
                             tweet_text=t["text"],
                             tweet_author=t["author"],
                             tweet_url=t["url"],
+                            media_url=t.get("media_url"),
                             generated_text=reply_text,
                             variants_json=variants_json,
                             tweet_metrics=t.get("metrics"),
+                            should_like=should_like,
+                            urgency_score=urgency_score,
                             status="pending_approval",
                             error_message=ai_result["reasoning"]
                         )
                     else:
-                        # Autopilot schedules replies at completely random future timestamps
+                        # Autopilot schedules replies using AI urgency-weighted random timestamps
                         cfg = get_agent_config(db)
-                        sched_utc = compute_random_schedule_time(db, cfg)
+                        sched_utc = compute_random_schedule_time(db, cfg, urgency_score=urgency_score)
                         mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
-                        logger.info(f"Autopilot scheduled reply to @{t['author']} in ~{mins_away}m (random time).")
+                        logger.info(f"Autopilot scheduled reply to @{t['author']} in ~{mins_away}m (urgency {urgency_score}/10).")
                         record_processed_tweet(
                             db=db,
                             tweet_id=tweet_id,
@@ -382,9 +457,12 @@ async def background_automation_loop():
                             tweet_text=t["text"],
                             tweet_author=t["author"],
                             tweet_url=t["url"],
+                            media_url=t.get("media_url"),
                             generated_text=reply_text,
                             variants_json=variants_json,
                             tweet_metrics=t.get("metrics"),
+                            should_like=should_like,
+                            urgency_score=urgency_score,
                             status="scheduled",
                             scheduled_for=sched_utc,
                             error_message=ai_result["reasoning"]
@@ -395,37 +473,40 @@ async def background_automation_loop():
                 await asyncio.sleep(random.uniform(1.2, 2.5))
 
             if new_count == 0 and len(tweets) > 0:
-                logger.info(f"All {len(tweets)} visible posts for '{query}' were already evaluated.")
+                logger.info(f"All {len(tweets)} visible posts for '{effective_query}' were already evaluated.")
 
-            # Also synthesize 1 original Post or Thread from the live conversation pulse
+            # Autonomously synthesize 1 original Post or Thread (AI chooses best format via mode="auto")
             if len(tweets) >= 2:
-                orig_mode = random.choice(["post", "thread"])
-                logger.info(f"Synthesizing original {orig_mode} from live '{query}' conversation & real-time info...")
+                logger.info(f"AI autonomously synthesizing original content from live '{effective_query}' pulse...")
                 gen = await generate_original_content(
-                    mode=orig_mode,
-                    search_query=query,
+                    mode="auto",
+                    search_query=base_query or effective_query,
                     persona_prompt=persona,
                     live_tweets=tweets,
-                    model_name=selected_model
+                    model_name=selected_model,
+                    learning_memory=learning_memory
                 )
                 if gen.get("success") and gen.get("text"):
+                    chosen_mode = gen.get("action_type") or "post"
+                    orig_urgency = int(gen.get("urgency_score", 6))
                     db = SessionLocal()
                     try:
                         cfg = get_agent_config(db)
-                        orig_id = f"{orig_mode}_{int(time.time())}"
+                        orig_id = f"{chosen_mode}_{int(time.time())}"
                         author_label = (browser_worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
                         if auto_pilot:
-                            sched_utc = compute_random_schedule_time(db, cfg)
+                            sched_utc = compute_random_schedule_time(db, cfg, urgency_score=orig_urgency)
                             record_processed_tweet(
                                 db=db,
                                 tweet_id=orig_id,
-                                action_type=orig_mode,
+                                action_type=chosen_mode,
                                 tweet_text=gen["topic_summary"],
                                 tweet_author=author_label,
                                 tweet_url="https://x.com/home",
                                 generated_text=gen["text"],
                                 variants_json=gen.get("variants_json"),
-                                tweet_metrics="Live Pulse · OriginalThread" if orig_mode == "thread" else "Live Pulse · Original Post",
+                                tweet_metrics="Live Pulse · Original Thread" if chosen_mode == "thread" else "Live Pulse · Original Post",
+                                urgency_score=orig_urgency,
                                 status="scheduled",
                                 scheduled_for=sched_utc,
                                 error_message=gen["topic_summary"]
@@ -434,17 +515,18 @@ async def background_automation_loop():
                             record_processed_tweet(
                                 db=db,
                                 tweet_id=orig_id,
-                                action_type=orig_mode,
+                                action_type=chosen_mode,
                                 tweet_text=gen["topic_summary"],
                                 tweet_author=author_label,
                                 tweet_url="https://x.com/home",
                                 generated_text=gen["text"],
                                 variants_json=gen.get("variants_json"),
-                                tweet_metrics="Live Pulse · Thread" if orig_mode == "thread" else "Live Pulse · Original Post",
+                                tweet_metrics="Live Pulse · Thread" if chosen_mode == "thread" else "Live Pulse · Original Post",
+                                urgency_score=orig_urgency,
                                 status="pending_approval",
                                 error_message=gen["topic_summary"]
                             )
-                        logger.info(f"Drafted original {orig_mode} from live conversation pulse.")
+                        logger.info(f"AI chose and drafted original {chosen_mode} (urgency {orig_urgency}/10) from live pulse.")
                     finally:
                         db.close()
 
@@ -547,7 +629,13 @@ async def get_status(db: Session = Depends(get_db)):
         config.linked_username = browser_worker.logged_in_username
         db.commit()
 
+    warmup = bool(getattr(config, "warmup_mode", False))
     daily_used = get_daily_actions_count(db)
+    effective_daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+    hourly_used = get_hourly_actions_count(db)
+    effective_hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
+    learning_mem = get_learning_memory(db, limit_approved=1, limit_skipped=1)
+
     cooldown_rem = get_cooldown_remaining()
     pending_items = get_pending_tweets(db)
     sched_count = get_scheduled_count(db)
@@ -567,8 +655,14 @@ async def get_status(db: Session = Depends(get_db)):
         is_active=config.is_active,
         auto_pilot_mode=config.auto_pilot_mode,
         polling_interval_minutes=config.polling_interval_minutes,
-        daily_action_cap=config.daily_action_cap,
+        daily_action_cap=effective_daily_cap,
         daily_actions_used=daily_used,
+        hourly_action_cap=effective_hourly_cap,
+        hourly_actions_used=hourly_used,
+        smart_query_enabled=bool(getattr(config, "smart_query_enabled", True)),
+        warmup_mode=warmup,
+        active_search_query=active_search_query_state or config.search_query or "Home Timeline",
+        learned_examples_count=int(learning_mem.get("total_learned", 0)),
         cooldown_active=cooldown_rem > 0,
         cooldown_seconds_remaining=cooldown_rem,
         within_active_hours=within_hours,
@@ -601,11 +695,14 @@ async def get_config(db: Session = Depends(get_db)):
         auto_pilot_mode=cfg.auto_pilot_mode,
         polling_interval_minutes=cfg.polling_interval_minutes,
         daily_action_cap=cfg.daily_action_cap,
+        hourly_action_cap=getattr(cfg, "hourly_action_cap", 6) or 6,
         min_cooldown_minutes=cfg.min_cooldown_minutes or 10,
         max_cooldown_minutes=cfg.max_cooldown_minutes or 45,
         active_hours_start=cfg.active_hours_start if cfg.active_hours_start is not None else 8,
         active_hours_end=cfg.active_hours_end if cfg.active_hours_end is not None else 23,
         search_query=cfg.search_query,
+        smart_query_enabled=bool(getattr(cfg, "smart_query_enabled", True)),
+        warmup_mode=bool(getattr(cfg, "warmup_mode", False)),
         persona_prompt=cfg.persona_prompt or "",
         selected_model=cfg.selected_model or "gemini-3.8-flash",
         linked_username=browser_worker.logged_in_username or cfg.linked_username,
@@ -635,11 +732,14 @@ async def update_config_endpoint(payload: AgentConfigUpdate, db: Session = Depen
         auto_pilot_mode=updated.auto_pilot_mode,
         polling_interval_minutes=updated.polling_interval_minutes,
         daily_action_cap=updated.daily_action_cap,
+        hourly_action_cap=getattr(updated, "hourly_action_cap", 6) or 6,
         min_cooldown_minutes=updated.min_cooldown_minutes or 10,
         max_cooldown_minutes=updated.max_cooldown_minutes or 45,
         active_hours_start=updated.active_hours_start if updated.active_hours_start is not None else 8,
         active_hours_end=updated.active_hours_end if updated.active_hours_end is not None else 23,
         search_query=updated.search_query,
+        smart_query_enabled=bool(getattr(updated, "smart_query_enabled", True)),
+        warmup_mode=bool(getattr(updated, "warmup_mode", False)),
         persona_prompt=updated.persona_prompt or "",
         selected_model=updated.selected_model or "gemini-3.8-flash",
         linked_username=browser_worker.logged_in_username or updated.linked_username,
@@ -705,7 +805,7 @@ def _parse_metric_numbers(metrics_str: Optional[str]) -> Dict[str, int]:
 async def get_analytics_endpoint(db: Session = Depends(get_db)):
     """
     Computes rich Power-BI style analytics on posts, replies, threads,
-    target feed engagement, hourly velocity, and author leaderboards.
+    target feed engagement, hourly velocity, author leaderboards, and AI Strategy Brief.
     """
     all_rows = db.query(ProcessedTweet).order_by(ProcessedTweet.timestamp.desc()).all()
     cfg = get_agent_config(db)
@@ -744,7 +844,6 @@ async def get_analytics_endpoint(db: Session = Depends(get_db)):
 
     for idx, r in enumerate(all_rows):
         parsed = _parse_metric_numbers(r.tweet_metrics)
-        # Only real scraped numbers are counted; items without metrics contribute zero.
         likes_val = parsed["likes"]
         replies_val = parsed["replies"]
         total_likes += likes_val
@@ -799,37 +898,68 @@ async def get_analytics_endpoint(db: Session = Depends(get_db)):
         for k, v in hour_buckets.items()
     ]
 
+    warmup = bool(getattr(cfg, "warmup_mode", False))
+    daily_used = get_daily_actions_count(db)
+    daily_cap = min(8, cfg.daily_action_cap or 15) if warmup else (cfg.daily_action_cap or 15)
+    hourly_used = get_hourly_actions_count(db)
+    hourly_cap = 3 if warmup else (getattr(cfg, "hourly_action_cap", 6) or 6)
+    learning_memory = get_learning_memory(db)
+
+    kpis_dict = {
+        "total_evaluated": total,
+        "published_count": posted,
+        "scheduled_count": scheduled,
+        "pending_count": pending,
+        "skipped_count": skipped,
+        "failed_count": failed,
+        "approval_rate": approval_rate,
+        "feed_likes_captured": total_likes,
+        "feed_replies_captured": total_replies,
+        "avg_engagement_score": round((total_likes + total_replies * 2) / max(1, total), 1),
+        "avg_draft_length": avg_len,
+        "daily_used": daily_used,
+        "daily_cap": daily_cap,
+        "hourly_used": hourly_used,
+        "hourly_cap": hourly_cap,
+        "learned_examples_count": int(learning_memory.get("total_learned", 0))
+    }
+
+    strategy_brief = await generate_strategy_brief(
+        kpis=kpis_dict,
+        top_authors=top_authors,
+        learning_memory=learning_memory,
+        niche=active_search_query_state or cfg.search_query or "AI & Tech",
+        model_name=cfg.selected_model or "gemini-3.8-flash"
+    )
+
     return {
-        "kpis": {
-            "total_evaluated": total,
-            "published_count": posted,
-            "scheduled_count": scheduled,
-            "pending_count": pending,
-            "skipped_count": skipped,
-            "failed_count": failed,
-            "approval_rate": approval_rate,
-            "feed_likes_captured": total_likes,
-            "feed_replies_captured": total_replies,
-            "avg_engagement_score": round((total_likes + total_replies * 2) / max(1, total), 1),
-            "avg_draft_length": avg_len,
-            "daily_used": get_daily_actions_count(db),
-            "daily_cap": cfg.daily_action_cap
+        "kpis": kpis_dict,
+        "strategy_brief": strategy_brief,
+        "velocity_shield": {
+            "hourly_used": hourly_used,
+            "hourly_cap": hourly_cap,
+            "daily_used": daily_used,
+            "daily_cap": daily_cap,
+            "warmup_mode": warmup,
+            "smart_query_enabled": bool(getattr(cfg, "smart_query_enabled", True)),
+            "active_search_query": active_search_query_state or cfg.search_query or "Home Timeline",
+            "learned_examples_count": int(learning_memory.get("total_learned", 0)),
         },
         "content_mix": [
-            {"label": "Smart Replies", "key": "reply", "count": replies_cnt, "color": "#38BDF8"},
-            {"label": "Original Posts", "key": "post", "count": posts_cnt, "color": "#34D399"},
-            {"label": "Multi-Post Threads", "key": "thread", "count": threads_cnt, "color": "#A78BFA"}
+            {"label": "Smart Replies", "key": "reply", "count": replies_cnt, "color": "#01B8AA"},
+            {"label": "Original Posts", "key": "post", "count": posts_cnt, "color": "#F2C811"},
+            {"label": "Multi-Post Threads", "key": "thread", "count": threads_cnt, "color": "#374649"}
         ],
         "status_funnel": [
-            {"label": "Published", "count": posted, "color": "#34D399"},
-            {"label": "Scheduled (Random)", "count": scheduled, "color": "#38BDF8"},
-            {"label": "In Review Queue", "count": pending, "color": "#FBBF24"},
-            {"label": "AI Filtered / Skipped", "count": skipped, "color": "#64748B"}
+            {"label": "Published", "count": posted, "color": "#01B8AA"},
+            {"label": "Scheduled (Random)", "count": scheduled, "color": "#374649"},
+            {"label": "In Review Queue", "count": pending, "color": "#F2C811"},
+            {"label": "AI Filtered / Skipped", "count": skipped, "color": "#FD625E"}
         ],
         "length_distribution": [
-            {"label": "Punchy (<95c)", "count": short_cnt, "color": "#38BDF8"},
-            {"label": "Conversational (95-185c)", "count": med_cnt, "color": "#818CF8"},
-            {"label": "Deep Thread (>185c)", "count": long_cnt, "color": "#C084FC"}
+            {"label": "Punchy (<95c)", "count": short_cnt, "color": "#01B8AA"},
+            {"label": "Conversational (95-185c)", "count": med_cnt, "color": "#374649"},
+            {"label": "Deep Thread (>185c)", "count": long_cnt, "color": "#F2C811"}
         ],
         "timeline": timeline,
         "top_authors": top_authors
@@ -844,36 +974,41 @@ async def approve_tweet(
 ):
     """
     Approves a draft reply.
-    - If payload.schedule_random is True: schedules it for a completely random future time.
-    - Otherwise: dispatches Playwright to post it immediately.
+    - Tracks whether the user edited the draft so Self-Learning Voice Memory can prioritize it.
+    - Enforces rolling 60-minute and daily anti-detection caps.
     """
     tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
     config = get_agent_config(db)
+    warmup = bool(getattr(config, "warmup_mode", False))
     daily_used = get_daily_actions_count(db)
-    if daily_used >= config.daily_action_cap:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Daily action cap ({config.daily_action_cap}) reached!"
-        )
+    daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+    hourly_used = get_hourly_actions_count(db)
+    hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
 
     text_to_post = payload.custom_text.strip() if (payload and payload.custom_text) else tweet.generated_text
     if not text_to_post:
         raise HTTPException(status_code=400, detail="Cannot post an empty reply.")
 
+    was_user_edited = bool(
+        payload and payload.custom_text and payload.custom_text.strip() != (tweet.generated_text or "").strip()
+    )
+    urgency_val = int(getattr(tweet, "urgency_score", 5) or 5)
+
     if payload and payload.schedule_random:
-        sched_utc = compute_random_schedule_time(db, config)
+        sched_utc = compute_random_schedule_time(db, config, urgency_score=urgency_val)
         update_tweet_status(
             db,
             tweet_id,
             status="scheduled",
             generated_text=text_to_post,
-            scheduled_for=sched_utc
+            scheduled_for=sched_utc,
+            user_edited=was_user_edited
         )
         mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
-        logger.info(f"Scheduled reply to @{tweet.tweet_author} for random time (~{mins_away}m from now).")
+        logger.info(f"Scheduled reply to @{tweet.tweet_author} for random time (~{mins_away}m from now, edited={was_user_edited}).")
         return {
             "status": "scheduled",
             "tweet_id": tweet_id,
@@ -881,14 +1016,31 @@ async def approve_tweet(
             "minutes_from_now": mins_away
         }
 
+    if daily_used >= daily_cap:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily anti-detection cap ({daily_cap}) reached!"
+        )
+    if hourly_used >= hourly_cap:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Hourly anti-detection velocity cap ({hourly_cap}/hr) reached! Use 'Schedule' to queue safely."
+        )
+
     act_type = tweet.action_type or "reply"
-    logger.info(f"Publishing approved {act_type} ({tweet_id})...")
-    success = await browser_worker.execute_tweet_action(act_type, tweet_id, text_to_post, tweet.tweet_url)
+    logger.info(f"Publishing approved {act_type} ({tweet_id}) [edited={was_user_edited}]...")
+    success = await browser_worker.execute_tweet_action(
+        act_type,
+        tweet_id,
+        text_to_post,
+        tweet.tweet_url,
+        should_like=bool(getattr(tweet, "should_like", False))
+    )
     sync_detected_username(db)
 
     if success:
         set_new_random_cooldown(config.min_cooldown_minutes or 10, config.max_cooldown_minutes or 45)
-        update_tweet_status(db, tweet_id, status="posted", generated_text=text_to_post)
+        update_tweet_status(db, tweet_id, status="posted", generated_text=text_to_post, user_edited=was_user_edited)
         logger.info(f"Successfully published {act_type} ({tweet_id})!")
         return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
     else:
@@ -903,19 +1055,19 @@ async def approve_tweet(
 
 
 class GenerateOriginalPayload(BaseModel):
-    mode: str = "post"  # "post" or "thread"
+    mode: str = "auto"  # "auto", "post", or "thread"
     custom_topic: Optional[str] = None
 
 
 @app.post("/api/generate-original")
 async def generate_original_endpoint(payload: GenerateOriginalPayload, db: Session = Depends(get_db)):
     """
-    Generates a fresh Original Post or Multi-Post Thread from real-time conversations
-    and current Google Search information, adding it directly to the Queue.
+    Generates a fresh Original Post or Multi-Post Thread from real-time conversations,
+    user voice memory, and current Google Search information, adding it directly to the Queue.
     """
     cfg = get_agent_config(db)
-    mode = "thread" if payload.mode == "thread" else "post"
-    topic = (payload.custom_topic or cfg.search_query or "tech & culture").strip()
+    req_mode = payload.mode if payload.mode in ("auto", "post", "thread") else "auto"
+    topic = (payload.custom_topic or active_search_query_state or cfg.search_query or "tech & culture").strip()
 
     recent_db_tweets = get_recent_tweets(db, limit=10)
     live_context = [
@@ -927,44 +1079,49 @@ async def generate_original_endpoint(payload: GenerateOriginalPayload, db: Sessi
         for r in recent_db_tweets
         if r.action_type == "reply" and r.tweet_text
     ]
+    learning_memory = get_learning_memory(db)
 
     gen = await generate_original_content(
-        mode=mode,
+        mode=req_mode,
         search_query=topic,
         persona_prompt=cfg.persona_prompt,
         live_tweets=live_context,
-        model_name=cfg.selected_model or "gemini-3.8-flash"
+        model_name=cfg.selected_model or "gemini-3.8-flash",
+        learning_memory=learning_memory
     )
     if not gen.get("success") or not gen.get("text"):
         raise HTTPException(status_code=500, detail=gen.get("topic_summary") or "Failed to generate content")
 
-    orig_id = f"{mode}_{int(time.time() * 1000)}"
+    final_mode = gen.get("action_type") or ("thread" if req_mode == "thread" else "post")
+    orig_id = f"{final_mode}_{int(time.time() * 1000)}"
     author_label = (browser_worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
     item = record_processed_tweet(
         db=db,
         tweet_id=orig_id,
-        action_type=mode,
+        action_type=final_mode,
         tweet_text=gen["topic_summary"],
         tweet_author=author_label,
         tweet_url="https://x.com/home",
         generated_text=gen["text"],
         variants_json=gen.get("variants_json"),
-        tweet_metrics="Original Thread" if mode == "thread" else "Original Post",
+        tweet_metrics="Original Thread" if final_mode == "thread" else "Original Post",
+        urgency_score=int(gen.get("urgency_score", 6)),
         status="pending_approval",
         error_message=gen["topic_summary"]
     )
-    logger.info(f"Generated new {mode} on '{topic}'")
-    return {"status": "created", "tweet_id": item.tweet_id, "action_type": mode}
+    logger.info(f"Generated new {final_mode} on '{topic}'")
+    return {"status": "created", "tweet_id": item.tweet_id, "action_type": final_mode}
 
 
 @app.post("/api/regenerate/{tweet_id}")
 async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
-    """Regenerates 3 fresh anti-robotic variants for a reply, original post, or thread."""
+    """Regenerates 3 fresh context-specific variants for a reply, original post, or thread."""
     tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
     cfg = get_agent_config(db)
+    learning_memory = get_learning_memory(db)
     if tweet.action_type in ("post", "thread"):
         recent_db_tweets = get_recent_tweets(db, limit=8)
         live_context = [
@@ -976,7 +1133,8 @@ async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
             search_query=cfg.search_query,
             persona_prompt=(cfg.persona_prompt or "") + " | Take a completely fresh, different angle.",
             live_tweets=live_context,
-            model_name=cfg.selected_model or "gemini-3.8-flash"
+            model_name=cfg.selected_model or "gemini-3.8-flash",
+            learning_memory=learning_memory
         )
         if not gen.get("success") or not gen.get("text"):
             raise HTTPException(status_code=500, detail="Failed to regenerate")
@@ -1001,7 +1159,9 @@ async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
         search_query=cfg.search_query,
         persona_prompt=(cfg.persona_prompt or "") + " | Write a completely fresh, different angle.",
         extra_context=f"Engagement: {tweet.tweet_metrics or ''}",
-        temperature=0.9
+        temperature=0.9,
+        media_url=getattr(tweet, "media_url", None),
+        learning_memory=learning_memory
     )
 
     if not ai_result.get("reply_text"):

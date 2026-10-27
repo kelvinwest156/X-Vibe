@@ -4,9 +4,10 @@ Uses SQLite via SQLAlchemy with automatic schema migration.
 """
 
 import os
+import re
 import random
 from datetime import datetime, date, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -36,7 +37,10 @@ def init_db():
                 ("active_hours_start", "INTEGER DEFAULT 8"),
                 ("active_hours_end", "INTEGER DEFAULT 23"),
                 ("persona_prompt", "TEXT DEFAULT 'Casual, sharp, dry humor, short sentences, no corporate buzzwords'"),
-                ("linked_username", "VARCHAR(128)")
+                ("linked_username", "VARCHAR(128)"),
+                ("hourly_action_cap", "INTEGER DEFAULT 6"),
+                ("smart_query_enabled", "BOOLEAN DEFAULT 1"),
+                ("warmup_mode", "BOOLEAN DEFAULT 0"),
             ]
             for col_name, col_def in migrations_cfg:
                 if col_name not in cfg_cols:
@@ -47,7 +51,11 @@ def init_db():
             migrations_tweet = [
                 ("variants_json", "TEXT"),
                 ("tweet_metrics", "VARCHAR(128)"),
-                ("scheduled_for", "DATETIME")
+                ("scheduled_for", "DATETIME"),
+                ("media_url", "VARCHAR(512)"),
+                ("should_like", "BOOLEAN DEFAULT 0"),
+                ("urgency_score", "INTEGER DEFAULT 5"),
+                ("user_edited", "BOOLEAN DEFAULT 0"),
             ]
             for col_name, col_def in migrations_tweet:
                 if col_name not in tweet_cols:
@@ -66,11 +74,14 @@ def init_db():
                 auto_pilot_mode=False,
                 polling_interval_minutes=20,
                 daily_action_cap=15,
+                hourly_action_cap=6,
                 min_cooldown_minutes=10,
                 max_cooldown_minutes=45,
                 active_hours_start=8,
                 active_hours_end=23,
                 search_query="buildinpublic OR #ai",
+                smart_query_enabled=True,
+                warmup_mode=False,
                 persona_prompt="Casual, sharp, dry humor, short sentences, no corporate buzzwords",
                 selected_model="gemini-3.8-flash"
             )
@@ -83,6 +94,15 @@ def init_db():
                 changed = True
             if config.max_cooldown_minutes is None:
                 config.max_cooldown_minutes = max(30, (config.min_cooldown_minutes or 15) * 2)
+                changed = True
+            if config.hourly_action_cap is None:
+                config.hourly_action_cap = 6
+                changed = True
+            if config.smart_query_enabled is None:
+                config.smart_query_enabled = True
+                changed = True
+            if config.warmup_mode is None:
+                config.warmup_mode = False
                 changed = True
             if config.active_hours_start is None:
                 config.active_hours_start = 8
@@ -125,11 +145,14 @@ def is_within_active_hours(start_hour: int = 8, end_hour: int = 23, now_local: O
         return hr >= start_hour or hr < end_hour
 
 
-def compute_random_schedule_time(db: Session, config: AgentConfig) -> datetime:
+def compute_random_schedule_time(db: Session, config: AgentConfig, urgency_score: int = 5) -> datetime:
     """
-    Computes a completely random future UTC timestamp for organic reply scheduling.
+    Computes an urgency-aware randomized future UTC timestamp for organic reply scheduling.
     - Staggers after the latest currently scheduled tweet (if any).
-    - Adds a randomized delay between [min_cooldown_minutes, max_cooldown_minutes] down to random seconds.
+    - Scales delay between [min_cooldown_minutes, max_cooldown_minutes] using AI urgency_score (1-10):
+      High urgency (8-10) schedules faster (20%-45% of window) to catch breaking conversation waves;
+      Low urgency (1-3) schedules slower (60%-100% of window).
+    - Multiplies delay by 1.5x if warmup_mode is enabled.
     - Shifts into the next active waking window if the resulting local time falls during sleep hours.
     """
     now_utc = datetime.utcnow()
@@ -143,7 +166,22 @@ def compute_random_schedule_time(db: Session, config: AgentConfig) -> datetime:
 
     min_sec = max(60, (config.min_cooldown_minutes or 10) * 60)
     max_sec = max(min_sec + 120, (config.max_cooldown_minutes or 45) * 60)
-    random_offset_seconds = random.randint(min_sec, max_sec) + random.randint(1, 59)
+    span = max(60, max_sec - min_sec)
+
+    urgency = max(1, min(10, int(urgency_score or 5)))
+    if urgency >= 8:
+        low_bound = min_sec + int(span * 0.15)
+        high_bound = min_sec + int(span * 0.45)
+    elif urgency <= 3:
+        low_bound = min_sec + int(span * 0.60)
+        high_bound = max_sec
+    else:
+        low_bound = min_sec
+        high_bound = max_sec
+
+    random_offset_seconds = random.randint(low_bound, max(low_bound + 30, high_bound)) + random.randint(1, 59)
+    if getattr(config, "warmup_mode", False):
+        random_offset_seconds = int(random_offset_seconds * 1.5)
 
     target_utc = base_utc + timedelta(seconds=random_offset_seconds)
 
@@ -196,7 +234,11 @@ def record_processed_tweet(
     error_message: Optional[str] = None,
     variants_json: Optional[str] = None,
     tweet_metrics: Optional[str] = None,
-    scheduled_for: Optional[datetime] = None
+    scheduled_for: Optional[datetime] = None,
+    media_url: Optional[str] = None,
+    should_like: Optional[bool] = False,
+    urgency_score: Optional[int] = 5,
+    user_edited: Optional[bool] = False
 ) -> ProcessedTweet:
     """Saves a tweet interaction or evaluation record."""
     item = ProcessedTweet(
@@ -205,9 +247,13 @@ def record_processed_tweet(
         tweet_text=tweet_text,
         tweet_author=tweet_author,
         tweet_url=tweet_url,
+        media_url=media_url,
         generated_text=generated_text,
         variants_json=variants_json,
         tweet_metrics=tweet_metrics,
+        should_like=bool(should_like),
+        urgency_score=int(urgency_score if urgency_score is not None else 5),
+        user_edited=bool(user_edited),
         status=status,
         scheduled_for=scheduled_for,
         error_message=error_message,
@@ -225,7 +271,8 @@ def update_tweet_status(
     generated_text: Optional[str] = None,
     error_message: Optional[str] = None,
     variants_json: Optional[str] = None,
-    scheduled_for: Optional[datetime] = None
+    scheduled_for: Optional[datetime] = None,
+    user_edited: Optional[bool] = None
 ) -> Optional[ProcessedTweet]:
     """Updates the status and optional text/error/schedule of an existing tweet record."""
     item = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
@@ -237,6 +284,8 @@ def update_tweet_status(
             item.error_message = error_message
         if variants_json is not None:
             item.variants_json = variants_json
+        if user_edited is not None:
+            item.user_edited = user_edited
         if status != "scheduled":
             item.scheduled_for = None
         elif scheduled_for is not None:
@@ -255,6 +304,108 @@ def get_daily_actions_count(db: Session) -> int:
         .filter(ProcessedTweet.timestamp >= today_start)
         .scalar() or 0
     )
+
+
+def get_hourly_actions_count(db: Session) -> int:
+    """Counts how many actions were posted in the rolling last 60 minutes (anti-detection velocity cap)."""
+    one_hour_ago = datetime.utcnow() - timedelta(minutes=60)
+    return (
+        db.query(func.count(ProcessedTweet.tweet_id))
+        .filter(ProcessedTweet.status == "posted")
+        .filter(ProcessedTweet.timestamp >= one_hour_ago)
+        .scalar() or 0
+    )
+
+
+def get_learning_memory(db: Session, limit_approved: int = 5, limit_skipped: int = 5) -> dict:
+    """
+    Retrieves recent approved/posted drafts (prioritizing user-edited replies) and skipped tweets
+    so the AI engine can continuously learn the user's exact voice and preferences.
+    """
+    approved_rows = (
+        db.query(ProcessedTweet)
+        .filter(ProcessedTweet.status.in_(["posted", "scheduled"]))
+        .filter(ProcessedTweet.generated_text.isnot(None))
+        .order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc())
+        .limit(limit_approved)
+        .all()
+    )
+    skipped_rows = (
+        db.query(ProcessedTweet)
+        .filter(ProcessedTweet.status == "skipped")
+        .filter(ProcessedTweet.tweet_text.isnot(None))
+        .order_by(ProcessedTweet.timestamp.desc())
+        .limit(limit_skipped)
+        .all()
+    )
+    total_learned = (
+        db.query(func.count(ProcessedTweet.tweet_id))
+        .filter(ProcessedTweet.status.in_(["posted", "scheduled"]))
+        .filter(ProcessedTweet.generated_text.isnot(None))
+        .scalar() or 0
+    )
+    return {
+        "approved": [
+            {
+                "tweet_text": (r.tweet_text or "")[:180],
+                "reply_text": (r.generated_text or "")[:240],
+                "user_edited": bool(r.user_edited),
+            }
+            for r in approved_rows
+            if r.generated_text
+        ],
+        "skipped": [
+            {
+                "tweet_text": (r.tweet_text or "")[:180],
+                "reason": (r.error_message or "Low value / off-niche")[:120],
+            }
+            for r in skipped_rows
+            if r.tweet_text
+        ],
+        "total_learned": total_learned,
+    }
+
+
+def is_reply_too_similar(db: Session, candidate_text: str) -> bool:
+    """
+    Anti-Detection Duplicate & Template Guard:
+    Checks whether a candidate reply shares the exact same 3-word opening prefix
+    or >65% Jaccard word overlap with any of the last 20 posted/scheduled drafts.
+    """
+    if not candidate_text or not candidate_text.strip():
+        return False
+    clean_cand = candidate_text.strip().lower()
+    cand_words = [w.strip(".,!?:;\"'()[]{}") for w in clean_cand.split() if w.strip(".,!?:;\"'()[]{}")]
+    if not cand_words:
+        return False
+    cand_prefix = " ".join(cand_words[:3]) if len(cand_words) >= 3 else ""
+    cand_set = set(cand_words)
+
+    recent_items = (
+        db.query(ProcessedTweet)
+        .filter(ProcessedTweet.status.in_(["posted", "scheduled", "pending_approval"]))
+        .filter(ProcessedTweet.generated_text.isnot(None))
+        .order_by(ProcessedTweet.timestamp.desc())
+        .limit(20)
+        .all()
+    )
+    for item in recent_items:
+        existing_clean = (item.generated_text or "").strip().lower()
+        if not existing_clean:
+            continue
+        if existing_clean == clean_cand:
+            return True
+        ex_words = [w.strip(".,!?:;\"'()[]{}") for w in existing_clean.split() if w.strip(".,!?:;\"'()[]{}")]
+        if not ex_words:
+            continue
+        ex_prefix = " ".join(ex_words[:3]) if len(ex_words) >= 3 else ""
+        if cand_prefix and ex_prefix and cand_prefix == ex_prefix:
+            return True
+        ex_set = set(ex_words)
+        union_len = len(cand_set | ex_set)
+        if union_len > 0 and (len(cand_set & ex_set) / union_len) > 0.65:
+            return True
+    return False
 
 
 def get_pending_tweets(db: Session) -> List[ProcessedTweet]:
