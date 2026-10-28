@@ -163,18 +163,24 @@ async def get_current_tenant(
         token = x_auth_token.strip()
 
     if token:
-        # Check signed session token first
+        # 1. Check Supabase JWT first
+        try:
+            import jwt
+            supabase_secret = os.getenv("SUPABASE_JWT_SECRET")
+            if supabase_secret:
+                decoded = jwt.decode(token, supabase_secret, algorithms=["HS256"], audience="authenticated")
+            else:
+                decoded = jwt.decode(token, options={"verify_signature": False})
+            sub = decoded.get("sub")
+            if sub:
+                return sub
+        except Exception:
+            pass
+
+        # 2. Check signed session token fallback
         payload = verify_auth_token(token)
         if payload and payload.get("tenant_id"):
             return payload["tenant_id"]
-        # Check Firebase token fallback
-        try:
-            import firebase_admin.auth
-            decoded = firebase_admin.auth.verify_id_token(token)
-            if decoded.get("uid"):
-                return decoded["uid"]
-        except Exception:
-            pass
 
     if x_tenant_id and x_tenant_id.strip():
         return x_tenant_id.strip()
@@ -738,20 +744,32 @@ async def get_me(
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated.")
 
+    # 1. Check Supabase JWT first
+    try:
+        import jwt
+        supabase_secret = os.getenv("SUPABASE_JWT_SECRET")
+        if supabase_secret:
+            decoded = jwt.decode(token, supabase_secret, algorithms=["HS256"], audience="authenticated")
+        else:
+            decoded = jwt.decode(token, options={"verify_signature": False})
+        uid = decoded.get("sub")
+        if uid:
+            email = decoded.get("email") or decoded.get("user_metadata", {}).get("email")
+            name = decoded.get("user_metadata", {}).get("name") or (email.split("@")[0] if email else "Creator")
+            return {
+                "uid": uid,
+                "email": email,
+                "name": name,
+                "tenant_id": uid,
+                "created_at": None
+            }
+    except Exception:
+        pass
+
+    # 2. Check local signed session token fallback
     payload = verify_auth_token(token)
     if not payload or not payload.get("uid"):
-        # Check Firebase token fallback
-        try:
-            import firebase_admin.auth
-            decoded = firebase_admin.auth.verify_id_token(token)
-            return {
-                "uid": decoded.get("uid"),
-                "email": decoded.get("email"),
-                "name": decoded.get("name") or decoded.get("email", "").split("@")[0],
-                "tenant_id": decoded.get("uid")
-            }
-        except Exception:
-            raise HTTPException(status_code=401, detail="Session expired or invalid. Please sign in again.")
+        raise HTTPException(status_code=401, detail="Session expired or invalid. Please sign in again.")
 
     user = get_user_by_id(db, payload["uid"])
     if not user:

@@ -4,12 +4,12 @@ import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { ShieldCheck, ArrowRight, Lock, Sparkles, CheckCircle2, Loader2, AlertCircle, Sun, Moon } from "lucide-react";
 import {
-  isFirebaseConfigured,
-  loginWithGoogle,
-  loginWithTwitter,
-  loginWithEmail,
-  registerWithEmail,
-} from "@/lib/firebase";
+  isSupabaseConfigured,
+  signInWithEmail,
+  signUpWithEmail,
+  signInWithGoogle,
+  signInWithTwitter,
+} from "@/lib/supabase";
 
 interface AuthViewProps {
   onLoginWithX: () => Promise<void> | void;
@@ -40,17 +40,14 @@ export default function AuthView({
     setLocalMessage(null);
     setIsError(false);
     try {
-      if (isFirebaseConfigured) {
-        const { user, token } = await loginWithGoogle();
-        if (user && token) {
-          setLocalMessage(`Signed in as ${user.displayName || user.email}!`);
-          onAuthenticated?.(user, token);
-        }
+      if (isSupabaseConfigured) {
+        const { error } = await signInWithGoogle();
+        if (error) throw error;
       } else {
-        setLocalMessage("Firebase demo mode: connect with X directly to link your browser session.");
+        setLocalMessage("Supabase demo mode: connect with X directly or sign in with email.");
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Authentication failed";
+      const msg = err instanceof Error ? err.message : "Google authentication failed";
       setLocalMessage(msg);
       setIsError(true);
     } finally {
@@ -63,23 +60,14 @@ export default function AuthView({
     setLocalMessage(null);
     setIsError(false);
     try {
-      if (isFirebaseConfigured) {
-        try {
-          const { user, token } = await loginWithTwitter();
-          if (user && token) {
-            setLocalMessage(`Authenticated with X! Launching browser session...`);
-            onAuthenticated?.(user, token);
-          }
-        } catch {
-          // If popup blocked or cancelled, fall back to direct browser session
-          await onLoginWithX();
-        }
+      if (isSupabaseConfigured) {
+        const { error } = await signInWithTwitter();
+        if (error) throw error;
       } else {
-        // Direct browser session launch
         await onLoginWithX();
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Authentication failed";
+      const msg = err instanceof Error ? err.message : "X authentication failed";
       setLocalMessage(msg);
       setIsError(true);
     } finally {
@@ -93,22 +81,47 @@ export default function AuthView({
     setLocalMessage(null);
     setIsError(false);
     try {
-      if (isFirebaseConfigured) {
-        const { user, token } = mode === "signin"
-          ? await loginWithEmail(email, password)
-          : await registerWithEmail(email, password);
-        if (user && token) {
-          setLocalMessage(
-            mode === "signin"
-              ? "Signed in! Now sync your X account to activate the autonomous drafting studio."
-              : "Account created! Connect your X profile to start the AI studio."
-          );
-          onAuthenticated?.(user, token);
-          return;
+      if (isSupabaseConfigured) {
+        if (mode === "signin") {
+          const { user, session, error } = await signInWithEmail(email, password);
+          if (error) throw error;
+          if (user && session) {
+            setLocalMessage(`Signed in as ${user.email}!`);
+            onAuthenticated?.(
+              {
+                uid: user.id,
+                email: user.email,
+                displayName: user.user_metadata?.name || user.email?.split("@")[0],
+              },
+              session.access_token
+            );
+            return;
+          }
+        } else {
+          const { user, session, error } = await signUpWithEmail(email, password);
+          if (error) throw error;
+          if (user) {
+            setLocalMessage(
+              session
+                ? "Account created successfully!"
+                : "Check your email for the confirmation link to complete registration."
+            );
+            if (session) {
+              onAuthenticated?.(
+                {
+                  uid: user.id,
+                  email: user.email,
+                  displayName: user.user_metadata?.name || user.email?.split("@")[0],
+                },
+                session.access_token
+              );
+            }
+            return;
+          }
         }
       }
 
-      // Direct FastAPI authentication with secure server-side salted hashing
+      // Direct FastAPI fallback if Supabase is in local/demo mode
       const endpoint = mode === "signin" ? "/api/auth/signin" : "/api/auth/signup";
       const res = await fetch(endpoint, {
         method: "POST",

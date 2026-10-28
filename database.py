@@ -528,8 +528,8 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
-def create_auth_token(user_id: str, email: str, tenant_id: str, exp_days: int = 30) -> str:
-    """Generates an HMAC-SHA256 signed session token for a user."""
+def create_auth_token(user_id: str, email: str, tenant_id: str, exp_days: int = 365) -> str:
+    """Generates an HMAC-SHA256 signed session token for a user (valid for 365 days)."""
     payload = {
         "uid": user_id,
         "email": email,
@@ -553,7 +553,8 @@ def verify_auth_token(token: str) -> Optional[Dict[str, Any]]:
             return None
         padded = b64_payload + "=" * ((4 - len(b64_payload) % 4) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode('utf-8')).decode('utf-8'))
-        if payload.get("exp", 0) < time.time():
+        exp = payload.get("exp")
+        if exp and exp < time.time():
             return None
         return payload
     except Exception:
