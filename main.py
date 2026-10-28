@@ -208,12 +208,13 @@ def set_new_random_cooldown(min_mins: int, max_mins: int):
     current_random_cooldown_seconds = random.randint(low, high)
 
 
-def sync_detected_username(db: Session):
-    """Saves browser_worker.logged_in_username to AgentConfig if newly detected."""
-    if browser_worker.logged_in_username:
-        cfg = get_agent_config(db)
-        if cfg.linked_username != browser_worker.logged_in_username:
-            cfg.linked_username = browser_worker.logged_in_username
+def sync_detected_username(db: Session, tenant_id: str = "default", worker: Optional[XBrowserWorker] = None):
+    """Saves worker.logged_in_username to AgentConfig for the specified tenant if newly detected."""
+    w = worker or get_tenant_browser_worker(tenant_id)
+    if w.logged_in_username:
+        cfg = get_agent_config(db, tenant_id=tenant_id)
+        if cfg.linked_username != w.logged_in_username:
+            cfg.linked_username = w.logged_in_username
             db.commit()
 
 
@@ -1479,17 +1480,24 @@ async def launch_headful_login(tenant_id: str = Depends(get_current_tenant)):
     try:
         is_manual_login_active = True
         worker = get_tenant_browser_worker(tenant_id)
-        await worker.open_headful_for_login()
-        on_default = is_on_default_desktop()
-        msg = (
-            "Browser window opened! Sign into X on your desktop."
-            if on_default else
-            "Run 'login_browser.bat' in your project folder (or import cookies for cloud deploy)."
-        )
+        
+        # On Windows desktop, try launching the system browser via OS shell so it appears interactively
+        if sys.platform == "win32":
+            try:
+                import webbrowser
+                webbrowser.open("https://x.com/login")
+            except Exception:
+                pass
+
+        try:
+            await worker.open_headful_for_login()
+        except Exception as we:
+            logger.warning(f"Worker headful launch note: {we}")
+
         return {
             "status": "browser_opened",
-            "is_default_desktop": on_default,
-            "message": msg
+            "open_url": "https://x.com/login",
+            "message": "X login window opened. Sign into X, then return here and click 'Verify Connection'."
         }
     except Exception as e:
         is_manual_login_active = False
@@ -1515,7 +1523,7 @@ async def check_session(
     worker = get_tenant_browser_worker(tenant_id)
     is_session_logged_in = await worker.check_login_status()
     if is_session_logged_in:
-        sync_detected_username(db)
+        sync_detected_username(db, tenant_id=tenant_id, worker=worker)
     cfg = get_agent_config(db, tenant_id=tenant_id)
     return {
         "is_logged_in": is_session_logged_in,
@@ -1523,28 +1531,176 @@ async def check_session(
     }
 
 
+class ConnectSessionPayload(BaseModel):
+    auth_token: Optional[str] = None
+    ct0: Optional[str] = None
+    raw_cookies: Optional[str] = None
+    cookies: Optional[List[Dict[str, Any]]] = None
+
+
+def parse_cookie_payload(payload: ConnectSessionPayload) -> List[Dict[str, Any]]:
+    # 1. Direct list of cookie objects
+    if payload.cookies and isinstance(payload.cookies, list):
+        parsed_list = []
+        for c in payload.cookies:
+            if isinstance(c, dict) and c.get("name") and c.get("value"):
+                parsed_list.append({
+                    "name": str(c["name"]).strip(),
+                    "value": str(c["value"]).strip(),
+                    "domain": str(c.get("domain", ".x.com")).strip(),
+                    "path": str(c.get("path", "/")).strip(),
+                    "secure": bool(c.get("secure", True)),
+                    "httpOnly": bool(c.get("httpOnly", c.get("name") == "auth_token")),
+                    "sameSite": str(c.get("sameSite", "Lax")).strip()
+                })
+        if parsed_list:
+            return parsed_list
+
+    cookie_str = (payload.raw_cookies or "").strip()
+    auth_token_val = (payload.auth_token or "").strip()
+    ct0_val = (payload.ct0 or "").strip()
+
+    # Check if raw_cookies is JSON
+    if cookie_str.startswith("[") or cookie_str.startswith("{"):
+        try:
+            parsed = json.loads(cookie_str)
+            if isinstance(parsed, list):
+                return parse_cookie_payload(ConnectSessionPayload(cookies=parsed))
+            elif isinstance(parsed, dict):
+                auth_token_val = parsed.get("auth_token", auth_token_val)
+                ct0_val = parsed.get("ct0", ct0_val)
+        except Exception:
+            pass
+
+    # Extract auth_token if present in header-style cookie string: 'auth_token=xxxx; ct0=yyyy'
+    if "auth_token=" in cookie_str:
+        m = re.search(r"auth_token=([a-zA-Z0-9%_-]+)", cookie_str)
+        if m:
+            auth_token_val = m.group(1)
+    if "ct0=" in cookie_str:
+        m = re.search(r"ct0=([a-zA-Z0-9%_-]+)", cookie_str)
+        if m:
+            ct0_val = m.group(1)
+
+    # If user pasted raw 40-char token directly into raw_cookies input
+    if not auth_token_val and cookie_str and len(cookie_str) >= 20 and ";" not in cookie_str and " " not in cookie_str:
+        auth_token_val = cookie_str
+
+    if not auth_token_val:
+        raise ValueError("Valid X 'auth_token' cookie is required to connect.")
+
+    clean_auth = auth_token_val.strip().strip('"').strip("'")
+    cookies = [
+        {
+            "name": "auth_token",
+            "value": clean_auth,
+            "domain": ".x.com",
+            "path": "/",
+            "secure": True,
+            "httpOnly": True,
+            "sameSite": "Lax"
+        }
+    ]
+    if ct0_val:
+        clean_ct0 = ct0_val.strip().strip('"').strip("'")
+        cookies.append({
+            "name": "ct0",
+            "value": clean_ct0,
+            "domain": ".x.com",
+            "path": "/",
+            "secure": True,
+            "httpOnly": False,
+            "sameSite": "Lax"
+        })
+    return cookies
+
+
+@app.post("/api/browser/connect-session")
+async def connect_session_endpoint(
+    payload: ConnectSessionPayload,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    SaaS & Cloud Account Connection Endpoint:
+    Imports auth_token or full cookie session into the tenant's isolated browser profile,
+    validates the session live with X, and links the detected handle.
+    """
+    global is_session_logged_in, is_manual_login_active
+    is_manual_login_active = False
+    try:
+        cookies = parse_cookie_payload(payload)
+        worker = get_tenant_browser_worker(tenant_id)
+        is_logged = await worker.import_cookies(cookies)
+        if is_logged:
+            is_session_logged_in = True
+            sync_detected_username(db, tenant_id=tenant_id, worker=worker)
+            cfg = get_agent_config(db, tenant_id=tenant_id)
+            handle = worker.logged_in_username or cfg.linked_username or "Connected Account"
+            return {
+                "success": True,
+                "is_logged_in": True,
+                "linked_username": handle,
+                "message": f"Successfully connected {handle} to your studio sandbox!"
+            }
+        else:
+            return {
+                "success": False,
+                "is_logged_in": False,
+                "message": "The session token was not recognized or has expired on X. Please verify your auth_token and retry."
+            }
+    except Exception as e:
+        logger.warning(f"Connect session error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/browser/disconnect")
+async def disconnect_account_endpoint(
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    """Disconnects the X account from the tenant's isolated sandbox."""
+    worker = get_tenant_browser_worker(tenant_id)
+    await worker.stop()
+    if os.path.isfile(worker.cookies_backup_path):
+        try:
+            os.remove(worker.cookies_backup_path)
+        except Exception:
+            pass
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+    cfg.linked_username = None
+    db.commit()
+    return {"success": True, "message": "X account disconnected successfully."}
+
+
 class CookiesImportPayload(BaseModel):
     cookies: List[Dict[str, Any]]
 
 
 @app.get("/api/browser/cookies")
-async def export_cookies_endpoint():
-    """Exports session cookies as JSON so they can be imported onto a cloud instance (Render)."""
-    cookies = await browser_worker.export_cookies()
+async def export_cookies_endpoint(tenant_id: str = Depends(get_current_tenant)):
+    """Exports session cookies as JSON for the active tenant."""
+    worker = get_tenant_browser_worker(tenant_id)
+    cookies = await worker.export_cookies()
     return JSONResponse(content={"cookies": cookies, "count": len(cookies)})
 
 
 @app.post("/api/browser/cookies")
-async def import_cookies_endpoint(payload: CookiesImportPayload, db: Session = Depends(get_db)):
-    """Imports session cookies on a headless cloud instance (Render) and verifies login."""
+async def import_cookies_endpoint(
+    payload: CookiesImportPayload,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    """Imports session cookies into the active tenant's isolated profile and verifies login."""
     global is_session_logged_in
-    is_session_logged_in = await browser_worker.import_cookies(payload.cookies)
+    worker = get_tenant_browser_worker(tenant_id)
+    is_session_logged_in = await worker.import_cookies(payload.cookies)
     if is_session_logged_in:
-        sync_detected_username(db)
-    cfg = get_agent_config(db)
+        sync_detected_username(db, tenant_id=tenant_id, worker=worker)
+    cfg = get_agent_config(db, tenant_id=tenant_id)
     return {
         "is_logged_in": is_session_logged_in,
-        "linked_username": browser_worker.logged_in_username or cfg.linked_username
+        "linked_username": worker.logged_in_username or cfg.linked_username
     }
 
 

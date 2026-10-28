@@ -82,6 +82,7 @@ const STUDIO_COLORS = {
   emeraldBg: "#ECFDF5",
   indigo: "#6366F1", // indigo-500
   amber: "#F59E0B", // amber-500
+  darkOrange: "#EA580C", // dark orange
   border: "#E2E8F0",
   grid: "#F1F5F9",
 };
@@ -89,8 +90,33 @@ const STUDIO_COLORS = {
 const MIX_ACCENTS: Record<string, string> = {
   reply: "#2563EB",
   post: "#10B981",
-  thread: "#6366F1",
+  thread: "#EA580C", // Dark orange for Multi-Post Threads
 };
+
+// Generates smooth cubic Bezier spline path across coordinates
+function getSmoothCurvePath(points: Array<[number, number]>): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0][0]},${points[0][1]}`;
+  if (points.length === 2) {
+    return `M ${points[0][0]},${points[0][1]} L ${points[1][0]},${points[1][1]}`;
+  }
+
+  let d = `M ${points[0][0].toFixed(1)},${points[0][1].toFixed(1)}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = i > 0 ? points[i - 1] : points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = i < points.length - 2 ? points[i + 2] : p2;
+
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+
+    d += ` C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
 
 function SmoothSparkline({ points, color }: { points: number[]; color: string }) {
   const w = 90;
@@ -98,11 +124,11 @@ function SmoothSparkline({ points, color }: { points: number[]; color: string })
   const max = Math.max(...points, 1);
   const min = Math.min(...points, 0);
   const span = Math.max(max - min, 1);
-  const pts = points.map((p, i) => [
+  const pts: Array<[number, number]> = points.map((p, i) => [
     (i / Math.max(points.length - 1, 1)) * w,
     h - 3 - ((p - min) / span) * (h - 7),
   ]);
-  const d = "M " + pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" L ");
+  const d = getSmoothCurvePath(pts);
   return (
     <svg width={w} height={h} className="shrink-0 overflow-visible">
       <motion.path
@@ -253,8 +279,10 @@ export default function AnalyticsView({
   const yEng = (v: number) => padT + (1 - v / maxEng) * (H - padT - padB);
   const yDr = (v: number) => padT + (1 - v / maxDr) * (H - padT - padB);
 
-  const engPath = "M " + timeline.map((t, i) => `${x(i)},${yEng(t.engagement)}`).join(" L ");
-  const drPath = "M " + timeline.map((t, i) => `${x(i)},${yDr(t.drafted)}`).join(" L ");
+  const engPoints: Array<[number, number]> = timeline.map((t, i) => [x(i), yEng(t.engagement)]);
+  const drPoints: Array<[number, number]> = timeline.map((t, i) => [x(i), yDr(t.drafted)]);
+  const engPath = getSmoothCurvePath(engPoints);
+  const drPath = getSmoothCurvePath(drPoints);
   const engArea = `${engPath} L ${x(timeline.length - 1)},${H - padB} L ${x(0)},${H - padB} Z`;
 
   // Donut geometry
@@ -276,19 +304,8 @@ export default function AnalyticsView({
         >
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 min-w-0 flex-1">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-medium text-[11.5px] shrink-0 border border-blue-200/60 dark:border-blue-800/60">
-                <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                AI Strategy Pulse
-              </span>
-
               <span className="font-semibold text-slate-900 dark:text-white text-[13.5px] truncate">
                 {strategy_brief.headline}
-              </span>
-
-              <span className="hidden md:inline text-slate-300 dark:text-[#525252]">·</span>
-
-              <span className="hidden md:inline text-slate-500 dark:text-[#A3A3A3] text-[12.5px] truncate max-w-md">
-                {strategy_brief.recommended_action}
               </span>
             </div>
 
@@ -361,10 +378,6 @@ export default function AnalyticsView({
                   <span className="text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5" /> Bézier Humanized Movements Active
                   </span>
-                  <span>·</span>
-                  <span>Variable Dwell Reading Time</span>
-                  <span>·</span>
-                  <span>Hourly Safety Cap: {hourlyUsed}/{hourlyCap} hr</span>
                 </div>
               </motion.div>
             )}
@@ -418,7 +431,7 @@ export default function AnalyticsView({
                 <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block" /> Feed Engagement
               </span>
               <span className="flex items-center gap-1.5 text-slate-600 dark:text-[#D4D4D4]">
-                <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 inline-block" /> Drafts Generated
+                <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C] inline-block" /> Drafts Generated
               </span>
             </div>
           }
@@ -461,19 +474,20 @@ export default function AnalyticsView({
                 stroke="#2563EB"
                 strokeWidth="2.2"
                 strokeLinejoin="round"
+                strokeLinecap="round"
                 initial={{ pathLength: 0 }}
                 animate={{ pathLength: 1 }}
                 transition={{ duration: 0.8, ease: "easeOut" }}
               />
 
-              {/* Drafts Line */}
+              {/* Drafts Line (Dark Orange Smooth Curve) */}
               <motion.path
                 d={drPath}
                 fill="none"
-                stroke="#6366F1"
-                strokeWidth="2"
-                strokeDasharray="4 3"
+                stroke="#EA580C"
+                strokeWidth="2.2"
                 strokeLinejoin="round"
+                strokeLinecap="round"
                 initial={{ pathLength: 0 }}
                 animate={{ pathLength: 1 }}
                 transition={{ duration: 0.8, delay: 0.1, ease: "easeOut" }}
@@ -503,7 +517,7 @@ export default function AnalyticsView({
                         strokeDasharray="2 2"
                       />
                       <circle cx={x(i)} cy={yEng(t.engagement)} r="4" fill="#2563EB" stroke="#fff" strokeWidth="2" />
-                      <circle cx={x(i)} cy={yDr(t.drafted)} r="3.5" fill="#6366F1" stroke="#fff" strokeWidth="2" />
+                      <circle cx={x(i)} cy={yDr(t.drafted)} r="3.5" fill="#EA580C" stroke="#fff" strokeWidth="2" />
                       <g transform={`translate(${Math.min(Math.max(x(i) - 60, padL), W - 140)}, ${padT + 4})`}>
                         <rect width="130" height="48" rx="6" fill="#181818" stroke="#262626" strokeWidth="1" />
                         <text x="10" y="16" fontSize="11" fontWeight="600" fill="#FFFFFF">
@@ -512,7 +526,7 @@ export default function AnalyticsView({
                         <text x="10" y="30" fontSize="10.5" fill="#93C5FD">
                           Engagement: {t.engagement}
                         </text>
-                        <text x="10" y="42" fontSize="10" fill="#CBD5E1">
+                        <text x="10" y="42" fontSize="10" fill="#FED7AA">
                           Drafts: {t.drafted} · Scanned: {t.evaluated}
                         </text>
                       </g>

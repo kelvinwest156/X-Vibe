@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import AnalyticsView, { AnalyticsData } from "@/components/AnalyticsView";
 import AuthView from "@/components/AuthView";
+import ConnectAccountModal from "@/components/ConnectAccountModal";
 
 const Spin = ({ className = "w-4 h-4" }: { className?: string }) => (
   <Loader2 className={`${className} animate-spin`} aria-label="Loading" />
@@ -177,6 +178,7 @@ export default function HomePage() {
   const [creating, setCreating] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [cookieOpen, setCookieOpen] = useState(false);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [cookieJson, setCookieJson] = useState("");
   const [histFilter, setHistFilter] = useState("all");
   const [ready, setReady] = useState(false);
@@ -620,23 +622,8 @@ export default function HomePage() {
     }
   };
 
-  const login = async () => {
-    setBusy((p) => ({ ...p, login: true }));
-    try {
-      const res = await apiFetch("/api/browser/launch-login", { method: "POST" });
-      if (res.ok) {
-        const d = await res.json();
-        notify(d.message || "Browser session opened");
-        setTimeout(refresh, 4000);
-      } else {
-        const errMsg = await extractApiError(res, "Failed to launch login browser");
-        notify(errMsg, true);
-      }
-    } catch (err: any) {
-      notify(err?.message || "Failed to launch browser", true);
-    } finally {
-      setBusy((p) => ({ ...p, login: false }));
-    }
+  const login = () => {
+    setConnectModalOpen(true);
   };
 
   const checkSession = async () => {
@@ -722,7 +709,7 @@ export default function HomePage() {
       <AuthView
         theme={theme}
         onToggleTheme={toggleTheme}
-        onLoginWithX={login}
+        onLoginWithX={() => { setDemoMode(true); setConnectModalOpen(true); }}
         onExploreDemo={() => setDemoMode(true)}
         busyLogin={busy.login}
         onAuthenticated={(user, token) => {
@@ -823,9 +810,9 @@ export default function HomePage() {
 
             {/* Multi-Tenant / User Profile pill */}
             {userProfile && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-[#222222] border border-slate-200/80 dark:border-[#2E2E2E] text-xs text-slate-700 dark:text-[#D4D4D4] shadow-2xs">
+              <div className="flex items-center gap-1.5 px-2 sm:px-2.5 h-8 rounded-lg bg-slate-100 dark:bg-[#222222] border border-slate-200/80 dark:border-[#2E2E2E] text-xs text-slate-700 dark:text-[#D4D4D4] shadow-2xs">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                <span className="font-medium max-w-[70px] sm:max-w-[120px] truncate" title={userProfile.email || tenantId}>
+                <span className="hidden sm:inline font-medium sm:max-w-[120px] truncate" title={userProfile.email || tenantId}>
                   {userProfile.name || userProfile.email || "Workspace"}
                 </span>
                 <button
@@ -840,7 +827,12 @@ export default function HomePage() {
 
             {/* Account pill */}
             {status?.is_logged_in ? (
-              <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white dark:bg-[#202020] border border-slate-200 dark:border-[#2E2E2E] text-xs shadow-2xs">
+              <button
+                type="button"
+                onClick={() => setConnectModalOpen(true)}
+                title="Manage connected X account"
+                className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-[#202020] border border-slate-200 dark:border-[#2E2E2E] text-xs shadow-2xs hover:border-slate-300 dark:hover:border-[#383838] transition-colors cursor-pointer text-left"
+              >
                 <span className="relative flex h-2 w-2 shrink-0">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
@@ -848,31 +840,22 @@ export default function HomePage() {
                 <span className="font-semibold text-slate-800 dark:text-[#E5E5E5] max-w-[80px] sm:max-w-[120px] truncate">
                   {status.linked_username || "Linked"}
                 </span>
-                <button
-                  onClick={checkSession}
-                  disabled={busy.session}
-                  title="Re-check session"
-                  className="text-slate-400 hover:text-slate-700 dark:hover:text-white ml-0.5 transition-colors shrink-0"
-                >
-                  {busy.session ? <Spin className="w-3 h-3" /> : <RefreshCw className="w-3 h-3" />}
-                </button>
-              </div>
+              </button>
             ) : (
               <button
                 onClick={login}
                 disabled={busy.login}
-                className="btn btn-primary !h-8 !px-2.5 sm:!px-3 text-xs"
+                className="btn btn-primary !h-8 !px-3 text-xs hidden md:inline-flex"
               >
                 {busy.login ? <Spin /> : <User className="w-3.5 h-3.5" />}
-                <span className="hidden sm:inline">{busy.login ? "Connecting..." : "Connect X Account"}</span>
-                <span className="sm:hidden">Connect</span>
+                <span>{busy.login ? "Connecting..." : "Connect X Account"}</span>
               </button>
             )}
 
             {/* Session cookies modal trigger */}
             <button
               onClick={() => setCookieOpen(true)}
-              className="btn btn-quiet !h-8 !w-8 !p-0 hidden sm:inline-flex"
+              className="btn btn-quiet !h-8 !w-8 !p-0 hidden md:inline-flex"
               title="Session cookies"
             >
               <Cookie className="w-4 h-4" />
@@ -882,7 +865,7 @@ export default function HomePage() {
             <button
               onClick={scan}
               disabled={scanning}
-              className="btn !h-8 !px-2.5 sm:!px-3 text-xs"
+              className="btn !h-8 !px-3 text-xs hidden md:inline-flex"
               title="Scan feed for relevant niche tweets"
             >
               {scanning ? <Spin /> : <Radar className="w-3.5 h-3.5" />}
@@ -893,7 +876,7 @@ export default function HomePage() {
             <button
               onClick={toggleAgent}
               disabled={busy.toggle || !status}
-              className={`btn !h-8 !px-2.5 sm:!px-3 text-xs transition-all ${
+              className={`btn !h-8 !px-3 text-xs transition-all hidden md:inline-flex ${
                 status?.is_active
                   ? "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2A2A2A] text-slate-800 dark:text-[#E5E5E5] border-slate-200 dark:border-[#2E2E2E]"
                   : "btn-primary"
@@ -929,10 +912,37 @@ export default function HomePage() {
       </header>
 
       {/* Main Studio Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 pb-24 md:pb-8 space-y-4">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-5 sm:p-6 pb-28 md:pb-8 space-y-5">
+        {/* Mobile action strip */}
+        <div className="md:hidden grid grid-cols-3 gap-2">
+          {status?.is_logged_in ? (
+            <button type="button" onClick={() => setConnectModalOpen(true)} className="btn !h-10 text-xs justify-center">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="truncate">{status.linked_username || "Linked"}</span>
+            </button>
+          ) : (
+            <button onClick={login} disabled={busy.login} className="btn btn-primary !h-10 text-xs justify-center">
+              {busy.login ? <Spin /> : <User className="w-3.5 h-3.5" />}
+              <span>Connect</span>
+            </button>
+          )}
+          <button onClick={scan} disabled={scanning} className="btn !h-10 text-xs justify-center">
+            {scanning ? <Spin /> : <Radar className="w-3.5 h-3.5" />}
+            <span>{scanning ? "Scanning" : "Scan"}</span>
+          </button>
+          <button
+            onClick={toggleAgent}
+            disabled={busy.toggle || !status}
+            className={`btn !h-10 text-xs justify-center ${status?.is_active ? "" : "btn-primary"}`}
+          >
+            {busy.toggle ? <Spin /> : status?.is_active ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+            <span>{status?.is_active ? "Pause" : "Start"}</span>
+          </button>
+        </div>
+
         {/* Status Strip if Paused or Sleeping */}
         {status && !status.is_active && (
-          <div className="bg-amber-50/80 border border-amber-200/70 rounded-xl px-4 py-2.5 text-xs text-amber-800 flex items-center justify-between">
+          <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 rounded-xl px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
               <span>
@@ -941,7 +951,7 @@ export default function HomePage() {
             </div>
             <button
               onClick={toggleAgent}
-              className="text-amber-900 font-semibold underline hover:text-amber-700"
+              className="text-amber-900 dark:text-amber-100 font-semibold underline hover:text-amber-700 text-left"
             >
               Resume Agent
             </button>
@@ -1072,7 +1082,7 @@ export default function HomePage() {
                         // Type colors
                         const typeBadgeStyle =
                           type === "thread"
-                            ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800"
+                            ? "bg-orange-50 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800"
                             : type === "post"
                             ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
                             : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800";
@@ -1097,7 +1107,7 @@ export default function HomePage() {
                             <div
                               className={`absolute left-0 top-0 bottom-0 w-1 ${
                                 type === "thread"
-                                  ? "bg-purple-500"
+                                  ? "bg-[#EA580C]"
                                   : type === "post"
                                   ? "bg-emerald-500"
                                   : "bg-blue-500"
@@ -1116,7 +1126,7 @@ export default function HomePage() {
                                   @{item.tweet_author || "creator"}
                                 </span>
                                 {item.tweet_metrics && (
-                                  <span className="text-[11px] text-slate-500 dark:text-[#A3A3A3] bg-slate-100 dark:bg-[#222222] px-2 py-0.5 rounded-md border border-slate-200/60 dark:border-[#2E2E2E]">
+                                  <span className="hidden sm:inline text-[11px] text-slate-500 dark:text-[#A3A3A3] bg-slate-100 dark:bg-[#222222] px-2 py-0.5 rounded-md border border-slate-200/60 dark:border-[#2E2E2E]">
                                     {item.tweet_metrics}
                                   </span>
                                 )}
@@ -1156,7 +1166,7 @@ export default function HomePage() {
                                 )}
 
                                 {item.media_url && (
-                                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                  <span className="hidden sm:inline text-[11px] font-medium px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                                     Vision Analyzed
                                   </span>
                                 )}
@@ -1286,10 +1296,10 @@ export default function HomePage() {
                                 )}
                               </div>
 
-                              <div className="grid grid-cols-3 sm:flex items-center gap-2">
+                              <div className="grid grid-cols-2 sm:flex items-center gap-2">
                                 <button
                                   onClick={() => skip(item.tweet_id)}
-                                  className="btn btn-quiet text-xs !h-9"
+                                  className="btn btn-quiet text-xs !h-10 sm:!h-9 justify-center"
                                 >
                                   <X className="w-3.5 h-3.5" />
                                   <span>Skip</span>
@@ -1298,7 +1308,7 @@ export default function HomePage() {
                                 <button
                                   onClick={() => approve(item.tweet_id, true, item.should_like)}
                                   disabled={busy[`s_${item.tweet_id}`] || busy[`p_${item.tweet_id}`]}
-                                  className="btn text-xs !h-9"
+                                  className="btn text-xs !h-10 sm:!h-9 justify-center"
                                 >
                                   {busy[`s_${item.tweet_id}`] ? <Spin /> : <Clock className="w-3.5 h-3.5" />}
                                   <span>{busy[`s_${item.tweet_id}`] ? "Scheduling..." : "Schedule"}</span>
@@ -1307,7 +1317,7 @@ export default function HomePage() {
                                 <button
                                   onClick={() => approve(item.tweet_id, false, item.should_like)}
                                   disabled={busy[`p_${item.tweet_id}`] || busy[`s_${item.tweet_id}`]}
-                                  className="btn btn-primary text-xs !h-9 !px-3 sm:!px-4"
+                                  className="btn btn-primary text-xs !h-10 sm:!h-9 !px-3 sm:!px-4 col-span-2 order-first sm:order-none sm:col-span-1 justify-center"
                                 >
                                   {busy[`p_${item.tweet_id}`] ? <Spin /> : <Send className="w-3.5 h-3.5" />}
                                   <span>{busy[`p_${item.tweet_id}`] ? "Posting..." : "Post Now"}</span>
@@ -1354,8 +1364,8 @@ export default function HomePage() {
                     <thead>
                       <tr className="bg-slate-50/80 dark:bg-[#222222]/60 text-slate-500 dark:text-[#A3A3A3] font-medium border-b border-slate-200 dark:border-[#262626]">
                         <th className="py-2.5 px-4">Status</th>
-                        <th className="py-2.5 px-4">Type & Signals</th>
-                        <th className="py-2.5 px-4">Source Conversation</th>
+                        <th className="py-2.5 px-4 hidden md:table-cell">Type & Signals</th>
+                        <th className="py-2.5 px-4 hidden md:table-cell">Source Conversation</th>
                         <th className="py-2.5 px-4">Draft / Resolution</th>
                         <th className="py-2.5 px-4 text-right">Time</th>
                       </tr>
@@ -1388,7 +1398,7 @@ export default function HomePage() {
                               {h.status === "pending_approval" ? "pending" : h.status}
                             </span>
                           </td>
-                          <td className="py-3 px-4">
+                          <td className="py-3 px-4 hidden md:table-cell">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="capitalize font-semibold text-slate-800 dark:text-[#E5E5E5]">
                                 {h.action_type || "reply"}
@@ -1415,7 +1425,7 @@ export default function HomePage() {
                               )}
                             </div>
                           </td>
-                          <td className="py-3 px-4 max-w-[260px]">
+                          <td className="py-3 px-4 max-w-[260px] hidden md:table-cell">
                             <span className="font-semibold text-slate-900 dark:text-white block truncate">
                               @{h.tweet_author || "creator"}
                             </span>
@@ -1423,7 +1433,7 @@ export default function HomePage() {
                               {h.tweet_text}
                             </span>
                           </td>
-                          <td className="py-3 px-4 max-w-[320px] text-slate-600 dark:text-[#D4D4D4] truncate">
+                          <td className="py-3 px-4 max-w-[200px] md:max-w-[320px] text-slate-600 dark:text-[#D4D4D4] truncate">
                             {h.generated_text || h.error_message || "—"}
                           </td>
                           <td className="py-3 px-4 text-right text-slate-400 dark:text-[#737373] whitespace-nowrap">
@@ -1442,9 +1452,9 @@ export default function HomePage() {
 
             {/* Settings View */}
             {tab === "settings" && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 lg:gap-6 items-start">
                 {/* Column 1: Voice & AI Intelligence */}
-                <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-4 sm:p-6 space-y-5 shadow-xs">
+                <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-5 sm:p-7 space-y-7 shadow-xs">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                       Voice, Persona & Discovery
@@ -1510,7 +1520,7 @@ export default function HomePage() {
                   </div>
 
                   {/* AI Model & Key Verification */}
-                  <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-[#262626]">
+                  <div className="space-y-4 pt-6 border-t border-slate-100 dark:border-[#262626]">
                     <div>
                       <label className="label">Active Model</label>
                       <select
@@ -1556,7 +1566,7 @@ export default function HomePage() {
                 </section>
 
                 {/* Column 2: Safety & Anti-Detection Automation */}
-                <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-4 sm:p-6 space-y-5 shadow-xs">
+                <section className="bg-white dark:bg-[#181818] border border-slate-200/90 dark:border-[#262626] rounded-xl p-5 sm:p-7 space-y-7 shadow-xs">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                       Safety, Throttling & Velocity
@@ -1567,7 +1577,7 @@ export default function HomePage() {
                   </div>
 
                   {/* Velocity Limit Sliders */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
                     <div>
                       <label className="label">Daily Action Cap</label>
                       <input
@@ -1593,7 +1603,7 @@ export default function HomePage() {
                   </div>
 
                   {/* Cooldown Delays */}
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
                       <label className="label">Scan Interval (m)</label>
                       <input
@@ -1630,7 +1640,7 @@ export default function HomePage() {
                   </div>
 
                   {/* Active Hours */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
                     <div>
                       <label className="label">Wake Hour (0–23)</label>
                       <input
@@ -1871,6 +1881,19 @@ export default function HomePage() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* Connect Account Modal */}
+      <ConnectAccountModal
+        isOpen={connectModalOpen}
+        onClose={() => setConnectModalOpen(false)}
+        isLoggedIn={Boolean(status?.is_logged_in)}
+        linkedUsername={status?.linked_username}
+        onSessionUpdated={() => {
+          refresh();
+          loadHistory();
+        }}
+        apiFetch={apiFetch}
+        notify={notify}
+      />
     </div>
   );
 }

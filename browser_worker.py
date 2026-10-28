@@ -421,7 +421,10 @@ class XBrowserWorker:
             json.dump(cookies, f, indent=2)
         async with self._lock:
             if self._context:
-                await self._context.add_cookies(cookies)
+                try:
+                    await self._close_context_internal()
+                except Exception:
+                    pass
         return await self.check_login_status()
 
     async def check_login_status(self) -> bool:

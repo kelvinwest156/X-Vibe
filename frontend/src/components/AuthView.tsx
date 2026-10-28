@@ -157,10 +157,9 @@ export default function AuthView({
                 X-VibeBot
               </span>
               <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 dark:bg-[#222222] text-slate-600 dark:text-[#A3A3A3] border border-slate-200 dark:border-[#2E2E2E]">
-                Creator Studio 2.0
+                v2.0
               </span>
             </div>
-            <p className="text-[11px] text-slate-500 dark:text-[#737373]">Autonomous X Growth & Voice Engine</p>
           </div>
         </div>
 
@@ -182,8 +181,7 @@ export default function AuthView({
               onClick={onExploreDemo}
               className="text-[13px] font-medium text-slate-600 dark:text-[#D4D4D4] hover:text-slate-900 dark:hover:text-white transition-colors flex items-center gap-1.5"
             >
-              <span className="hidden sm:inline">Explore Studio in Demo Mode</span>
-              <span className="sm:hidden">Demo Mode</span>
+              <span>Sneak Peek</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           )}
@@ -194,7 +192,7 @@ export default function AuthView({
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6 my-2 sm:my-4">
         <div className="w-full max-w-[460px] space-y-6">
           {/* Headline */}
-          <div className="text-center space-y-2">
+          <div className="text-center">
             <motion.h1
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -202,14 +200,6 @@ export default function AuthView({
             >
               Sign in to your Creator Studio
             </motion.h1>
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.1 }}
-              className="text-sm text-slate-500 dark:text-[#A3A3A3] max-w-sm mx-auto"
-            >
-              Autonomous feed intelligence, few-shot voice cloning, and organic engagement for builders on X.
-            </motion.p>
           </div>
 
           {/* Auth Card */}
@@ -268,9 +258,9 @@ export default function AuthView({
             </div>
 
             {/* Subtle Divider */}
-            <div className="relative flex items-center justify-center">
-              <div className="border-t border-slate-200 dark:border-[#262626] w-full" />
-              <span className="bg-white dark:bg-[#181818] px-3 text-[11px] font-medium text-slate-400 dark:text-[#737373] uppercase tracking-wider">
+            <div className="relative flex items-center justify-center h-4">
+              <div className="absolute inset-x-0 top-1/2 border-t border-slate-200 dark:border-[#262626]" />
+              <span className="relative bg-white dark:bg-[#181818] px-3 text-[11px] font-medium text-slate-400 dark:text-[#737373] uppercase tracking-wider whitespace-nowrap">
                 or with email
               </span>
             </div>
@@ -305,7 +295,7 @@ export default function AuthView({
             <form onSubmit={handleEmailAuth} className="space-y-3.5">
               <div>
                 <label className="block text-[12px] font-medium text-slate-700 dark:text-[#D4D4D4] mb-1.5">
-                  Work or Creator Email
+                  Email
                 </label>
                 <input
                   type="email"
@@ -395,10 +385,6 @@ export default function AuthView({
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="w-full max-w-6xl mx-auto px-6 py-4 text-center text-xs text-slate-400 dark:text-[#666666]">
-        X-VibeBot Studio · Built for Modern Founders and Creators on X
-      </footer>
     </div>
   );
 }
