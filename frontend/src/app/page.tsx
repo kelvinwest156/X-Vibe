@@ -36,6 +36,7 @@ import {
 import AnalyticsView, { AnalyticsData } from "@/components/AnalyticsView";
 import AuthView from "@/components/AuthView";
 import ConnectAccountModal from "@/components/ConnectAccountModal";
+import OnboardingConnectView from "@/components/OnboardingConnectView";
 import { isSupabaseConfigured, subscribeToAuth, signOutUser } from "@/lib/supabase";
 
 const Spin = ({ className = "w-4 h-4" }: { className?: string }) => (
@@ -185,10 +186,10 @@ export default function HomePage() {
   const [ready, setReady] = useState(false);
   const [histReady, setHistReady] = useState(false);
 
-  // Demo mode toggle allows previewing the full studio even if X session is not linked yet
-  const [demoMode, setDemoMode] = useState(false);
   const [tenantId, setTenantId] = useState<string>("default");
   const [userProfile, setUserProfile] = useState<{ email?: string | null; name?: string | null; uid?: string | null } | null>(null);
+  const [onboardingBypassed, setOnboardingBypassed] = useState(false);
+  const [awaitingOnboardingConfirm, setAwaitingOnboardingConfirm] = useState(false);
 
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -197,13 +198,17 @@ export default function HomePage() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      // Purge any legacy demo-mode state
+      localStorage.removeItem("xvibebot_demo_mode");
+
       const savedToken = localStorage.getItem("xvibebot_auth_token");
       const savedTenant = localStorage.getItem("xvibebot_tenant_id");
       const savedEmail = localStorage.getItem("xvibebot_user_email");
-      const savedDemo = localStorage.getItem("xvibebot_demo_mode");
+      const savedName = localStorage.getItem("xvibebot_user_name");
+      const savedSkip = sessionStorage.getItem("xvibebot_onboarding_skipped");
 
-      if (savedDemo === "true") {
-        setDemoMode(true);
+      if (savedSkip === "true") {
+        setOnboardingBypassed(true);
       }
       if (savedToken) {
         setAuthToken(savedToken);
@@ -212,7 +217,10 @@ export default function HomePage() {
         setTenantId(savedTenant);
       }
       if (savedEmail) {
-        setUserProfile({ email: savedEmail, name: savedEmail.split("@")[0] });
+        setUserProfile({
+          email: savedEmail,
+          name: savedName || savedEmail.split("@")[0],
+        });
       }
       setAuthInitialized(true);
 
@@ -227,6 +235,7 @@ export default function HomePage() {
               localStorage.removeItem("xvibebot_auth_token");
               localStorage.removeItem("xvibebot_tenant_id");
               localStorage.removeItem("xvibebot_user_email");
+              localStorage.removeItem("xvibebot_user_name");
               setAuthToken("");
               setUserProfile(null);
             }
@@ -256,6 +265,26 @@ export default function HomePage() {
         document.documentElement.classList.remove("dark");
       }
     }
+
+    const { data: sub } = subscribeToAuth((_event, session) => {
+      if (session?.user && session.access_token) {
+        const u = session.user;
+        const name = u.user_metadata?.name || u.email?.split("@")[0] || "Creator";
+        setTenantId(u.id);
+        setAuthToken(session.access_token);
+        setUserProfile({ email: u.email, name, uid: u.id });
+        if (typeof window !== "undefined") {
+          localStorage.setItem("xvibebot_auth_token", session.access_token);
+          localStorage.setItem("xvibebot_tenant_id", u.id);
+          if (u.email) localStorage.setItem("xvibebot_user_email", u.email);
+          localStorage.setItem("xvibebot_user_name", name);
+        }
+      }
+    });
+
+    return () => {
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   const toggleTheme = useCallback(() => {
@@ -297,21 +326,19 @@ export default function HomePage() {
       localStorage.removeItem("xvibebot_auth_token");
       localStorage.removeItem("xvibebot_tenant_id");
       localStorage.removeItem("xvibebot_user_email");
+      localStorage.removeItem("xvibebot_user_name");
       localStorage.removeItem("xvibebot_demo_mode");
+      sessionStorage.removeItem("xvibebot_onboarding_skipped");
     }
     setAuthToken("");
     setUserProfile(null);
     setTenantId("default");
-    setDemoMode(false);
-    notify("Signed out of Creator Studio.");
+    setStatus(null);
+    setReady(false);
+    setOnboardingBypassed(false);
+    setAwaitingOnboardingConfirm(false);
+    notify("Signed out of workspace.");
   }, [notify]);
-
-  const enterDemoMode = useCallback(() => {
-    setDemoMode(true);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("xvibebot_demo_mode", "true");
-    }
-  }, []);
 
   const apiFetch = useCallback(
     (url: string, options: RequestInit = {}) => {
@@ -392,7 +419,7 @@ export default function HomePage() {
       setSleep(c.active_hours_end ?? 23);
       setAutopilot(Boolean(c.auto_pilot_mode));
     } catch {}
-  }, []);
+  }, [apiFetch]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -404,13 +431,16 @@ export default function HomePage() {
     }
   }, [apiFetch]);
 
+  const isUserAuthenticated = Boolean(userProfile?.email || authToken);
+
   useEffect(() => {
+    if (!isUserAuthenticated) return;
     loadConfig();
     refresh();
     loadHistory();
     const t = setInterval(refresh, 6000);
     return () => clearInterval(t);
-  }, [loadConfig, refresh, loadHistory]);
+  }, [isUserAuthenticated, loadConfig, refresh, loadHistory]);
 
   const toggleAgent = async () => {
     if (!status) return;
@@ -743,51 +773,89 @@ export default function HomePage() {
 
   const shownHistory = history.filter((h) => histFilter === "all" || h.status === histFilter);
   const awake = status?.within_active_hours;
-  const isUserAuthenticated = Boolean(userProfile?.email || authToken || demoMode);
 
   // Smooth loading splash while initializing stored authentication
   if (!authInitialized && !isUserAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#121212] flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3 text-slate-500 dark:text-[#A3A3A3]">
-          <Loader2 className="w-6 h-6 animate-spin text-neutral-900 dark:text-white" />
-          <span className="text-xs font-medium">Loading Creator Studio...</span>
+      <div className="min-h-dvh bg-white dark:bg-[#0E0E0E] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-[#71717A] dark:text-[#8E8E8E]">
+          <Loader2 className="w-5 h-5 animate-spin text-[#111111] dark:text-[#F5F5F5]" />
+          <span className="text-[12.5px] font-medium">Loading workspace...</span>
         </div>
       </div>
     );
   }
 
-  // If user is not authenticated and hasn't toggled demo mode, show AuthView!
+  // Step 1: Workspace Authentication (Sign In / Create Account)
   if (!isUserAuthenticated) {
     return (
       <AuthView
         theme={theme}
         onToggleTheme={toggleTheme}
-        onLoginWithX={() => {
-          enterDemoMode();
-          setConnectModalOpen(true);
-        }}
-        onExploreDemo={enterDemoMode}
-        busyLogin={busy.login}
         onAuthenticated={(user, token) => {
-          const tId = user.uid || (user as any).tenant_id || "default";
+          const tId = user.tenant_id || user.uid || "default";
+          setReady(false);
+          setStatus(null);
+          setOnboardingBypassed(false);
+          setAwaitingOnboardingConfirm(false);
           setTenantId(tId);
           setAuthToken(token);
-          setUserProfile({ email: user.email || undefined, name: user.displayName || user.email?.split("@")[0], uid: user.uid });
+          setUserProfile({
+            email: user.email || undefined,
+            name: user.displayName || user.email?.split("@")[0],
+            uid: user.uid,
+          });
           if (typeof window !== "undefined") {
             localStorage.setItem("xvibebot_auth_token", token);
             localStorage.setItem("xvibebot_tenant_id", tId);
             if (user.email) localStorage.setItem("xvibebot_user_email", user.email);
-            localStorage.removeItem("xvibebot_demo_mode");
+            if (user.displayName) localStorage.setItem("xvibebot_user_name", user.displayName);
+            sessionStorage.removeItem("xvibebot_onboarding_skipped");
           }
-          refresh();
+        }}
+      />
+    );
+  }
+
+  // Wait for tenant status check before deciding Step 2 (Connect X) vs Studio Dashboard
+  if (!ready) {
+    return (
+      <div className="min-h-dvh bg-white dark:bg-[#0E0E0E] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-[#71717A] dark:text-[#8E8E8E]">
+          <Loader2 className="w-5 h-5 animate-spin text-[#111111] dark:text-[#F5F5F5]" />
+          <span className="text-[12.5px] font-medium">Preparing your workspace...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Step 2: Post-Auth Account Connection Onboarding (if X profile is not yet linked)
+  if ((!status?.is_logged_in || awaitingOnboardingConfirm) && !onboardingBypassed) {
+    return (
+      <OnboardingConnectView
+        userEmail={userProfile?.email}
+        userName={userProfile?.name}
+        isLoggedIn={Boolean(status?.is_logged_in)}
+        linkedUsername={status?.linked_username}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onSignOut={handleSignOut}
+        apiFetch={apiFetch}
+        onSessionConnected={async () => {
+          setAwaitingOnboardingConfirm(true);
+          await refresh();
+          await loadHistory();
+        }}
+        onContinueToStudio={() => {
+          setAwaitingOnboardingConfirm(false);
+          setOnboardingBypassed(true);
         }}
       />
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#121212] text-slate-900 dark:text-[#F3F3F3] flex flex-col selection:bg-neutral-900 selection:text-white transition-colors duration-200">
+    <div className="min-h-dvh bg-[#F8FAFC] dark:bg-[#121212] text-slate-900 dark:text-[#F3F3F3] flex flex-col selection:bg-neutral-900 selection:text-white transition-colors duration-200">
       {/* Top Modern Studio Rail / Navigation Header */}
       <header className="sticky top-0 z-30 bg-white/95 dark:bg-[#181818]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-[#262626] px-4 sm:px-6 py-2.5 sm:py-3 transition-colors duration-200">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-4">
@@ -866,18 +934,13 @@ export default function HomePage() {
               )}
             </button>
 
-            {/* Multi-Tenant / User Profile pill */}
-            {userProfile ? (
+            {/* Workspace User Pill */}
+            {userProfile && (
               <div className="flex items-center gap-2 px-2.5 h-8 rounded-lg bg-slate-100 dark:bg-[#202020] border border-slate-200/80 dark:border-[#2E2E2E] text-xs text-slate-700 dark:text-[#D4D4D4] shadow-2xs">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
                 <span className="hidden sm:inline font-medium max-w-[120px] truncate" title={userProfile.email || tenantId}>
                   {userProfile.name || userProfile.email || "Creator"}
                 </span>
-              </div>
-            ) : (
-              <div className="hidden sm:flex items-center gap-1.5 px-2.5 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-600 dark:text-amber-400 font-medium">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Demo Mode</span>
               </div>
             )}
 
@@ -1007,22 +1070,46 @@ export default function HomePage() {
           </button>
         </div>
 
-        {/* Status Strip if Paused or Sleeping */}
-        {status && !status.is_active && (
-          <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 rounded-xl px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>
-                <strong>Studio Agent Paused:</strong> Background scanning and auto-reply scheduling are paused.
-              </span>
+        {/* Account Connection or Agent Status Strip */}
+        {status && !status.is_logged_in ? (
+          <div className="bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#2A2A2A] rounded-xl px-4 py-3.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C] shrink-0" />
+              <div className="space-y-0.5">
+                <p className="font-semibold text-slate-900 dark:text-white">
+                  Connect your X account to activate scanning and publishing
+                </p>
+                <p className="text-slate-500 dark:text-[#A3A3A3]">
+                  Connect your X account through an isolated browser window to activate live feed scanning and AI drafting.
+                </p>
+              </div>
             </div>
             <button
-              onClick={toggleAgent}
-              className="text-amber-900 dark:text-amber-100 font-semibold underline hover:text-amber-700 text-left"
+              type="button"
+              onClick={() => setConnectModalOpen(true)}
+              className="btn btn-primary !h-8 !px-3.5 text-xs shrink-0"
             >
-              Resume Agent
+              <span>Connect X account</span>
             </button>
           </div>
+        ) : (
+          status &&
+          !status.is_active && (
+            <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 rounded-xl px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  <strong>Studio Agent Paused:</strong> Background scanning and auto-reply scheduling are paused.
+                </span>
+              </div>
+              <button
+                onClick={toggleAgent}
+                className="text-amber-900 dark:text-amber-100 font-semibold underline hover:text-amber-700 text-left"
+              >
+                Resume Agent
+              </button>
+            </div>
+          )
         )}
 
         <AnimatePresence mode="wait">
@@ -1776,7 +1863,7 @@ export default function HomePage() {
                           Creator Account & Session
                         </span>
                         <span className="text-[11px] text-slate-500 dark:text-[#A3A3A3]">
-                          {userProfile?.email ? `Signed in as ${userProfile.email}` : "Currently in Sneak Peek / Demo Mode"} · 365-day persistent session
+                          {userProfile?.email ? `Signed in as ${userProfile.email}` : "Authenticated workspace"} · Persistent session active
                         </span>
                       </div>
                       <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
@@ -1817,9 +1904,10 @@ export default function HomePage() {
         <AnimatePresence>
           {showLogs && (
             <motion.section
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
               className="bg-[#141414] text-[#E5E5E5] rounded-xl overflow-hidden border border-[#262626] shadow-md"
             >
               <div className="px-4 py-2.5 bg-[#101010] border-b border-[#262626] flex items-center justify-between text-xs">
@@ -1881,6 +1969,7 @@ export default function HomePage() {
               onClick={() => setToast(null)}
               className="p-1 hover:opacity-80 shrink-0 text-slate-400 hover:text-white transition-colors"
               title="Dismiss notification"
+              aria-label="Dismiss notification"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -1946,6 +2035,7 @@ export default function HomePage() {
                 <button
                   onClick={() => setCookieOpen(false)}
                   className="text-slate-400 hover:text-slate-700 dark:hover:text-[#F3F3F3] transition-colors"
+                  aria-label="Close dialog"
                 >
                   <X className="w-4 h-4" />
                 </button>

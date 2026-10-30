@@ -6,6 +6,14 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
+        display: [
+          "Plus Jakarta Sans",
+          "Inter",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "Segoe UI",
+          "sans-serif",
+        ],
         sans: [
           "Inter",
           "-apple-system",

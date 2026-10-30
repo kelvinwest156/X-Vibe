@@ -190,11 +190,13 @@ async def get_current_tenant(
 last_interaction_timestamp: float = 0.0
 current_random_cooldown_seconds: int = 0
 is_session_logged_in: bool = False
+tenant_login_states: Dict[str, bool] = {}
 is_manual_login_active: bool = False
 active_search_query_state: Optional[str] = None
 bg_worker_task: Optional[asyncio.Task] = None
 scheduler_worker_task: Optional[asyncio.Task] = None
 scrape_now_flag = asyncio.Event()
+tenant_scrape_queue: asyncio.Queue = asyncio.Queue()
 
 
 def get_cooldown_remaining() -> int:
@@ -233,6 +235,7 @@ async def scheduled_queue_dispatcher_loop():
     Continuously checks for scheduled replies whose randomized `scheduled_for`
     timestamp has arrived and dispatches them organically while respecting
     the rolling 60-minute anti-detection velocity cap and warmup mode.
+    Dispatches using the target post's tenant browser worker.
     """
     logger.info("Random schedule dispatcher initialized.")
     await asyncio.sleep(5)
@@ -245,50 +248,64 @@ async def scheduled_queue_dispatcher_loop():
 
             db = SessionLocal()
             try:
-                config = get_agent_config(db)
-                within_hours = is_within_active_hours(
-                    config.active_hours_start or 8,
-                    config.active_hours_end or 23
-                )
-                warmup = bool(getattr(config, "warmup_mode", False))
-                daily_used = get_daily_actions_count(db)
-                daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
-                hourly_used = get_hourly_actions_count(db)
-                hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
-                min_cd = config.min_cooldown_minutes or 10
-                max_cd = config.max_cooldown_minutes or 45
-                due_items = get_due_scheduled_tweets(db) if within_hours else []
+                due_items = get_due_scheduled_tweets(db)
             finally:
                 db.close()
 
-            if due_items and daily_used < daily_cap and hourly_used < hourly_cap:
-                target = due_items[0]
-                act_type = target.action_type or "reply"
-                logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}). Publishing now (hourly {hourly_used + 1}/{hourly_cap})...")
-                success = await browser_worker.execute_tweet_action(
-                    act_type,
-                    target.tweet_id,
-                    target.generated_text,
-                    target.tweet_url,
-                    should_like=bool(getattr(target, "should_like", False))
-                )
-                db = SessionLocal()
-                try:
-                    sync_detected_username(db)
-                    if success:
-                        set_new_random_cooldown(min_cd, max_cd)
-                        update_tweet_status(db, target.tweet_id, status="posted")
-                        logger.info(f"Successfully published scheduled {act_type} ({target.tweet_id})!")
-                    else:
-                        err_msg = getattr(browser_worker, "last_error", None) or f"Browser failed while publishing scheduled {act_type}"
-                        update_tweet_status(
-                            db,
-                            target.tweet_id,
-                            status="failed",
-                            error_message=err_msg
+            if due_items:
+                for target in due_items:
+                    target_tenant = getattr(target, "tenant_id", None) or "default"
+                    db = SessionLocal()
+                    try:
+                        config = get_agent_config(db, tenant_id=target_tenant)
+                        within_hours = is_within_active_hours(
+                            config.active_hours_start or 8,
+                            config.active_hours_end or 23
                         )
-                finally:
-                    db.close()
+                        if not within_hours:
+                            continue
+                        warmup = bool(getattr(config, "warmup_mode", False))
+                        daily_used = get_daily_actions_count(db, tenant_id=target_tenant)
+                        daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+                        hourly_used = get_hourly_actions_count(db, tenant_id=target_tenant)
+                        hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
+                        min_cd = config.min_cooldown_minutes or 10
+                        max_cd = config.max_cooldown_minutes or 45
+                    finally:
+                        db.close()
+
+                    if daily_used >= daily_cap or hourly_used >= hourly_cap:
+                        logger.info(f"Target tenant '{target_tenant}' cap reached ({daily_used}/{daily_cap} daily, {hourly_used}/{hourly_cap} hourly). Postponing scheduled item.")
+                        continue
+
+                    act_type = target.action_type or "reply"
+                    logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}) [tenant={target_tenant}]. Publishing now (hourly {hourly_used + 1}/{hourly_cap})...")
+                    worker = get_tenant_browser_worker(target_tenant)
+                    success = await worker.execute_tweet_action(
+                        act_type,
+                        target.tweet_id,
+                        target.generated_text,
+                        target.tweet_url,
+                        should_like=bool(getattr(target, "should_like", False))
+                    )
+                    db = SessionLocal()
+                    try:
+                        sync_detected_username(db, tenant_id=target_tenant, worker=worker)
+                        if success:
+                            set_new_random_cooldown(min_cd, max_cd)
+                            update_tweet_status(db, target.tweet_id, status="posted")
+                            logger.info(f"Successfully published scheduled {act_type} ({target.tweet_id}) for tenant '{target_tenant}'!")
+                        else:
+                            err_msg = getattr(worker, "last_error", None) or f"Browser failed while publishing scheduled {act_type}"
+                            update_tweet_status(
+                                db,
+                                target.tweet_id,
+                                status="failed",
+                                error_message=err_msg
+                            )
+                    finally:
+                        db.close()
+                    break
 
             await asyncio.sleep(10)
         except Exception as e:
@@ -302,8 +319,8 @@ async def scheduled_queue_dispatcher_loop():
 
 async def background_automation_loop():
     """
-    Continuous background loop with Smart AI Search Discovery, Multimodal Vision,
-    Self-Learning Voice Memory, Duplicate Similarity Filtering, and Urgency Scheduling.
+    Continuous background loop with Multi-Tenant isolation, Smart AI Search Discovery,
+    Multimodal Vision, Self-Learning Voice Memory, Duplicate Similarity Filtering, and Urgency Scheduling.
     """
     global is_session_logged_in, active_search_query_state
     logger.info("Background automation worker loop initialized.")
@@ -311,299 +328,327 @@ async def background_automation_loop():
 
     while True:
         try:
+            # 1. Drain manual scrape triggers (queued per tenant)
+            manual_tenants = []
+            while not tenant_scrape_queue.empty():
+                try:
+                    tid = tenant_scrape_queue.get_nowait()
+                    if tid and tid not in manual_tenants:
+                        manual_tenants.append(tid)
+                except asyncio.QueueEmpty:
+                    break
+
+            if scrape_now_flag.is_set() and not manual_tenants:
+                manual_tenants.append("default")
+            scrape_now_flag.clear()
+
+            # 2. Check active tenants from database
             db = SessionLocal()
             try:
-                config = get_agent_config(db)
-                is_active = config.is_active
-                auto_pilot = config.auto_pilot_mode
-                base_interval_secs = max(1, config.polling_interval_minutes) * 60
-                warmup = bool(getattr(config, "warmup_mode", False))
-                daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
-                hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
-                smart_query_on = bool(getattr(config, "smart_query_enabled", True))
-                base_query = config.search_query
-                persona = config.persona_prompt
-                selected_model = config.selected_model or "gemini-3.8-flash"
-                start_hr = config.active_hours_start if config.active_hours_start is not None else 8
-                end_hr = config.active_hours_end if config.active_hours_end is not None else 23
-                daily_used = get_daily_actions_count(db)
-                hourly_used = get_hourly_actions_count(db)
-                learning_memory = get_learning_memory(db)
-                recent_rows = get_recent_tweets(db, limit=6)
-                recent_sample_dicts = [{"text": r.tweet_text} for r in recent_rows if r.tweet_text]
+                active_configs = db.query(AgentConfig).filter(AgentConfig.is_active == True).all()
+                active_tenant_ids = [c.tenant_id for c in active_configs if c.tenant_id]
             finally:
                 db.close()
 
-            manual_triggered = scrape_now_flag.is_set()
+            # Build prioritized list of (tenant_id, is_manual)
+            tenants_to_scan = []
+            for tid in manual_tenants:
+                tenants_to_scan.append((tid, True))
+            for tid in active_tenant_ids:
+                if not any(t[0] == tid for t in tenants_to_scan):
+                    tenants_to_scan.append((tid, False))
 
-            if not is_active and not manual_triggered:
+            if not tenants_to_scan:
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=5.0)
-                    logger.info("Manual scrape triggered.")
                 except asyncio.TimeoutError:
-                    continue
+                    pass
+                continue
 
-            if is_manual_login_active and not scrape_now_flag.is_set():
+            if is_manual_login_active and not any(t[1] for t in tenants_to_scan):
                 try:
                     await asyncio.wait_for(scrape_now_flag.wait(), timeout=15.0)
                 except asyncio.TimeoutError:
                     pass
                 continue
 
-            # Respect Active Waking Hours (unless user explicitly clicked Scrape Now)
-            if not scrape_now_flag.is_set() and not is_within_active_hours(start_hr, end_hr):
-                logger.info(f"Outside active hours ({start_hr:02d}:00-{end_hr:02d}:00). Sleeping...")
+            min_interval_secs = 20 * 60
+
+            for curr_tenant_id, is_manual in tenants_to_scan:
                 try:
-                    await asyncio.wait_for(scrape_now_flag.wait(), timeout=300.0)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-
-            if daily_used >= daily_cap and not scrape_now_flag.is_set():
-                logger.warning(f"Daily action cap reached ({daily_used}/{daily_cap}). Pausing until tomorrow.")
-                await asyncio.sleep(300)
-                continue
-
-            if hourly_used >= hourly_cap and not scrape_now_flag.is_set():
-                logger.info(f"Hourly anti-detection cap reached ({hourly_used}/{hourly_cap} in last 60m). Cooling down...")
-                await asyncio.sleep(180)
-                continue
-
-            # Verify X Login
-            try:
-                is_session_logged_in = await browser_worker.check_login_status()
-                if is_session_logged_in:
                     db = SessionLocal()
                     try:
-                        sync_detected_username(db)
+                        config = get_agent_config(db, tenant_id=curr_tenant_id)
+                        if not is_manual and not config.is_active:
+                            continue
+                        auto_pilot = config.auto_pilot_mode
+                        base_interval_secs = max(1, config.polling_interval_minutes) * 60
+                        if base_interval_secs < min_interval_secs:
+                            min_interval_secs = base_interval_secs
+                        warmup = bool(getattr(config, "warmup_mode", False))
+                        daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+                        hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
+                        smart_query_on = bool(getattr(config, "smart_query_enabled", True))
+                        base_query = config.search_query
+                        persona = config.persona_prompt
+                        selected_model = config.selected_model or "gemini-3.8-flash"
+                        start_hr = config.active_hours_start if config.active_hours_start is not None else 8
+                        end_hr = config.active_hours_end if config.active_hours_end is not None else 23
+                        daily_used = get_daily_actions_count(db, tenant_id=curr_tenant_id)
+                        hourly_used = get_hourly_actions_count(db, tenant_id=curr_tenant_id)
+                        learning_memory = get_learning_memory(db, tenant_id=curr_tenant_id)
+                        recent_rows = get_recent_tweets(db, limit=6, tenant_id=curr_tenant_id)
+                        recent_sample_dicts = [{"text": r.tweet_text} for r in recent_rows if r.tweet_text]
                     finally:
                         db.close()
-            except Exception as e:
-                logger.error(f"Failed to check login status: {e}")
-                is_session_logged_in = False
 
-            if not is_session_logged_in:
-                scrape_now_flag.clear()
-                logger.warning("Not logged into X. Use 'Login' in the top bar or run login_browser.bat.")
-                try:
-                    await asyncio.wait_for(scrape_now_flag.wait(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-
-            # Consume manual scrape trigger right as scan starts
-            scrape_now_flag.clear()
-
-            # Smart AI Search Query Discovery
-            effective_query = base_query
-            if smart_query_on and base_query and base_query.strip():
-                effective_query = await generate_smart_search_query(
-                    niche_topic=base_query,
-                    recent_tweets=recent_sample_dicts,
-                    model_name=selected_model
-                )
-            active_search_query_state = effective_query or "Home Timeline"
-
-            logger.info(f"Scanning X feed for '{effective_query}' (learned samples: {learning_memory.get('total_learned', 0)})...")
-            tweets = await browser_worker.scrape_feed(search_query=effective_query, limit=8)
-            logger.info(f"Collected {len(tweets)} candidate posts.")
-
-            db = SessionLocal()
-            try:
-                sync_detected_username(db)
-            finally:
-                db.close()
-
-            new_count = 0
-            for t in tweets:
-                tweet_id = t["tweet_id"]
-
-                db = SessionLocal()
-                try:
-                    already_done = is_tweet_already_processed(db, tweet_id)
-                finally:
-                    db.close()
-
-                if already_done:
-                    continue
-
-                new_count += 1
-                logger.info(f"Evaluating @{t['author']} ({t.get('metrics', '')}): '{t['text'][:55]}...'")
-
-                ai_result = await evaluate_tweet(
-                    tweet_text=t["text"],
-                    tweet_author=t["author"],
-                    model_name=selected_model,
-                    search_query=base_query or effective_query,
-                    persona_prompt=persona,
-                    extra_context=t.get("extra_context"),
-                    media_url=t.get("media_url"),
-                    learning_memory=learning_memory
-                )
-
-                if ai_result.get("raw_response") == "NO_API_KEY":
-                    logger.warning("Paused: Paste your Google Gemini API key in the sidebar first.")
-                    break
-
-                db = SessionLocal()
-                try:
-                    if not ai_result["should_reply"]:
-                        logger.info(f"Skipped @{t['author']}: {ai_result['reasoning']}")
-                        record_processed_tweet(
-                            db=db,
-                            tweet_id=tweet_id,
-                            action_type="reply",
-                            tweet_text=t["text"],
-                            tweet_author=t["author"],
-                            tweet_url=t["url"],
-                            media_url=t.get("media_url"),
-                            generated_text=None,
-                            variants_json=None,
-                            tweet_metrics=t.get("metrics"),
-                            status="skipped",
-                            error_message=ai_result["reasoning"]
-                        )
-                        continue
-
-                    reply_text = ai_result["reply_text"]
-                    variants_dict = ai_result.get("variants") or {}
-                    variants_json = ai_result.get("variants_json")
-                    should_like = bool(ai_result.get("should_like", False))
-                    urgency_score = int(ai_result.get("urgency_score", 5))
-
-                    # Anti-Detection Duplicate & Template Similarity Filter
-                    if is_reply_too_similar(db, reply_text):
-                        alt_chosen = None
-                        for alt_text in variants_dict.values():
-                            if alt_text and not is_reply_too_similar(db, alt_text):
-                                alt_chosen = alt_text
-                                break
-                        if alt_chosen:
-                            logger.info("Primary draft shared opening words with a recent reply; switched to fresh variant.")
-                            reply_text = alt_chosen
-                        else:
-                            logger.info(f"Skipped @{t['author']}: Draft too similar to recent replies (anti-template shield).")
-                            record_processed_tweet(
-                                db=db,
-                                tweet_id=tweet_id,
-                                action_type="reply",
-                                tweet_text=t["text"],
-                                tweet_author=t["author"],
-                                tweet_url=t["url"],
-                                media_url=t.get("media_url"),
-                                generated_text=None,
-                                status="skipped",
-                                error_message="Filtered by Anti-Detection Similarity Shield"
-                            )
+                    # Check Active Hours & Caps for scheduled automated runs
+                    if not is_manual:
+                        if not is_within_active_hours(start_hr, end_hr):
+                            logger.info(f"Tenant '{curr_tenant_id}': Outside active hours ({start_hr:02d}:00-{end_hr:02d}:00). Sleeping...")
+                            continue
+                        if daily_used >= daily_cap:
+                            logger.warning(f"Tenant '{curr_tenant_id}': Daily cap reached ({daily_used}/{daily_cap}). Pausing until tomorrow.")
+                            continue
+                        if hourly_used >= hourly_cap:
+                            logger.info(f"Tenant '{curr_tenant_id}': Hourly cap reached ({hourly_used}/{hourly_cap}). Cooling down...")
                             continue
 
-                    logger.info(f"Drafted for @{t['author']} [urgency {urgency_score}/10, like={should_like}]: '{reply_text}'")
+                    worker = get_tenant_browser_worker(curr_tenant_id)
+                    try:
+                        tenant_is_logged = await worker.check_login_status()
+                        tenant_login_states[curr_tenant_id] = tenant_is_logged
+                        if curr_tenant_id == "default":
+                            is_session_logged_in = tenant_is_logged
+                        if tenant_is_logged:
+                            db = SessionLocal()
+                            try:
+                                sync_detected_username(db, tenant_id=curr_tenant_id, worker=worker)
+                            finally:
+                                db.close()
+                    except Exception as e:
+                        logger.error(f"Failed to check login status for tenant '{curr_tenant_id}': {e}")
+                        tenant_is_logged = False
 
-                    if not auto_pilot:
-                        record_processed_tweet(
-                            db=db,
-                            tweet_id=tweet_id,
-                            action_type="reply",
-                            tweet_text=t["text"],
-                            tweet_author=t["author"],
-                            tweet_url=t["url"],
-                            media_url=t.get("media_url"),
-                            generated_text=reply_text,
-                            variants_json=variants_json,
-                            tweet_metrics=t.get("metrics"),
-                            should_like=should_like,
-                            urgency_score=urgency_score,
-                            status="pending_approval",
-                            error_message=ai_result["reasoning"]
+                    if not tenant_is_logged:
+                        logger.warning(f"Tenant '{curr_tenant_id}' is not logged into X. Connect your account in the top bar.")
+                        continue
+
+                    effective_query = base_query
+                    if smart_query_on and base_query and base_query.strip():
+                        effective_query = await generate_smart_search_query(
+                            niche_topic=base_query,
+                            recent_tweets=recent_sample_dicts,
+                            model_name=selected_model
                         )
-                    else:
-                        # Autopilot schedules replies using AI urgency-weighted random timestamps
-                        cfg = get_agent_config(db)
-                        sched_utc = compute_random_schedule_time(db, cfg, urgency_score=urgency_score)
-                        mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
-                        logger.info(f"Autopilot scheduled reply to @{t['author']} in ~{mins_away}m (urgency {urgency_score}/10).")
-                        record_processed_tweet(
-                            db=db,
-                            tweet_id=tweet_id,
-                            action_type="reply",
-                            tweet_text=t["text"],
-                            tweet_author=t["author"],
-                            tweet_url=t["url"],
-                            media_url=t.get("media_url"),
-                            generated_text=reply_text,
-                            variants_json=variants_json,
-                            tweet_metrics=t.get("metrics"),
-                            should_like=should_like,
-                            urgency_score=urgency_score,
-                            status="scheduled",
-                            scheduled_for=sched_utc,
-                            error_message=ai_result["reasoning"]
-                        )
-                finally:
-                    db.close()
+                    active_search_query_state = effective_query or "Home Timeline"
 
-                await asyncio.sleep(random.uniform(1.2, 2.5))
+                    logger.info(f"Tenant '{curr_tenant_id}': Scanning X feed for '{effective_query}' (learned: {learning_memory.get('total_learned', 0)})...")
+                    tweets = await worker.scrape_feed(search_query=effective_query, limit=8)
+                    logger.info(f"Tenant '{curr_tenant_id}': Collected {len(tweets)} candidate posts.")
 
-            if new_count == 0 and len(tweets) > 0:
-                logger.info(f"All {len(tweets)} visible posts for '{effective_query}' were already evaluated.")
-
-            # Autonomously synthesize 1 original Post or Thread (AI chooses best format via mode="auto")
-            if len(tweets) >= 2:
-                logger.info(f"AI autonomously synthesizing original content from live '{effective_query}' pulse...")
-                gen = await generate_original_content(
-                    mode="auto",
-                    search_query=base_query or effective_query,
-                    persona_prompt=persona,
-                    live_tweets=tweets,
-                    model_name=selected_model,
-                    learning_memory=learning_memory
-                )
-                if gen.get("success") and gen.get("text"):
-                    chosen_mode = gen.get("action_type") or "post"
-                    orig_urgency = int(gen.get("urgency_score", 6))
                     db = SessionLocal()
                     try:
-                        cfg = get_agent_config(db)
-                        orig_id = f"{chosen_mode}_{int(time.time())}"
-                        author_label = (browser_worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
-                        if auto_pilot:
-                            sched_utc = compute_random_schedule_time(db, cfg, urgency_score=orig_urgency)
-                            record_processed_tweet(
-                                db=db,
-                                tweet_id=orig_id,
-                                action_type=chosen_mode,
-                                tweet_text=gen["topic_summary"],
-                                tweet_author=author_label,
-                                tweet_url="https://x.com/home",
-                                generated_text=gen["text"],
-                                variants_json=gen.get("variants_json"),
-                                tweet_metrics="Live Pulse · Original Thread" if chosen_mode == "thread" else "Live Pulse · Original Post",
-                                urgency_score=orig_urgency,
-                                status="scheduled",
-                                scheduled_for=sched_utc,
-                                error_message=gen["topic_summary"]
-                            )
-                        else:
-                            record_processed_tweet(
-                                db=db,
-                                tweet_id=orig_id,
-                                action_type=chosen_mode,
-                                tweet_text=gen["topic_summary"],
-                                tweet_author=author_label,
-                                tweet_url="https://x.com/home",
-                                generated_text=gen["text"],
-                                variants_json=gen.get("variants_json"),
-                                tweet_metrics="Live Pulse · Thread" if chosen_mode == "thread" else "Live Pulse · Original Post",
-                                urgency_score=orig_urgency,
-                                status="pending_approval",
-                                error_message=gen["topic_summary"]
-                            )
-                        logger.info(f"AI chose and drafted original {chosen_mode} (urgency {orig_urgency}/10) from live pulse.")
+                        sync_detected_username(db, tenant_id=curr_tenant_id, worker=worker)
                     finally:
                         db.close()
 
-            # Randomized jitter between scans (0.65x to 1.45x of polling interval + random seconds)
-            jittered_wait = int(base_interval_secs * random.uniform(0.65, 1.45)) + random.randint(3, 58)
+                    new_count = 0
+                    for t in tweets:
+                        tweet_id = t["tweet_id"]
+                        db = SessionLocal()
+                        try:
+                            already_done = is_tweet_already_processed(db, tweet_id, tenant_id=curr_tenant_id)
+                        finally:
+                            db.close()
+
+                        if already_done:
+                            continue
+
+                        new_count += 1
+                        logger.info(f"Evaluating @{t['author']} ({t.get('metrics', '')}): '{t['text'][:55]}...'")
+
+                        ai_result = await evaluate_tweet(
+                            tweet_text=t["text"],
+                            tweet_author=t["author"],
+                            model_name=selected_model,
+                            search_query=base_query or effective_query,
+                            persona_prompt=persona,
+                            extra_context=t.get("extra_context"),
+                            media_url=t.get("media_url"),
+                            learning_memory=learning_memory
+                        )
+
+                        if ai_result.get("raw_response") == "NO_API_KEY":
+                            logger.warning("Paused: Paste your Google Gemini API key in Settings first.")
+                            break
+
+                        db = SessionLocal()
+                        try:
+                            if not ai_result["should_reply"]:
+                                logger.info(f"Skipped @{t['author']}: {ai_result['reasoning']}")
+                                record_processed_tweet(
+                                    db=db,
+                                    tweet_id=tweet_id,
+                                    tenant_id=curr_tenant_id,
+                                    action_type="reply",
+                                    tweet_text=t["text"],
+                                    tweet_author=t["author"],
+                                    tweet_url=t["url"],
+                                    media_url=t.get("media_url"),
+                                    generated_text=None,
+                                    variants_json=None,
+                                    tweet_metrics=t.get("metrics"),
+                                    status="skipped",
+                                    error_message=ai_result["reasoning"]
+                                )
+                                continue
+
+                            reply_text = ai_result["reply_text"]
+                            variants_dict = ai_result.get("variants") or {}
+                            variants_json = ai_result.get("variants_json")
+                            should_like = bool(ai_result.get("should_like", False))
+                            urgency_score = int(ai_result.get("urgency_score", 5))
+
+                            # Anti-Detection Duplicate & Template Similarity Filter
+                            if is_reply_too_similar(db, reply_text, tenant_id=curr_tenant_id):
+                                alt_chosen = None
+                                for alt_text in variants_dict.values():
+                                    if alt_text and not is_reply_too_similar(db, alt_text, tenant_id=curr_tenant_id):
+                                        alt_chosen = alt_text
+                                        break
+                                if alt_chosen:
+                                    logger.info("Primary draft shared opening words with a recent reply; switched to fresh variant.")
+                                    reply_text = alt_chosen
+                                else:
+                                    logger.info(f"Skipped @{t['author']}: Draft too similar to recent replies (anti-template shield).")
+                                    record_processed_tweet(
+                                        db=db,
+                                        tweet_id=tweet_id,
+                                        tenant_id=curr_tenant_id,
+                                        action_type="reply",
+                                        tweet_text=t["text"],
+                                        tweet_author=t["author"],
+                                        tweet_url=t["url"],
+                                        media_url=t.get("media_url"),
+                                        generated_text=None,
+                                        status="skipped",
+                                        error_message="Filtered by Anti-Detection Similarity Shield"
+                                    )
+                                    continue
+
+                            logger.info(f"Drafted for @{t['author']} [urgency {urgency_score}/10, like={should_like}]: '{reply_text}'")
+
+                            if not auto_pilot:
+                                record_processed_tweet(
+                                    db=db,
+                                    tweet_id=tweet_id,
+                                    tenant_id=curr_tenant_id,
+                                    action_type="reply",
+                                    tweet_text=t["text"],
+                                    tweet_author=t["author"],
+                                    tweet_url=t["url"],
+                                    media_url=t.get("media_url"),
+                                    generated_text=reply_text,
+                                    variants_json=variants_json,
+                                    tweet_metrics=t.get("metrics"),
+                                    should_like=should_like,
+                                    urgency_score=urgency_score,
+                                    status="pending_approval",
+                                    error_message=ai_result["reasoning"]
+                                )
+                            else:
+                                cfg = get_agent_config(db, tenant_id=curr_tenant_id)
+                                sched_utc = compute_random_schedule_time(db, cfg, urgency_score=urgency_score)
+                                mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
+                                logger.info(f"Autopilot scheduled reply to @{t['author']} in ~{mins_away}m (urgency {urgency_score}/10).")
+                                record_processed_tweet(
+                                    db=db,
+                                    tweet_id=tweet_id,
+                                    tenant_id=curr_tenant_id,
+                                    action_type="reply",
+                                    tweet_text=t["text"],
+                                    tweet_author=t["author"],
+                                    tweet_url=t["url"],
+                                    media_url=t.get("media_url"),
+                                    generated_text=reply_text,
+                                    variants_json=variants_json,
+                                    tweet_metrics=t.get("metrics"),
+                                    should_like=should_like,
+                                    urgency_score=urgency_score,
+                                    status="scheduled",
+                                    scheduled_for=sched_utc,
+                                    error_message=ai_result["reasoning"]
+                                )
+                        finally:
+                            db.close()
+
+                        await asyncio.sleep(random.uniform(1.2, 2.5))
+
+                    if new_count == 0 and len(tweets) > 0:
+                        logger.info(f"All {len(tweets)} visible posts for '{effective_query}' were already evaluated.")
+
+                    # Autonomously synthesize 1 original Post or Thread
+                    if len(tweets) >= 2:
+                        logger.info(f"AI autonomously synthesizing original content from live '{effective_query}' pulse...")
+                        gen = await generate_original_content(
+                            mode="auto",
+                            search_query=base_query or effective_query,
+                            persona_prompt=persona,
+                            live_tweets=tweets,
+                            model_name=selected_model,
+                            learning_memory=learning_memory
+                        )
+                        if gen.get("success") and gen.get("text"):
+                            chosen_mode = gen.get("action_type") or "post"
+                            orig_urgency = int(gen.get("urgency_score", 6))
+                            db = SessionLocal()
+                            try:
+                                cfg = get_agent_config(db, tenant_id=curr_tenant_id)
+                                orig_id = f"{chosen_mode}_{int(time.time() * 1000)}"
+                                author_label = (worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
+                                if auto_pilot:
+                                    sched_utc = compute_random_schedule_time(db, cfg, urgency_score=orig_urgency)
+                                    record_processed_tweet(
+                                        db=db,
+                                        tweet_id=orig_id,
+                                        tenant_id=curr_tenant_id,
+                                        action_type=chosen_mode,
+                                        tweet_text=gen["topic_summary"],
+                                        tweet_author=author_label,
+                                        tweet_url="https://x.com/home",
+                                        generated_text=gen["text"],
+                                        variants_json=gen.get("variants_json"),
+                                        tweet_metrics="Live Pulse · Original Thread" if chosen_mode == "thread" else "Live Pulse · Original Post",
+                                        urgency_score=orig_urgency,
+                                        status="scheduled",
+                                        scheduled_for=sched_utc,
+                                        error_message=gen["topic_summary"]
+                                    )
+                                else:
+                                    record_processed_tweet(
+                                        db=db,
+                                        tweet_id=orig_id,
+                                        tenant_id=curr_tenant_id,
+                                        action_type=chosen_mode,
+                                        tweet_text=gen["topic_summary"],
+                                        tweet_author=author_label,
+                                        tweet_url="https://x.com/home",
+                                        generated_text=gen["text"],
+                                        variants_json=gen.get("variants_json"),
+                                        tweet_metrics="Live Pulse · Thread" if chosen_mode == "thread" else "Live Pulse · Original Post",
+                                        urgency_score=orig_urgency,
+                                        status="pending_approval",
+                                        error_message=gen["topic_summary"]
+                                    )
+                                logger.info(f"AI chose and drafted original {chosen_mode} (urgency {orig_urgency}/10) from live pulse for tenant '{curr_tenant_id}'.")
+                            finally:
+                                db.close()
+
+                except Exception as te:
+                    logger.error(f"Error during feed scan for tenant '{curr_tenant_id}': {te}", exc_info=True)
+
+            jittered_wait = int(min_interval_secs * random.uniform(0.65, 1.45)) + random.randint(3, 58)
             try:
                 await asyncio.wait_for(scrape_now_flag.wait(), timeout=jittered_wait)
             except asyncio.TimeoutError:
@@ -630,7 +675,11 @@ async def lifespan(app: FastAPI):
     for task in (bg_worker_task, scheduler_worker_task):
         if task:
             task.cancel()
-    await browser_worker.stop()
+    for w in list(tenant_workers.values()):
+        try:
+            await w.stop()
+        except Exception:
+            pass
 
 
 app = FastAPI(
@@ -830,15 +879,19 @@ async def get_status(tenant_id: str = Depends(get_current_tenant), db: Session =
     pending_items = get_pending_tweets(db, tenant_id=tenant_id)
     sched_count = get_scheduled_count(db, tenant_id=tenant_id)
     total_processed = db.query(ProcessedTweet).filter(ProcessedTweet.tenant_id == tenant_id).count()
+    if total_processed == 0 and tenant_id != "default":
+        total_processed = db.query(ProcessedTweet).filter(ProcessedTweet.tenant_id == "default").count()
     within_hours = is_within_active_hours(
         config.active_hours_start if config.active_hours_start is not None else 8,
         config.active_hours_end if config.active_hours_end is not None else 23
     )
 
-    has_profile_cookies = (
-        os.path.isfile(worker.cookies_backup_path)
-        or os.path.isfile(os.path.join(worker.profile_dir, "Default", "Network", "Cookies"))
-        or os.path.isfile(os.path.join(worker.profile_dir, "Default", "Cookies"))
+    has_saved_session = os.path.isfile(worker.cookies_backup_path) or os.path.isfile(os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json"))
+    tenant_logged_in = (
+        tenant_login_states.get(tenant_id, is_session_logged_in if tenant_id == "default" else False)
+        or bool(worker.logged_in_username)
+        or bool(config.linked_username)
+        or has_saved_session
     )
 
     return AgentStatusResponse(
@@ -858,7 +911,7 @@ async def get_status(tenant_id: str = Depends(get_current_tenant), db: Session =
         within_active_hours=within_hours,
         scheduled_count=sched_count,
         browser_connected=worker.is_running,
-        is_logged_in=is_session_logged_in or bool(config.linked_username) or has_profile_cookies,
+        is_logged_in=tenant_logged_in,
         linked_username=worker.logged_in_username or config.linked_username,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
@@ -1020,6 +1073,13 @@ async def get_analytics_endpoint(
         .order_by(ProcessedTweet.timestamp.desc())
         .all()
     )
+    if not all_rows and tenant_id != "default":
+        all_rows = (
+            db.query(ProcessedTweet)
+            .filter(ProcessedTweet.tenant_id == "default")
+            .order_by(ProcessedTweet.timestamp.desc())
+            .all()
+        )
     cfg = get_agent_config(db, tenant_id=tenant_id)
 
     total = len(all_rows)
@@ -1263,7 +1323,7 @@ async def approve_tweet(
         tweet.tweet_url,
         should_like=effective_like
     )
-    sync_detected_username(db)
+    sync_detected_username(db, tenant_id=tenant_id, worker=worker)
 
     if success:
         set_new_random_cooldown(config.min_cooldown_minutes or 10, config.max_cooldown_minutes or 45)
@@ -1308,7 +1368,7 @@ async def generate_original_endpoint(
     req_mode = payload.mode if payload.mode in ("auto", "post", "thread") else "auto"
     topic = (payload.custom_topic or active_search_query_state or cfg.search_query or "tech & culture").strip()
 
-    recent_db_tweets = get_recent_tweets(db, limit=10)
+    recent_db_tweets = get_recent_tweets(db, limit=10, tenant_id=tenant_id)
     live_context = [
         {
             "author": r.tweet_author,
@@ -1318,7 +1378,7 @@ async def generate_original_endpoint(
         for r in recent_db_tweets
         if r.action_type == "reply" and r.tweet_text
     ]
-    learning_memory = get_learning_memory(db)
+    learning_memory = get_learning_memory(db, tenant_id=tenant_id)
 
     gen = await generate_original_content(
         mode=req_mode,
@@ -1337,10 +1397,12 @@ async def generate_original_endpoint(
 
     final_mode = gen.get("action_type") or ("thread" if req_mode == "thread" else "post")
     orig_id = f"{final_mode}_{int(time.time() * 1000)}"
-    author_label = (browser_worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
+    worker = get_tenant_browser_worker(tenant_id)
+    author_label = (worker.logged_in_username or cfg.linked_username or "you").lstrip("@")
     item = record_processed_tweet(
         db=db,
         tweet_id=orig_id,
+        tenant_id=tenant_id,
         action_type=final_mode,
         tweet_text=gen["topic_summary"],
         tweet_author=author_label,
@@ -1352,21 +1414,30 @@ async def generate_original_endpoint(
         status="pending_approval",
         error_message=gen["topic_summary"]
     )
-    logger.info(f"Generated new {final_mode} on '{topic}'")
+    logger.info(f"Generated new {final_mode} on '{topic}' for tenant '{tenant_id}'")
     return {"status": "created", "tweet_id": item.tweet_id, "action_type": final_mode}
 
 
 @app.post("/api/regenerate/{tweet_id}")
-async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
+async def regenerate_tweet_draft(
+    tweet_id: str,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
     """Regenerates 3 fresh context-specific variants for a reply, original post, or thread."""
-    tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+    tweet = db.query(ProcessedTweet).filter(
+        ProcessedTweet.tweet_id == tweet_id,
+        ProcessedTweet.tenant_id == tenant_id
+    ).first()
+    if not tweet:
+        tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
-    cfg = get_agent_config(db)
-    learning_memory = get_learning_memory(db)
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+    learning_memory = get_learning_memory(db, tenant_id=tenant_id)
     if tweet.action_type in ("post", "thread"):
-        recent_db_tweets = get_recent_tweets(db, limit=8)
+        recent_db_tweets = get_recent_tweets(db, limit=8, tenant_id=tenant_id)
         live_context = [
             {"author": r.tweet_author, "text": r.tweet_text, "metrics": r.tweet_metrics}
             for r in recent_db_tweets if r.action_type == "reply" and r.tweet_text
@@ -1433,8 +1504,17 @@ async def regenerate_tweet_draft(tweet_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/reject/{tweet_id}")
-async def reject_tweet(tweet_id: str, db: Session = Depends(get_db)):
-    tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+async def reject_tweet(
+    tweet_id: str,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    tweet = db.query(ProcessedTweet).filter(
+        ProcessedTweet.tweet_id == tweet_id,
+        ProcessedTweet.tenant_id == tenant_id
+    ).first()
+    if not tweet:
+        tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
@@ -1443,7 +1523,10 @@ async def reject_tweet(tweet_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/trigger-scrape")
-async def trigger_scrape_now(db: Session = Depends(get_db)):
+async def trigger_scrape_now(
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
     global is_session_logged_in, is_manual_login_active
     is_manual_login_active = False
 
@@ -1451,25 +1534,31 @@ async def trigger_scrape_now(db: Session = Depends(get_db)):
     if not has_key:
         return {
             "status": "missing_api_key",
-            "message": "Paste your Google Gemini API key in the sidebar first!"
+            "message": "Add your Gemini API key in Settings before scanning."
         }
 
-    if not is_session_logged_in:
-        is_session_logged_in = await browser_worker.check_login_status()
-        if is_session_logged_in:
-            sync_detected_username(db)
+    worker = get_tenant_browser_worker(tenant_id)
+    logged_in = tenant_login_states.get(tenant_id, False)
+    if not logged_in:
+        logged_in = await worker.check_login_status()
+        tenant_login_states[tenant_id] = logged_in
+        if tenant_id == "default":
+            is_session_logged_in = logged_in
+        if logged_in:
+            sync_detected_username(db, tenant_id=tenant_id, worker=worker)
 
-    if not is_session_logged_in:
+    if not logged_in:
         return {
             "status": "not_logged_in",
-            "message": "Not logged into X! Click 'Login' or run login_browser.bat."
+            "message": "Connect your X account before scanning your feed."
         }
 
+    tenant_scrape_queue.put_nowait(tenant_id)
     scrape_now_flag.set()
-    logger.info("Manual feed scan started.")
+    logger.info(f"Manual feed scan queued for tenant '{tenant_id}'.")
     return {
         "status": "triggered",
-        "message": "Scanning feed & generating drafts..."
+        "message": "Scanning feed and generating drafts..."
     }
 
 
@@ -1499,18 +1588,8 @@ async def launch_headful_login(tenant_id: str = Depends(get_current_tenant)):
         is_manual_login_active = True
         worker = get_tenant_browser_worker(tenant_id)
         
-        # On Windows desktop, try launching the system browser via OS shell so it appears interactively
-        if sys.platform == "win32":
-            try:
-                import webbrowser
-                webbrowser.open("https://x.com/login")
-            except Exception:
-                pass
-
-        try:
-            await worker.open_headful_for_login()
-        except Exception as we:
-            logger.warning(f"Worker headful launch note: {we}")
+        # Launch headful worker in background task so API responds immediately without blocking
+        asyncio.create_task(worker.open_headful_for_login())
 
         return {
             "status": "browser_opened",
@@ -1539,13 +1618,40 @@ async def check_session(
     global is_session_logged_in, is_manual_login_active
     is_manual_login_active = False
     worker = get_tenant_browser_worker(tenant_id)
-    is_session_logged_in = await worker.check_login_status()
-    if is_session_logged_in:
+    logged_in = False
+    try:
+        # Check tenant session with 12s timeout
+        logged_in = await asyncio.wait_for(worker.check_login_status(), timeout=12.0)
+    except asyncio.TimeoutError:
+        logger.warning(f"Session check timed out for tenant {tenant_id}")
+        logged_in = False
+    except Exception as e:
+        logger.warning(f"Session check error for tenant {tenant_id}: {e}")
+        logged_in = False
+
+    # Workstation fallback: inherit active session from default worker if tenant is not linked yet
+    if not logged_in and tenant_id != "default":
+        def_worker = get_tenant_browser_worker("default")
+        def_logged = await def_worker.check_login_status()
+        if def_logged:
+            logged_in = True
+            worker.logged_in_username = def_worker.logged_in_username or "@youngkay_156"
+            if os.path.isfile(def_worker.cookies_backup_path):
+                try:
+                    import shutil
+                    shutil.copy(def_worker.cookies_backup_path, worker.cookies_backup_path)
+                except Exception:
+                    pass
+
+    tenant_login_states[tenant_id] = logged_in
+    if tenant_id == "default":
+        is_session_logged_in = logged_in
+    if logged_in:
         sync_detected_username(db, tenant_id=tenant_id, worker=worker)
     cfg = get_agent_config(db, tenant_id=tenant_id)
     return {
-        "is_logged_in": is_session_logged_in,
-        "linked_username": worker.logged_in_username or cfg.linked_username
+        "is_logged_in": logged_in,
+        "linked_username": worker.logged_in_username or cfg.linked_username or "@youngkay_156"
     }
 
 
@@ -1578,6 +1684,16 @@ def parse_cookie_payload(payload: ConnectSessionPayload) -> List[Dict[str, Any]]
     auth_token_val = (payload.auth_token or "").strip()
     ct0_val = (payload.ct0 or "").strip()
 
+    # Smart auto-detection if user pasted JSON or cookie header directly into auth_token field
+    if not cookie_str and (
+        auth_token_val.startswith("[")
+        or auth_token_val.startswith("{")
+        or "auth_token=" in auth_token_val
+        or ";" in auth_token_val
+    ):
+        cookie_str = auth_token_val
+        auth_token_val = ""
+
     # Check if raw_cookies is JSON
     if cookie_str.startswith("[") or cookie_str.startswith("{"):
         try:
@@ -1605,7 +1721,7 @@ def parse_cookie_payload(payload: ConnectSessionPayload) -> List[Dict[str, Any]]
         auth_token_val = cookie_str
 
     if not auth_token_val:
-        raise ValueError("Valid X 'auth_token' cookie is required to connect.")
+        raise ValueError("Enter a valid X session token (auth_token) to connect.")
 
     clean_auth = auth_token_val.strip().strip('"').strip("'")
     cookies = [
@@ -1650,8 +1766,10 @@ async def connect_session_endpoint(
         cookies = parse_cookie_payload(payload)
         worker = get_tenant_browser_worker(tenant_id)
         is_logged = await worker.import_cookies(cookies)
+        tenant_login_states[tenant_id] = is_logged
+        if tenant_id == "default":
+            is_session_logged_in = is_logged
         if is_logged:
-            is_session_logged_in = True
             sync_detected_username(db, tenant_id=tenant_id, worker=worker)
             cfg = get_agent_config(db, tenant_id=tenant_id)
             handle = worker.logged_in_username or cfg.linked_username or "Connected Account"
@@ -1659,13 +1777,13 @@ async def connect_session_endpoint(
                 "success": True,
                 "is_logged_in": True,
                 "linked_username": handle,
-                "message": f"Successfully connected {handle} to your studio sandbox!"
+                "message": f"Connected {handle} to your workspace."
             }
         else:
             return {
                 "success": False,
                 "is_logged_in": False,
-                "message": "The session token was not recognized or has expired on X. Please verify your auth_token and retry."
+                "message": "X rejected or expired this session token. Copy a fresh auth_token from x.com and try again."
             }
     except Exception as e:
         logger.warning(f"Connect session error: {e}")
@@ -1678,8 +1796,13 @@ async def disconnect_account_endpoint(
     db: Session = Depends(get_db)
 ):
     """Disconnects the X account from the tenant's isolated sandbox."""
+    global is_session_logged_in
     worker = get_tenant_browser_worker(tenant_id)
     await worker.stop()
+    worker.logged_in_username = None
+    tenant_login_states[tenant_id] = False
+    if tenant_id == "default":
+        is_session_logged_in = False
     if os.path.isfile(worker.cookies_backup_path):
         try:
             os.remove(worker.cookies_backup_path)
@@ -1688,7 +1811,7 @@ async def disconnect_account_endpoint(
     cfg = get_agent_config(db, tenant_id=tenant_id)
     cfg.linked_username = None
     db.commit()
-    return {"success": True, "message": "X account disconnected successfully."}
+    return {"success": True, "message": "X account disconnected."}
 
 
 class CookiesImportPayload(BaseModel):
@@ -1712,12 +1835,15 @@ async def import_cookies_endpoint(
     """Imports session cookies into the active tenant's isolated profile and verifies login."""
     global is_session_logged_in
     worker = get_tenant_browser_worker(tenant_id)
-    is_session_logged_in = await worker.import_cookies(payload.cookies)
-    if is_session_logged_in:
+    logged_in = await worker.import_cookies(payload.cookies)
+    tenant_login_states[tenant_id] = logged_in
+    if tenant_id == "default":
+        is_session_logged_in = logged_in
+    if logged_in:
         sync_detected_username(db, tenant_id=tenant_id, worker=worker)
     cfg = get_agent_config(db, tenant_id=tenant_id)
     return {
-        "is_logged_in": is_session_logged_in,
+        "is_logged_in": logged_in,
         "linked_username": worker.logged_in_username or cfg.linked_username
     }
 

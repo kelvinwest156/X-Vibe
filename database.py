@@ -327,7 +327,10 @@ def get_daily_actions_count(db: Session, tenant_id: Optional[str] = None) -> int
         ProcessedTweet.timestamp >= today_start
     )
     if tenant_id:
-        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+        if tenant_id != "default":
+            q = q.filter(ProcessedTweet.tenant_id.in_([tenant_id, "default"]))
+        else:
+            q = q.filter(ProcessedTweet.tenant_id == tenant_id)
     return q.scalar() or 0
 
 
@@ -339,7 +342,10 @@ def get_hourly_actions_count(db: Session, tenant_id: Optional[str] = None) -> in
         ProcessedTweet.timestamp >= one_hour_ago
     )
     if tenant_id:
-        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+        if tenant_id != "default":
+            q = q.filter(ProcessedTweet.tenant_id.in_([tenant_id, "default"]))
+        else:
+            q = q.filter(ProcessedTweet.tenant_id == tenant_id)
     return q.scalar() or 0
 
 
@@ -363,14 +369,46 @@ def get_learning_memory(db: Session, limit_approved: int = 5, limit_skipped: int
         .filter(ProcessedTweet.status.in_(["posted", "scheduled"]))
         .filter(ProcessedTweet.generated_text.isnot(None))
     )
-    if tenant_id:
-        q_app = q_app.filter(ProcessedTweet.tenant_id == tenant_id)
-        q_skip = q_skip.filter(ProcessedTweet.tenant_id == tenant_id)
-        q_total = q_total.filter(ProcessedTweet.tenant_id == tenant_id)
 
-    approved_rows = q_app.order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc()).limit(limit_approved).all()
-    skipped_rows = q_skip.order_by(ProcessedTweet.timestamp.desc()).limit(limit_skipped).all()
-    total_learned = q_total.scalar() or 0
+    if tenant_id and tenant_id != "default":
+        approved_rows = (
+            q_app.filter(ProcessedTweet.tenant_id == tenant_id)
+            .order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc())
+            .limit(limit_approved)
+            .all()
+        )
+        if not approved_rows:
+            approved_rows = (
+                q_app.filter(ProcessedTweet.tenant_id == "default")
+                .order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc())
+                .limit(limit_approved)
+                .all()
+            )
+        skipped_rows = (
+            q_skip.filter(ProcessedTweet.tenant_id == tenant_id)
+            .order_by(ProcessedTweet.timestamp.desc())
+            .limit(limit_skipped)
+            .all()
+        )
+        if not skipped_rows:
+            skipped_rows = (
+                q_skip.filter(ProcessedTweet.tenant_id == "default")
+                .order_by(ProcessedTweet.timestamp.desc())
+                .limit(limit_skipped)
+                .all()
+            )
+        total_learned = q_total.filter(ProcessedTweet.tenant_id == tenant_id).scalar() or 0
+        if total_learned == 0:
+            total_learned = q_total.filter(ProcessedTweet.tenant_id == "default").scalar() or 0
+    else:
+        if tenant_id == "default":
+            q_app = q_app.filter(ProcessedTweet.tenant_id == "default")
+            q_skip = q_skip.filter(ProcessedTweet.tenant_id == "default")
+            q_total = q_total.filter(ProcessedTweet.tenant_id == "default")
+        approved_rows = q_app.order_by(ProcessedTweet.user_edited.desc(), ProcessedTweet.timestamp.desc()).limit(limit_approved).all()
+        skipped_rows = q_skip.order_by(ProcessedTweet.timestamp.desc()).limit(limit_skipped).all()
+        total_learned = q_total.scalar() or 0
+
     return {
         "approved": [
             {
@@ -414,7 +452,10 @@ def is_reply_too_similar(db: Session, candidate_text: str, tenant_id: Optional[s
         .filter(ProcessedTweet.generated_text.isnot(None))
     )
     if tenant_id:
-        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+        if tenant_id != "default":
+            q = q.filter(ProcessedTweet.tenant_id.in_([tenant_id, "default"]))
+        else:
+            q = q.filter(ProcessedTweet.tenant_id == tenant_id)
     recent_items = q.order_by(ProcessedTweet.timestamp.desc()).limit(20).all()
 
     for item in recent_items:
@@ -439,8 +480,18 @@ def is_reply_too_similar(db: Session, candidate_text: str, tenant_id: Optional[s
 def get_pending_tweets(db: Session, tenant_id: Optional[str] = None) -> List[ProcessedTweet]:
     """Retrieves all tweets waiting for manual approval OR scheduled in the queue."""
     q = db.query(ProcessedTweet).filter(ProcessedTweet.status.in_(["pending_approval", "scheduled"]))
-    if tenant_id:
-        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    if tenant_id and tenant_id != "default":
+        items = q.filter(ProcessedTweet.tenant_id == tenant_id).order_by(ProcessedTweet.timestamp.desc()).all()
+        default_items = q.filter(ProcessedTweet.tenant_id == "default").order_by(ProcessedTweet.timestamp.desc()).all()
+        if default_items:
+            seen_ids = {it.tweet_id for it in items}
+            for d_item in default_items:
+                if d_item.tweet_id not in seen_ids:
+                    items.append(d_item)
+            items.sort(key=lambda x: x.timestamp or datetime.min, reverse=True)
+        return items
+    elif tenant_id == "default":
+        return q.filter(ProcessedTweet.tenant_id == "default").order_by(ProcessedTweet.timestamp.desc()).all()
     return q.order_by(ProcessedTweet.timestamp.desc()).all()
 
 
@@ -459,16 +510,32 @@ def get_due_scheduled_tweets(db: Session, tenant_id: Optional[str] = None) -> Li
 def get_scheduled_count(db: Session, tenant_id: Optional[str] = None) -> int:
     """Counts how many tweets are currently queued for random future posting."""
     q = db.query(func.count(ProcessedTweet.tweet_id)).filter(ProcessedTweet.status == "scheduled")
-    if tenant_id:
-        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    if tenant_id and tenant_id != "default":
+        count = q.filter(ProcessedTweet.tenant_id == tenant_id).scalar() or 0
+        if count == 0:
+            count = q.filter(ProcessedTweet.tenant_id == "default").scalar() or 0
+        return count
+    elif tenant_id == "default":
+        return q.filter(ProcessedTweet.tenant_id == "default").scalar() or 0
     return q.scalar() or 0
 
 
 def get_recent_tweets(db: Session, limit: int = 50, tenant_id: Optional[str] = None) -> List[ProcessedTweet]:
     """Retrieves recent tweet interactions (posted, skipped, failed, pending, scheduled)."""
     q = db.query(ProcessedTweet)
-    if tenant_id:
-        q = q.filter(ProcessedTweet.tenant_id == tenant_id)
+    if tenant_id and tenant_id != "default":
+        items = q.filter(ProcessedTweet.tenant_id == tenant_id).order_by(ProcessedTweet.timestamp.desc()).limit(limit).all()
+        if len(items) < limit:
+            default_items = q.filter(ProcessedTweet.tenant_id == "default").order_by(ProcessedTweet.timestamp.desc()).limit(limit).all()
+            seen_ids = {it.tweet_id for it in items}
+            for d_item in default_items:
+                if d_item.tweet_id not in seen_ids:
+                    items.append(d_item)
+            items.sort(key=lambda x: x.timestamp or datetime.min, reverse=True)
+            return items[:limit]
+        return items
+    elif tenant_id == "default":
+        return q.filter(ProcessedTweet.tenant_id == "default").order_by(ProcessedTweet.timestamp.desc()).limit(limit).all()
     return q.order_by(ProcessedTweet.timestamp.desc()).limit(limit).all()
 
 

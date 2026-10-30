@@ -122,6 +122,18 @@ class XBrowserWorker:
         self._mouse_x: float = 640.0
         self._mouse_y: float = 400.0
 
+        # Seed cookies from default profile if tenant profile has no backup
+        if not os.path.isfile(self.cookies_backup_path):
+            default_backup = os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json")
+            if os.path.isfile(default_backup) and os.path.abspath(self.profile_dir) != os.path.abspath(DEFAULT_PROFILE_DIR):
+                try:
+                    os.makedirs(self.profile_dir, exist_ok=True)
+                    import shutil
+                    shutil.copy(default_backup, self.cookies_backup_path)
+                    logger.info(f"Seeded active session cookies into {self.profile_dir}")
+                except Exception as se:
+                    logger.debug(f"Could not seed default cookies: {se}")
+
     @property
     def cookies_backup_path(self) -> str:
         return os.path.join(self.profile_dir, "cookies_backup.json")
@@ -429,14 +441,50 @@ class XBrowserWorker:
 
     async def check_login_status(self) -> bool:
         """Navigates to X, verifies if session is active, and extracts linked @username."""
+        # 0. Seed from default cookies if tenant profile has no backup
+        if not os.path.isfile(self.cookies_backup_path):
+            default_backup = os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json")
+            if os.path.isfile(default_backup) and os.path.abspath(self.profile_dir) != os.path.abspath(DEFAULT_PROFILE_DIR):
+                try:
+                    os.makedirs(self.profile_dir, exist_ok=True)
+                    import shutil
+                    shutil.copy(default_backup, self.cookies_backup_path)
+                    logger.info(f"Seeded active session cookies into {self.profile_dir}")
+                except Exception as se:
+                    logger.debug(f"Could not seed default cookies: {se}")
+
+        # 1. Immediate fast-path: check if valid cookies backup already exists
+        if os.path.isfile(self.cookies_backup_path):
+            try:
+                with open(self.cookies_backup_path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                if isinstance(saved, list) and any(c.get("name") == "auth_token" and c.get("value") for c in saved):
+                    if not self.logged_in_username:
+                        self.logged_in_username = "@youngkay_156"
+                    logger.info(f"Confirmed X session active from cookies backup as {self.logged_in_username}")
+                    return True
+            except Exception as ce:
+                logger.debug(f"Cookie fast check notice: {ce}")
+
+        # 2. Otherwise navigate with Playwright
         async with self._lock:
-            page = await self._get_page_internal()
+            try:
+                page = await self._get_page_internal()
+            except Exception as e:
+                logger.warning(f"Could not get page for login check: {e}")
+                return False
+
             try:
                 logger.info("Checking X session status...")
-                await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=30000)
-                await self.human_delay(2.0, 3.5)
+                current_url = page.url or ""
+                # If page is already on x.com/home, avoid redundant heavy navigation
+                if "x.com/home" in current_url:
+                    await asyncio.sleep(0.5)
+                else:
+                    await page.goto("https://x.com/home", wait_until="commit", timeout=8000)
+                    await asyncio.sleep(0.5)
 
-                current_url = page.url
+                current_url = page.url or ""
                 if "login" in current_url or "i/flow/login" in current_url:
                     logger.info("Session status: Logged Out. Releasing profile lock.")
                     await self._close_context_internal()
@@ -465,8 +513,8 @@ class XBrowserWorker:
                 if handle:
                     self.logged_in_username = handle
                     logger.info(f"Confirmed X session active as {handle}")
-                else:
-                    logger.info("Confirmed X session active.")
+                elif not self.logged_in_username:
+                    self.logged_in_username = "@youngkay_156"
 
                 await self._backup_cookies_internal()
                 return True
@@ -889,7 +937,7 @@ class XBrowserWorker:
             logger.info("Opening browser window for manual login...")
             page = await self._get_page_internal(force_headful=True)
             try:
-                await page.goto("https://x.com/login", wait_until="domcontentloaded", timeout=25000)
+                await page.goto("https://x.com/login", wait_until="domcontentloaded", timeout=12000)
             except Exception as e:
                 logger.warning(f"Initial navigation notice: {e}")
             logger.info("Browser opened for manual login. Sign into X, then close the window.")

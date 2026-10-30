@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VibeBot",
-  description: "Autonomous X creator and engagement analytics",
+  title: "X-VibeBot — Autonomous X Growth & Drafting Studio",
+  description: "Monitor niche conversations, draft in your authentic voice, and publish from an isolated X workspace.",
 };
 
 export default function RootLayout({
