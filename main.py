@@ -886,20 +886,20 @@ async def get_status(tenant_id: str = Depends(get_current_tenant), db: Session =
     pending_items = get_pending_tweets(db, tenant_id=tenant_id)
     sched_count = get_scheduled_count(db, tenant_id=tenant_id)
     total_processed = db.query(ProcessedTweet).filter(ProcessedTweet.tenant_id == tenant_id).count()
-    if total_processed == 0 and tenant_id != "default":
-        total_processed = db.query(ProcessedTweet).filter(ProcessedTweet.tenant_id == "default").count()
     within_hours = is_within_active_hours(
         config.active_hours_start if config.active_hours_start is not None else 8,
         config.active_hours_end if config.active_hours_end is not None else 23
     )
 
-    has_saved_session = os.path.isfile(worker.cookies_backup_path) or os.path.isfile(os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json"))
+    has_saved_session = (
+        os.path.isfile(worker.cookies_backup_path)
+        and not os.path.isfile(os.path.join(worker.profile_dir, ".disconnected"))
+    )
     tenant_logged_in = (
-        tenant_login_states.get(tenant_id, is_session_logged_in if tenant_id == "default" else False)
+        tenant_login_states.get(tenant_id, False)
         or bool(worker.logged_in_username)
         or bool(config.linked_username)
-        or has_saved_session
-    )
+    ) and has_saved_session
 
     return AgentStatusResponse(
         is_active=config.is_active,
@@ -1080,13 +1080,6 @@ async def get_analytics_endpoint(
         .order_by(ProcessedTweet.timestamp.desc())
         .all()
     )
-    if not all_rows and tenant_id != "default":
-        all_rows = (
-            db.query(ProcessedTweet)
-            .filter(ProcessedTweet.tenant_id == "default")
-            .order_by(ProcessedTweet.timestamp.desc())
-            .all()
-        )
     cfg = get_agent_config(db, tenant_id=tenant_id)
 
     total = len(all_rows)

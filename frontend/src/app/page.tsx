@@ -15,7 +15,6 @@ import {
   Send,
   X,
   ExternalLink,
-  Cookie,
   Terminal,
   Feather,
   Layers,
@@ -179,9 +178,7 @@ export default function HomePage() {
   const [scanning, setScanning] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
-  const [cookieOpen, setCookieOpen] = useState(false);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
-  const [cookieJson, setCookieJson] = useState("");
   const [histFilter, setHistFilter] = useState("all");
   const [ready, setReady] = useState(false);
   const [histReady, setHistReady] = useState(false);
@@ -270,6 +267,14 @@ export default function HomePage() {
       if (session?.user && session.access_token) {
         const u = session.user;
         const name = u.user_metadata?.name || u.email?.split("@")[0] || "Creator";
+        setPending([]);
+        setDrafts({});
+        setHistory([]);
+        setAnalytics(null);
+        setConfig(null);
+        setStatus(null);
+        setReady(false);
+        setHistReady(false);
         setTenantId(u.id);
         setAuthToken(session.access_token);
         setUserProfile({ email: u.email, name, uid: u.id });
@@ -334,7 +339,13 @@ export default function HomePage() {
     setUserProfile(null);
     setTenantId("default");
     setStatus(null);
+    setConfig(null);
+    setPending([]);
+    setDrafts({});
+    setHistory([]);
+    setAnalytics(null);
     setReady(false);
+    setHistReady(false);
     setOnboardingBypassed(false);
     setAwaitingOnboardingConfirm(false);
     notify("Signed out of workspace.");
@@ -718,52 +729,6 @@ export default function HomePage() {
     }
   };
 
-  const exportCookies = async () => {
-    setBusy((p) => ({ ...p, cexp: true }));
-    try {
-      const res = await apiFetch("/api/browser/cookies");
-      if (res.ok) {
-        const d = await res.json();
-        setCookieJson(JSON.stringify(d.cookies || [], null, 2));
-        notify(`Exported ${d.count || 0} cookies`);
-      } else {
-        const errMsg = await extractApiError(res, "Failed to export cookies");
-        notify(errMsg, true);
-      }
-    } catch (err: any) {
-      notify(err?.message || "Cookie export failed", true);
-    } finally {
-      setBusy((p) => ({ ...p, cexp: false }));
-    }
-  };
-
-  const importCookies = async () => {
-    setBusy((p) => ({ ...p, cimp: true }));
-    try {
-      const parsedCookies = JSON.parse(cookieJson.trim());
-      const res = await apiFetch("/api/browser/cookies", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cookies: parsedCookies }),
-      });
-      if (res.ok) {
-        const d = await res.json();
-        if (d.is_logged_in) {
-          notify(`Connected as ${d.linked_username || "your account"}`);
-          setCookieOpen(false);
-          refresh();
-        } else notify("Imported, but the session is not signed in", true);
-      } else {
-        const errMsg = await extractApiError(res, "Failed to import cookies");
-        notify(errMsg, true);
-      }
-    } catch (err: any) {
-      notify(err?.message?.includes("JSON") ? "Invalid cookie JSON format" : (err?.message || "Failed to import cookies"), true);
-    } finally {
-      setBusy((p) => ({ ...p, cimp: false }));
-    }
-  };
-
   const schedLabel = (iso?: string | null) => {
     if (!iso) return "";
     const dt = new Date(iso.endsWith("Z") ? iso : iso + "Z");
@@ -794,6 +759,12 @@ export default function HomePage() {
         onToggleTheme={toggleTheme}
         onAuthenticated={(user, token) => {
           const tId = user.tenant_id || user.uid || "default";
+          setPending([]);
+          setDrafts({});
+          setHistory([]);
+          setAnalytics(null);
+          setConfig(null);
+          setHistReady(false);
           setReady(false);
           setStatus(null);
           setOnboardingBypassed(false);
@@ -981,15 +952,6 @@ export default function HomePage() {
                 <span>{busy.login ? "Connecting..." : "Connect X Account"}</span>
               </button>
             )}
-
-            {/* Session cookies modal trigger */}
-            <button
-              onClick={() => setCookieOpen(true)}
-              className="btn btn-quiet !h-8 !w-8 !p-0 hidden md:inline-flex"
-              title="Session cookies"
-            >
-              <Cookie className="w-4 h-4" />
-            </button>
 
             {/* Scan feed */}
             <button
@@ -2010,64 +1972,6 @@ export default function HomePage() {
         })}
       </nav>
 
-      {/* Session Cookies Dialog */}
-      <AnimatePresence>
-        {cookieOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs grid place-items-center p-4"
-            onClick={() => setCookieOpen(false)}
-          >
-            <motion.div
-              initial={{ y: 8, scale: 0.98 }}
-              animate={{ y: 0, scale: 1 }}
-              exit={{ y: 8, scale: 0.98 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white dark:bg-[#181818] rounded-2xl w-full max-w-lg p-5 sm:p-6 space-y-4 shadow-dropdown border border-slate-200 dark:border-[#262626]"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Cookie className="w-4 h-4 text-slate-700 dark:text-[#D4D4D4]" />
-                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Session Cookie Sync</h3>
-                </div>
-                <button
-                  onClick={() => setCookieOpen(false)}
-                  className="text-slate-400 hover:text-slate-700 dark:hover:text-[#F3F3F3] transition-colors"
-                  aria-label="Close dialog"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-relaxed">
-                Export your active X session cookies to transfer your logged-in session to cloud deployments (like Render or Docker) without re-authenticating.
-              </p>
-              <textarea
-                rows={8}
-                className="field font-mono text-[11px]"
-                value={cookieJson}
-                onChange={(e) => setCookieJson(e.target.value)}
-                placeholder='[{"name": "auth_token", "value": "..."}, ...]'
-              />
-              <div className="flex justify-end gap-2.5">
-                <button onClick={exportCookies} disabled={busy.cexp} className="btn text-xs">
-                  {busy.cexp && <Spin />}
-                  <span>Export Local Session</span>
-                </button>
-                <button
-                  onClick={importCookies}
-                  disabled={busy.cimp}
-                  className="btn btn-primary text-xs"
-                >
-                  {busy.cimp && <Spin />}
-                  <span>{busy.cimp ? "Verifying..." : "Import & Sync"}</span>
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       {/* Connect Account Modal */}
       <ConnectAccountModal
         isOpen={connectModalOpen}
