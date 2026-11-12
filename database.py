@@ -20,15 +20,27 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from models import Base, ProcessedTweet, AgentConfig, User
 
-AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "x-vibebot-creator-studio-secret-key-salt-2026")
+AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY")
+if not AUTH_SECRET_KEY:
+    if os.getenv("ENVIRONMENT") == "production":
+        raise RuntimeError("FATAL: AUTH_SECRET_KEY environment variable MUST be explicitly set in production mode.")
+    AUTH_SECRET_KEY = "x-vibebot-creator-studio-secret-key-salt-2026"
 
 DB_FILE = os.getenv("DATABASE_URL", "sqlite:///./vibebot.db")
+if DB_FILE.startswith("postgres://"):
+    DB_FILE = DB_FILE.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(
-    DB_FILE,
-    connect_args={"check_same_thread": False} if "sqlite" in DB_FILE else {},
-    echo=False
-)
+engine_kwargs: Dict[str, Any] = {"echo": False}
+if "sqlite" in DB_FILE:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Production connection pool for Supabase / PostgreSQL
+    engine_kwargs["pool_pre_ping"] = True
+    engine_kwargs["pool_recycle"] = 300
+    engine_kwargs["pool_size"] = int(os.getenv("DB_POOL_SIZE", "10"))
+    engine_kwargs["max_overflow"] = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+
+engine = create_engine(DB_FILE, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -37,43 +49,53 @@ def init_db():
     """Initializes database tables, auto-migrates new columns, and seeds default AgentConfig."""
     Base.metadata.create_all(bind=engine)
 
-    with engine.connect() as conn:
-        try:
-            cfg_cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(agent_config)").fetchall()]
-            migrations_cfg = [
-                ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
-                ("selected_model", "VARCHAR(64) DEFAULT 'gemini-3.8-flash'"),
-                ("max_cooldown_minutes", "INTEGER DEFAULT 45"),
-                ("active_hours_start", "INTEGER DEFAULT 8"),
-                ("active_hours_end", "INTEGER DEFAULT 23"),
-                ("persona_prompt", "TEXT DEFAULT 'Casual, sharp, dry humor, short sentences, no corporate buzzwords'"),
-                ("linked_username", "VARCHAR(128)"),
-                ("hourly_action_cap", "INTEGER DEFAULT 6"),
-                ("smart_query_enabled", "BOOLEAN DEFAULT 1"),
-                ("warmup_mode", "BOOLEAN DEFAULT 0"),
-            ]
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    if "agent_config" in existing_tables:
+        cfg_cols = [c["name"] for c in inspector.get_columns("agent_config")]
+        migrations_cfg = [
+            ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
+            ("selected_model", "VARCHAR(64) DEFAULT 'gemini-3.8-flash'"),
+            ("max_cooldown_minutes", "INTEGER DEFAULT 45"),
+            ("active_hours_start", "INTEGER DEFAULT 8"),
+            ("active_hours_end", "INTEGER DEFAULT 23"),
+            ("persona_prompt", "TEXT DEFAULT 'Casual, sharp, dry humor, short sentences, no corporate buzzwords'"),
+            ("linked_username", "VARCHAR(128)"),
+            ("hourly_action_cap", "INTEGER DEFAULT 6"),
+            ("smart_query_enabled", "BOOLEAN DEFAULT 1" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT true"),
+            ("warmup_mode", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
+        ]
+        with engine.connect() as conn:
             for col_name, col_def in migrations_cfg:
                 if col_name not in cfg_cols:
-                    conn.exec_driver_sql(f"ALTER TABLE agent_config ADD COLUMN {col_name} {col_def}")
-                    conn.commit()
+                    try:
+                        conn.exec_driver_sql(f"ALTER TABLE agent_config ADD COLUMN {col_name} {col_def}")
+                        conn.commit()
+                    except Exception:
+                        pass
 
-            tweet_cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(processed_tweets)").fetchall()]
-            migrations_tweet = [
-                ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
-                ("variants_json", "TEXT"),
-                ("tweet_metrics", "VARCHAR(128)"),
-                ("scheduled_for", "DATETIME"),
-                ("media_url", "VARCHAR(512)"),
-                ("should_like", "BOOLEAN DEFAULT 0"),
-                ("urgency_score", "INTEGER DEFAULT 5"),
-                ("user_edited", "BOOLEAN DEFAULT 0"),
-            ]
+    if "processed_tweets" in existing_tables:
+        tweet_cols = [c["name"] for c in inspector.get_columns("processed_tweets")]
+        migrations_tweet = [
+            ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
+            ("variants_json", "TEXT"),
+            ("tweet_metrics", "VARCHAR(128)"),
+            ("scheduled_for", "TIMESTAMP" if "postgres" in DB_FILE else "DATETIME"),
+            ("media_url", "VARCHAR(512)"),
+            ("should_like", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
+            ("urgency_score", "INTEGER DEFAULT 5"),
+            ("user_edited", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
+        ]
+        with engine.connect() as conn:
             for col_name, col_def in migrations_tweet:
                 if col_name not in tweet_cols:
-                    conn.exec_driver_sql(f"ALTER TABLE processed_tweets ADD COLUMN {col_name} {col_def}")
-                    conn.commit()
-        except Exception:
-            pass
+                    try:
+                        conn.exec_driver_sql(f"ALTER TABLE processed_tweets ADD COLUMN {col_name} {col_def}")
+                        conn.commit()
+                    except Exception:
+                        pass
 
     db = SessionLocal()
     try:
@@ -294,11 +316,17 @@ def update_tweet_status(
     variants_json: Optional[str] = None,
     scheduled_for: Optional[datetime] = None,
     user_edited: Optional[bool] = None,
-    should_like: Optional[bool] = None
+    should_like: Optional[bool] = None,
+    tenant_id: Optional[str] = None
 ) -> Optional[ProcessedTweet]:
-    """Updates the status and optional text/error/schedule of an existing tweet record."""
-    item = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
+    """Updates the status and optional text/error/schedule of an existing tweet record with tenant isolation."""
+    q = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id)
+    if tenant_id and tenant_id != "default":
+        q = q.filter(ProcessedTweet.tenant_id.in_([tenant_id, "default"]))
+    item = q.first()
     if item:
+        if tenant_id and tenant_id != "default" and item.tenant_id == "default":
+            item.tenant_id = tenant_id
         item.status = status
         if generated_text is not None:
             item.generated_text = generated_text

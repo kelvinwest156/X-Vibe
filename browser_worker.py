@@ -103,10 +103,17 @@ def kill_profile_browser_processes(profile_dir: str):
 
 
 class XBrowserWorker:
-    def __init__(self, profile_dir: str = DEFAULT_PROFILE_DIR, headless: bool = False, executable_path: Optional[str] = None):
+    def __init__(
+        self,
+        profile_dir: str = DEFAULT_PROFILE_DIR,
+        headless: bool = False,
+        executable_path: Optional[str] = None,
+        proxy_url: Optional[str] = None,
+    ):
         self.profile_dir = profile_dir
         self.headless = headless
         self.executable_path = executable_path or get_default_chromium_path()
+        self.proxy_url = proxy_url
         self.browser_name = (
             "Brave" if "brave" in (self.executable_path or "").lower()
             else ("Chrome" if "chrome" in (self.executable_path or "").lower()
@@ -122,17 +129,8 @@ class XBrowserWorker:
         self._mouse_x: float = 640.0
         self._mouse_y: float = 400.0
 
-        # Seed cookies from default profile if tenant profile has no backup
-        if not os.path.isfile(self.cookies_backup_path):
-            default_backup = os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json")
-            if os.path.isfile(default_backup) and os.path.abspath(self.profile_dir) != os.path.abspath(DEFAULT_PROFILE_DIR):
-                try:
-                    os.makedirs(self.profile_dir, exist_ok=True)
-                    import shutil
-                    shutil.copy(default_backup, self.cookies_backup_path)
-                    logger.info(f"Seeded active session cookies into {self.profile_dir}")
-                except Exception as se:
-                    logger.debug(f"Could not seed default cookies: {se}")
+        # Ensure tenant profile directory exists
+        os.makedirs(self.profile_dir, exist_ok=True)
 
     @property
     def cookies_backup_path(self) -> str:
@@ -197,6 +195,20 @@ class XBrowserWorker:
         }
         if self.executable_path:
             launch_kwargs["executable_path"] = self.executable_path
+
+        # Cloud Residential Proxy Support
+        proxy_server = getattr(self, "proxy_url", None) or os.getenv("PROXY_SERVER")
+        if proxy_server and proxy_server.strip():
+            p_server = proxy_server.strip()
+            proxy_dict = {"server": p_server}
+            p_user = os.getenv("PROXY_USERNAME")
+            p_pass = os.getenv("PROXY_PASSWORD")
+            if p_user and p_pass:
+                proxy_dict["username"] = p_user.strip()
+                proxy_dict["password"] = p_pass.strip()
+            launch_kwargs["proxy"] = proxy_dict
+            clean_host = p_server.split("@")[-1]
+            logger.info(f"Playwright routing through residential proxy: {clean_host}")
 
         try:
             self._context = await self._playwright.chromium.launch_persistent_context(**launch_kwargs)
@@ -269,6 +281,29 @@ class XBrowserWorker:
     async def stop(self):
         async with self._lock:
             await self._close_context_internal()
+
+    async def disconnect(self):
+        """Disconnects the session, clears credentials, and sets the disconnected marker."""
+        await self.stop()
+        self.logged_in_username = None
+        if os.path.isfile(self.cookies_backup_path):
+            try:
+                os.remove(self.cookies_backup_path)
+            except Exception:
+                pass
+        meta_path = os.path.join(self.profile_dir, "session_metadata.json")
+        if os.path.isfile(meta_path):
+            try:
+                os.remove(meta_path)
+            except Exception:
+                pass
+        marker_path = os.path.join(self.profile_dir, ".disconnected")
+        try:
+            os.makedirs(self.profile_dir, exist_ok=True)
+            with open(marker_path, "w", encoding="utf-8") as f:
+                f.write("disconnected")
+        except Exception:
+            pass
 
     async def human_delay(self, min_sec: float = 2.5, max_sec: float = 6.0):
         """Randomized human-like pause."""
@@ -397,7 +432,7 @@ class XBrowserWorker:
         return None
 
     async def _backup_cookies_internal(self):
-        """Saves current context cookies to cookies_backup.json."""
+        """Saves current context cookies to cookies_backup.json and caches linked username metadata."""
         if not self._context:
             return
         try:
@@ -406,6 +441,10 @@ class XBrowserWorker:
                 os.makedirs(self.profile_dir, exist_ok=True)
                 with open(self.cookies_backup_path, "w", encoding="utf-8") as f:
                     json.dump(cookies, f, indent=2)
+                if self.logged_in_username:
+                    meta_path = os.path.join(self.profile_dir, "session_metadata.json")
+                    with open(meta_path, "w", encoding="utf-8") as mf:
+                        json.dump({"linked_username": self.logged_in_username, "updated_at": time.time()}, mf, indent=2)
         except Exception as e:
             logger.debug(f"Cookie backup notice: {e}")
 
@@ -428,6 +467,12 @@ class XBrowserWorker:
 
     async def import_cookies(self, cookies: List[Dict[str, Any]]) -> bool:
         """Imports X session cookies into the profile (ideal for Render cloud deployment)."""
+        marker_path = os.path.join(self.profile_dir, ".disconnected")
+        if os.path.isfile(marker_path):
+            try:
+                os.remove(marker_path)
+            except Exception:
+                pass
         os.makedirs(self.profile_dir, exist_ok=True)
         with open(self.cookies_backup_path, "w", encoding="utf-8") as f:
             json.dump(cookies, f, indent=2)
@@ -441,17 +486,14 @@ class XBrowserWorker:
 
     async def check_login_status(self) -> bool:
         """Navigates to X, verifies if session is active, and extracts linked @username."""
-        # 0. Seed from default cookies if tenant profile has no backup
+        # 0. Check for explicit disconnect marker
+        disconnected_marker = os.path.join(self.profile_dir, ".disconnected")
+        if os.path.isfile(disconnected_marker):
+            return False
+
+        # If tenant has no cookies backup, session is not logged in
         if not os.path.isfile(self.cookies_backup_path):
-            default_backup = os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json")
-            if os.path.isfile(default_backup) and os.path.abspath(self.profile_dir) != os.path.abspath(DEFAULT_PROFILE_DIR):
-                try:
-                    os.makedirs(self.profile_dir, exist_ok=True)
-                    import shutil
-                    shutil.copy(default_backup, self.cookies_backup_path)
-                    logger.info(f"Seeded active session cookies into {self.profile_dir}")
-                except Exception as se:
-                    logger.debug(f"Could not seed default cookies: {se}")
+            return False
 
         # 1. Immediate fast-path: check if valid cookies backup already exists
         if os.path.isfile(self.cookies_backup_path):
@@ -460,8 +502,15 @@ class XBrowserWorker:
                     saved = json.load(f)
                 if isinstance(saved, list) and any(c.get("name") == "auth_token" and c.get("value") for c in saved):
                     if not self.logged_in_username:
-                        self.logged_in_username = "@youngkay_156"
-                    logger.info(f"Confirmed X session active from cookies backup as {self.logged_in_username}")
+                        meta_file = os.path.join(self.profile_dir, "session_metadata.json")
+                        if os.path.isfile(meta_file):
+                            try:
+                                with open(meta_file, "r", encoding="utf-8") as mf:
+                                    meta = json.load(mf)
+                                    self.logged_in_username = meta.get("linked_username")
+                            except Exception:
+                                pass
+                    logger.info(f"Confirmed X session active from cookies backup as {self.logged_in_username or 'authenticated'}")
                     return True
             except Exception as ce:
                 logger.debug(f"Cookie fast check notice: {ce}")
@@ -513,8 +562,6 @@ class XBrowserWorker:
                 if handle:
                     self.logged_in_username = handle
                     logger.info(f"Confirmed X session active as {handle}")
-                elif not self.logged_in_username:
-                    self.logged_in_username = "@youngkay_156"
 
                 await self._backup_cookies_internal()
                 return True
@@ -932,6 +979,12 @@ class XBrowserWorker:
 
     async def open_headful_for_login(self):
         """Closes any existing session and opens a visible browser window to x.com/login."""
+        marker_path = os.path.join(self.profile_dir, ".disconnected")
+        if os.path.isfile(marker_path):
+            try:
+                os.remove(marker_path)
+            except Exception:
+                pass
         async with self._lock:
             await self._close_context_internal()
             logger.info("Opening browser window for manual login...")

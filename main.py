@@ -263,7 +263,10 @@ async def scheduled_queue_dispatcher_loop():
                             config.active_hours_end or 23
                         )
                         if not within_hours:
+                            resched = datetime.utcnow() + timedelta(minutes=30)
+                            update_tweet_status(db, target.tweet_id, status="scheduled", scheduled_for=resched, tenant_id=target_tenant)
                             continue
+
                         warmup = bool(getattr(config, "warmup_mode", False))
                         daily_used = get_daily_actions_count(db, tenant_id=target_tenant)
                         daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
@@ -271,12 +274,15 @@ async def scheduled_queue_dispatcher_loop():
                         hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
                         min_cd = config.min_cooldown_minutes or 10
                         max_cd = config.max_cooldown_minutes or 45
+
+                        if daily_used >= daily_cap or hourly_used >= hourly_cap:
+                            logger.info(f"Target tenant '{target_tenant}' cap reached ({daily_used}/{daily_cap} daily, {hourly_used}/{hourly_cap} hourly). Postponing scheduled item.")
+                            postpone_mins = 240 if daily_used >= daily_cap else 25
+                            resched = datetime.utcnow() + timedelta(minutes=postpone_mins)
+                            update_tweet_status(db, target.tweet_id, status="scheduled", scheduled_for=resched, tenant_id=target_tenant)
+                            continue
                     finally:
                         db.close()
-
-                    if daily_used >= daily_cap or hourly_used >= hourly_cap:
-                        logger.info(f"Target tenant '{target_tenant}' cap reached ({daily_used}/{daily_cap} daily, {hourly_used}/{hourly_cap} hourly). Postponing scheduled item.")
-                        continue
 
                     act_type = target.action_type or "reply"
                     logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}) [tenant={target_tenant}]. Publishing now (hourly {hourly_used + 1}/{hourly_cap})...")
@@ -293,7 +299,7 @@ async def scheduled_queue_dispatcher_loop():
                         sync_detected_username(db, tenant_id=target_tenant, worker=worker)
                         if success:
                             set_new_random_cooldown(min_cd, max_cd)
-                            update_tweet_status(db, target.tweet_id, status="posted")
+                            update_tweet_status(db, target.tweet_id, status="posted", tenant_id=target_tenant)
                             logger.info(f"Successfully published scheduled {act_type} ({target.tweet_id}) for tenant '{target_tenant}'!")
                         else:
                             err_msg = getattr(worker, "last_error", None) or f"Browser failed while publishing scheduled {act_type}"
@@ -301,7 +307,8 @@ async def scheduled_queue_dispatcher_loop():
                                 db,
                                 target.tweet_id,
                                 status="failed",
-                                error_message=err_msg
+                                error_message=err_msg,
+                                tenant_id=target_tenant
                             )
                     finally:
                         db.close()
@@ -1254,10 +1261,8 @@ async def approve_tweet(
     """
     tweet = db.query(ProcessedTweet).filter(
         ProcessedTweet.tweet_id == tweet_id,
-        ProcessedTweet.tenant_id == tenant_id
+        ProcessedTweet.tenant_id.in_([tenant_id, "default"])
     ).first()
-    if not tweet:
-        tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
@@ -1291,7 +1296,8 @@ async def approve_tweet(
             generated_text=text_to_post,
             scheduled_for=sched_utc,
             user_edited=was_user_edited,
-            should_like=effective_like
+            should_like=effective_like,
+            tenant_id=tenant_id
         )
         mins_away = max(1, int((sched_utc - datetime.utcnow()).total_seconds() // 60))
         logger.info(f"Scheduled reply to @{tweet.tweet_author} for random time (~{mins_away}m from now, edited={was_user_edited}).")
@@ -1333,7 +1339,8 @@ async def approve_tweet(
             status="posted",
             generated_text=text_to_post,
             user_edited=was_user_edited,
-            should_like=effective_like
+            should_like=effective_like,
+            tenant_id=tenant_id
         )
         logger.info(f"Successfully published {act_type} ({tweet_id})!")
         return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
@@ -1344,7 +1351,8 @@ async def approve_tweet(
             tweet_id,
             status="failed",
             generated_text=text_to_post,
-            error_message=err_msg
+            error_message=err_msg,
+            tenant_id=tenant_id
         )
         raise HTTPException(status_code=500, detail=f"Failed to publish {act_type}: {err_msg}")
 
@@ -1427,10 +1435,8 @@ async def regenerate_tweet_draft(
     """Regenerates 3 fresh context-specific variants for a reply, original post, or thread."""
     tweet = db.query(ProcessedTweet).filter(
         ProcessedTweet.tweet_id == tweet_id,
-        ProcessedTweet.tenant_id == tenant_id
+        ProcessedTweet.tenant_id.in_([tenant_id, "default"])
     ).first()
-    if not tweet:
-        tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
@@ -1462,8 +1468,11 @@ async def regenerate_tweet_draft(
             status="pending_approval",
             generated_text=gen["text"],
             variants_json=gen.get("variants_json"),
-            error_message=gen.get("topic_summary")
+            error_message=gen.get("topic_summary"),
+            tenant_id=tenant_id
         )
+        if not updated:
+            raise HTTPException(status_code=500, detail="Failed to update tweet record")
         return {
             "tweet_id": tweet_id,
             "generated_text": updated.generated_text,
@@ -1493,8 +1502,11 @@ async def regenerate_tweet_draft(
         status="pending_approval",
         generated_text=ai_result["reply_text"],
         variants_json=ai_result.get("variants_json"),
-        error_message=ai_result.get("reasoning")
+        error_message=ai_result.get("reasoning"),
+        tenant_id=tenant_id
     )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update tweet record")
     logger.info(f"Regenerated fresh variants for @{tweet.tweet_author}")
     return {
         "tweet_id": tweet_id,
@@ -1511,14 +1523,12 @@ async def reject_tweet(
 ):
     tweet = db.query(ProcessedTweet).filter(
         ProcessedTweet.tweet_id == tweet_id,
-        ProcessedTweet.tenant_id == tenant_id
+        ProcessedTweet.tenant_id.in_([tenant_id, "default"])
     ).first()
-    if not tweet:
-        tweet = db.query(ProcessedTweet).filter(ProcessedTweet.tweet_id == tweet_id).first()
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
-    update_tweet_status(db, tweet_id, status="skipped", error_message="Skipped by user")
+    update_tweet_status(db, tweet_id, status="skipped", error_message="Skipped by user", tenant_id=tenant_id)
     return {"status": "skipped", "tweet_id": tweet_id}
 
 
@@ -1588,6 +1598,14 @@ async def launch_headful_login(tenant_id: str = Depends(get_current_tenant)):
         is_manual_login_active = True
         worker = get_tenant_browser_worker(tenant_id)
         
+        # Remove disconnect marker so new login can be established
+        marker_path = os.path.join(worker.profile_dir, ".disconnected")
+        if os.path.isfile(marker_path):
+            try:
+                os.remove(marker_path)
+            except Exception:
+                pass
+
         # Launch headful worker in background task so API responds immediately without blocking
         asyncio.create_task(worker.open_headful_for_login())
 
@@ -1629,20 +1647,6 @@ async def check_session(
         logger.warning(f"Session check error for tenant {tenant_id}: {e}")
         logged_in = False
 
-    # Workstation fallback: inherit active session from default worker if tenant is not linked yet
-    if not logged_in and tenant_id != "default":
-        def_worker = get_tenant_browser_worker("default")
-        def_logged = await def_worker.check_login_status()
-        if def_logged:
-            logged_in = True
-            worker.logged_in_username = def_worker.logged_in_username or "@youngkay_156"
-            if os.path.isfile(def_worker.cookies_backup_path):
-                try:
-                    import shutil
-                    shutil.copy(def_worker.cookies_backup_path, worker.cookies_backup_path)
-                except Exception:
-                    pass
-
     tenant_login_states[tenant_id] = logged_in
     if tenant_id == "default":
         is_session_logged_in = logged_in
@@ -1651,7 +1655,7 @@ async def check_session(
     cfg = get_agent_config(db, tenant_id=tenant_id)
     return {
         "is_logged_in": logged_in,
-        "linked_username": worker.logged_in_username or cfg.linked_username or "@youngkay_156"
+        "linked_username": worker.logged_in_username or cfg.linked_username or None
     }
 
 
@@ -1798,16 +1802,10 @@ async def disconnect_account_endpoint(
     """Disconnects the X account from the tenant's isolated sandbox."""
     global is_session_logged_in
     worker = get_tenant_browser_worker(tenant_id)
-    await worker.stop()
-    worker.logged_in_username = None
+    await worker.disconnect()
     tenant_login_states[tenant_id] = False
     if tenant_id == "default":
         is_session_logged_in = False
-    if os.path.isfile(worker.cookies_backup_path):
-        try:
-            os.remove(worker.cookies_backup_path)
-        except Exception:
-            pass
     cfg = get_agent_config(db, tenant_id=tenant_id)
     cfg.linked_username = None
     db.commit()

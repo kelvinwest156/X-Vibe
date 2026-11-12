@@ -27,6 +27,7 @@ __pycache__/
 env/
 venv/
 .venv/
+scratch/
 
 # IDE & OS
 .vscode/

@@ -15,6 +15,14 @@ services:
         value: /data/x_browser_profile
       - key: DATABASE_URL
         value: sqlite:////data/vibebot.db
+      - key: AUTH_SECRET_KEY
+        generateValue: true
+      - key: PROXY_SERVER
+        sync: false
+      - key: PROXY_USERNAME
+        sync: false
+      - key: PROXY_PASSWORD
+        sync: false
       - key: PORT
         value: "8000"
     disk:
