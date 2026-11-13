@@ -87,6 +87,7 @@ def init_db():
             ("should_like", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
             ("urgency_score", "INTEGER DEFAULT 5"),
             ("user_edited", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
+            ("timestamp", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()" if "postgres" in DB_FILE else "DATETIME"),
         ]
         with engine.connect() as conn:
             for col_name, col_def in migrations_tweet:

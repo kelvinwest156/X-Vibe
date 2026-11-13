@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import AnalyticsView, { AnalyticsData } from "@/components/AnalyticsView";
 import AuthView from "@/components/AuthView";
+import LandingView from "@/components/LandingView";
 import ConnectAccountModal from "@/components/ConnectAccountModal";
 import OnboardingConnectView from "@/components/OnboardingConnectView";
 import { isSupabaseConfigured, subscribeToAuth, signOutUser } from "@/lib/supabase";
@@ -192,6 +193,8 @@ export default function HomePage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authToken, setAuthToken] = useState<string>("");
   const [authInitialized, setAuthInitialized] = useState<boolean>(false);
+  const [unauthedView, setUnauthedView] = useState<"landing" | "auth">("landing");
+  const [authInitialMode, setAuthInitialMode] = useState<"signin" | "signup">("signup");
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -348,6 +351,7 @@ export default function HomePage() {
     setHistReady(false);
     setOnboardingBypassed(false);
     setAwaitingOnboardingConfirm(false);
+    setUnauthedView("landing");
     notify("Signed out of workspace.");
   }, [notify]);
 
@@ -751,12 +755,27 @@ export default function HomePage() {
     );
   }
 
-  // Step 1: Workspace Authentication (Sign In / Create Account)
+  // Unauthenticated experience: Landing Page with interactive demo or AuthView
   if (!isUserAuthenticated) {
+    if (unauthedView === "landing") {
+      return (
+        <LandingView
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onLaunchStudio={(initialMode = "signup") => {
+            setAuthInitialMode(initialMode);
+            setUnauthedView("auth");
+          }}
+        />
+      );
+    }
+
     return (
       <AuthView
         theme={theme}
         onToggleTheme={toggleTheme}
+        initialMode={authInitialMode}
+        onBack={() => setUnauthedView("landing")}
         onAuthenticated={(user, token) => {
           const tId = user.tenant_id || user.uid || "default";
           setPending([]);

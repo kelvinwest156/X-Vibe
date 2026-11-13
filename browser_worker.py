@@ -256,6 +256,10 @@ class XBrowserWorker:
         await self._apply_stealth(page)
         return page
 
+    async def get_active_page(self, force_headful: bool = False) -> Page:
+        """Public helper to retrieve or create the active stealth page."""
+        return await self._get_page_internal(force_headful=force_headful)
+
     async def _close_context_internal(self):
         """Internal helper to close context and playwright without re-locking."""
         if self._context:
@@ -491,11 +495,22 @@ class XBrowserWorker:
         if os.path.isfile(disconnected_marker):
             return False
 
-        # If tenant has no cookies backup, session is not logged in
-        if not os.path.isfile(self.cookies_backup_path):
-            return False
+        # 1. Live Context Check (if browser window is currently open from manual login)
+        try:
+            if self._context:
+                active_cookies = await self._context.cookies()
+                if any(c.get("name") == "auth_token" and c.get("value") for c in active_cookies if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")):
+                    if self._context.pages:
+                        handle = await self._extract_logged_in_handle(self._context.pages[0])
+                        if handle:
+                            self.logged_in_username = handle
+                    await self._backup_cookies_internal()
+                    logger.info(f"Confirmed X session active from live open browser as {self.logged_in_username or 'authenticated'}")
+                    return True
+        except Exception as lce:
+            logger.debug(f"Live context cookie check notice: {lce}")
 
-        # 1. Immediate fast-path: check if valid cookies backup already exists
+        # 2. Immediate fast-path: check if valid cookies backup already exists
         if os.path.isfile(self.cookies_backup_path):
             try:
                 with open(self.cookies_backup_path, "r", encoding="utf-8") as f:
@@ -515,7 +530,7 @@ class XBrowserWorker:
             except Exception as ce:
                 logger.debug(f"Cookie fast check notice: {ce}")
 
-        # 2. Otherwise navigate with Playwright
+        # 3. Otherwise navigate with Playwright
         async with self._lock:
             try:
                 page = await self._get_page_internal()
@@ -524,6 +539,20 @@ class XBrowserWorker:
                 return False
 
             try:
+                # Fast check: does context already have auth_token?
+                if self._context:
+                    try:
+                        ctx_cookies = await self._context.cookies()
+                        if any(c.get("name") == "auth_token" and c.get("value") for c in ctx_cookies if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")):
+                            handle = await self._extract_logged_in_handle(page)
+                            if handle:
+                                self.logged_in_username = handle
+                            await self._backup_cookies_internal()
+                            logger.info(f"Confirmed X session active from browser cookies as {self.logged_in_username or 'authenticated'}")
+                            return True
+                    except Exception:
+                        pass
+
                 logger.info("Checking X session status...")
                 current_url = page.url or ""
                 # If page is already on x.com/home, avoid redundant heavy navigation
