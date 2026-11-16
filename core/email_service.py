@@ -88,7 +88,7 @@ async def send_password_reset_email(
     Returns True if sent, False if SMTP is unconfigured or failed.
     """
     base_url = (app_url or os.getenv("APP_BASE_URL") or "http://localhost:8000").rstrip("/")
-    reset_link = f"{base_url}/?token={reset_token}&mode=reset"
+    reset_link = f"{base_url}/reset-password?token={reset_token}"
 
     subject = "Reset your X-VibeBot password"
 

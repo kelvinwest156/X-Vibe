@@ -83,3 +83,31 @@ async def serve_dashboard():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return HTMLResponse("<h1>Static dashboard not found.</h1>", status_code=404)
+
+
+@router.get("/login", response_class=HTMLResponse)
+@router.get("/auth", response_class=HTMLResponse)
+@router.get("/signup", response_class=HTMLResponse)
+async def serve_login():
+    """Serves the dedicated login and signup page."""
+    for candidate in [
+        os.path.join(NEXT_OUT_DIR, "login.html"),
+        os.path.join(NEXT_OUT_DIR, "login", "index.html"),
+        os.path.join(NEXT_OUT_DIR, "index.html"),
+    ]:
+        if os.path.exists(candidate):
+            return FileResponse(candidate)
+    return HTMLResponse("<h1>Login page not found.</h1>", status_code=404)
+
+
+@router.get("/reset-password", response_class=HTMLResponse)
+async def serve_reset_password():
+    """Serves the dedicated reset password page."""
+    for candidate in [
+        os.path.join(NEXT_OUT_DIR, "reset-password.html"),
+        os.path.join(NEXT_OUT_DIR, "reset-password", "index.html"),
+        os.path.join(NEXT_OUT_DIR, "index.html"),
+    ]:
+        if os.path.exists(candidate):
+            return FileResponse(candidate)
+    return HTMLResponse("<h1>Reset password page not found.</h1>", status_code=404)

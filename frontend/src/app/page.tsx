@@ -198,6 +198,23 @@ export default function HomePage() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      // Check if user landed on root with reset token or auth query parameters
+      const params = new URLSearchParams(window.location.search);
+      const resetToken = params.get("token") || params.get("reset_token");
+      const modeParam = params.get("mode");
+      if (resetToken) {
+        window.location.href = `/reset-password?token=${encodeURIComponent(resetToken)}`;
+        return;
+      }
+      if (modeParam === "reset") {
+        window.location.href = "/reset-password";
+        return;
+      }
+      if (modeParam === "signin" || modeParam === "signup" || modeParam === "forgot") {
+        window.location.href = `/login?mode=${modeParam}`;
+        return;
+      }
+
       // Purge any legacy demo-mode state
       localStorage.removeItem("xvibebot_demo_mode");
 
@@ -755,52 +772,15 @@ export default function HomePage() {
     );
   }
 
-  // Unauthenticated experience: Landing Page with interactive demo or AuthView
+  // Unauthenticated experience: Landing Page with interactive demo
   if (!isUserAuthenticated) {
-    if (unauthedView === "landing") {
-      return (
-        <LandingView
-          theme={theme}
-          onToggleTheme={toggleTheme}
-          onLaunchStudio={(initialMode = "signup") => {
-            setAuthInitialMode(initialMode);
-            setUnauthedView("auth");
-          }}
-        />
-      );
-    }
-
     return (
-      <AuthView
+      <LandingView
         theme={theme}
         onToggleTheme={toggleTheme}
-        initialMode={authInitialMode}
-        onBack={() => setUnauthedView("landing")}
-        onAuthenticated={(user, token) => {
-          const tId = user.tenant_id || user.uid || "default";
-          setPending([]);
-          setDrafts({});
-          setHistory([]);
-          setAnalytics(null);
-          setConfig(null);
-          setHistReady(false);
-          setReady(false);
-          setStatus(null);
-          setOnboardingBypassed(false);
-          setAwaitingOnboardingConfirm(false);
-          setTenantId(tId);
-          setAuthToken(token);
-          setUserProfile({
-            email: user.email || undefined,
-            name: user.displayName || user.email?.split("@")[0],
-            uid: user.uid,
-          });
+        onLaunchStudio={(initialMode = "signup") => {
           if (typeof window !== "undefined") {
-            localStorage.setItem("xvibebot_auth_token", token);
-            localStorage.setItem("xvibebot_tenant_id", tId);
-            if (user.email) localStorage.setItem("xvibebot_user_email", user.email);
-            if (user.displayName) localStorage.setItem("xvibebot_user_name", user.displayName);
-            sessionStorage.removeItem("xvibebot_onboarding_skipped");
+            window.location.href = `/login?mode=${initialMode}`;
           }
         }}
       />
