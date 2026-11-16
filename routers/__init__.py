@@ -10,6 +10,7 @@ from routers.queue import router as queue_router
 from routers.browser import router as browser_router
 from routers.analytics import router as analytics_router
 from routers.system import router as system_router
+from routers.radar import router as radar_router
 
 __all__ = [
     "auth_router",
@@ -17,5 +18,6 @@ __all__ = [
     "queue_router",
     "browser_router",
     "analytics_router",
-    "system_router"
+    "system_router",
+    "radar_router"
 ]

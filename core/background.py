@@ -8,6 +8,8 @@ import asyncio
 import logging
 import random
 import time
+import uuid
+import json
 from datetime import datetime, timedelta
 
 from database import (
@@ -30,7 +32,8 @@ from ai_engine import (
     generate_original_content,
     generate_smart_search_query
 )
-from models import AgentConfig
+from models import AgentConfig, ProcessedTweet
+from core.web_scout import scout_and_rank_topics, generate_draft_from_web_topic
 import core.state as state
 
 logger = logging.getLogger("x_vibebot.background")
@@ -250,8 +253,68 @@ async def background_automation_loop():
                         logger.warning(f"Tenant '{curr_tenant_id}' is not logged into X. Connect your account in the top bar.")
                         continue
 
+                    # ==========================================================
+                    # Dual-Engine Radar: Internet & Google Trend Scouting
+                    # ==========================================================
                     effective_query = base_query
-                    if smart_query_on and base_query and base_query.strip():
+                    web_topics = []
+                    try:
+                        web_topics = await scout_and_rank_topics(niche=base_query or "technology", limit=3)
+                    except Exception as e:
+                        logger.debug(f"Web scout pass note: {e}")
+
+                    # If web topics found, bridge into live X search query & auto-draft
+                    if web_topics:
+                        top_topic = web_topics[0]
+                        s_query = top_topic.get("suggested_query")
+                        if s_query and len(s_query) >= 3:
+                            effective_query = s_query
+                            logger.info(f"Tenant '{curr_tenant_id}': Web Radar selected breaking query '{effective_query}' from {top_topic.get('source')} ('{top_topic.get('title')[:45]}...')")
+
+                        # Auto-stage top web story into Review Queue as an original post draft if not already drafted
+                        db_web = SessionLocal()
+                        try:
+                            topic_url = top_topic.get("url", "")
+                            already_drafted = db_web.query(ProcessedTweet).filter(
+                                ProcessedTweet.tenant_id == curr_tenant_id,
+                                ProcessedTweet.tweet_url == topic_url
+                            ).first()
+
+                            if not already_drafted:
+                                drafts = await generate_draft_from_web_topic(
+                                    topic=top_topic,
+                                    persona_prompt=persona or "Casual, sharp, short sentences",
+                                    model_name=selected_model
+                                )
+                                synth_id = f"web_{uuid.uuid4().hex[:12]}"
+                                new_post = ProcessedTweet(
+                                    tweet_id=synth_id,
+                                    tenant_id=curr_tenant_id,
+                                    action_type="post",
+                                    tweet_text=f"🌐 Google News Inspo: {top_topic.get('title')}\nSource: {top_topic.get('source')} ({topic_url})",
+                                    tweet_author=f"Web: {top_topic.get('source')}",
+                                    tweet_url=topic_url,
+                                    generated_text=drafts.get("single_tweet"),
+                                    variants_json=json.dumps({
+                                        "witty": drafts.get("single_tweet"),
+                                        "thread": drafts.get("thread"),
+                                        "topic_source": top_topic.get("source"),
+                                        "topic_url": topic_url
+                                    }),
+                                    tweet_metrics="🌐 Web Trend Radar",
+                                    urgency_score=8,
+                                    status="pending_approval",
+                                    error_message=f"Autonomous Inspo from {top_topic.get('source')}"
+                                )
+                                db_web.add(new_post)
+                                db_web.commit()
+                                logger.info(f"Tenant '{curr_tenant_id}': Auto-staged web trend draft '{top_topic.get('title')[:40]}' in Review Queue.")
+                        except Exception as ex:
+                            logger.debug(f"Web draft staging note: {ex}")
+                        finally:
+                            db_web.close()
+
+                    elif smart_query_on and base_query and base_query.strip():
                         effective_query = await generate_smart_search_query(
                             niche_topic=base_query,
                             recent_tweets=recent_sample_dicts,

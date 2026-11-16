@@ -35,7 +35,8 @@ from routers import (
     queue_router,
     browser_router,
     analytics_router,
-    system_router
+    system_router,
+    radar_router
 )
 
 # Re-export common handles for backwards compatibility
@@ -109,6 +110,7 @@ app.include_router(queue_router)
 app.include_router(browser_router)
 app.include_router(analytics_router)
 app.include_router(system_router)
+app.include_router(radar_router)
 
 if __name__ == "__main__":
     import uvicorn

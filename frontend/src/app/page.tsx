@@ -1108,6 +1108,7 @@ export default function HomePage() {
                 onApplySuggestedQuery={applySuggestedQuery}
                 onRefreshBrief={refreshBrief}
                 refreshingBrief={refreshingBrief}
+                onNavigateToQueue={() => setTab("queue")}
               />
             )}
 
@@ -1835,6 +1836,17 @@ export default function HomePage() {
                       </span>
                     </div>
                   </label>
+
+                  {/* Google & Web Trend Radar */}
+                  <div className="p-3.5 border border-blue-200/60 dark:border-blue-900/40 rounded-xl bg-blue-50/40 dark:bg-blue-950/20 space-y-1">
+                    <span className="block text-xs font-semibold text-blue-950 dark:text-blue-300 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                      Google & Internet Topic Radar Active
+                    </span>
+                    <span className="text-xs text-blue-800/80 dark:text-blue-400/80 leading-normal block">
+                      Scouts Google News and tech blogs every scan interval to feed live trending topics into your dashboard and queue.
+                    </span>
+                  </div>
 
                   {/* Account & Session Security Section */}
                   <div className="p-4 rounded-xl border border-slate-200 dark:border-[#262626] bg-slate-50/70 dark:bg-[#202020] space-y-3">
