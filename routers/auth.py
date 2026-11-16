@@ -29,6 +29,7 @@ from database import (
     verify_password_reset_token,
     update_user_password
 )
+from core.email_service import is_smtp_configured, send_password_reset_email
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -89,7 +90,7 @@ async def signin(req: SignInRequest, db: Session = Depends(get_db)):
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """Initiates password reset by issuing a secure HMAC token."""
+    """Initiates password reset by issuing a secure HMAC token and dispatching via SMTP email."""
     email = req.email.strip().lower()
     if not email or "@" not in email or "." not in email:
         raise HTTPException(status_code=400, detail="Please provide a valid email address.")
@@ -105,11 +106,23 @@ async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_
     reset_token = create_password_reset_token(user.email, exp_minutes=60)
     print(f"[AUTH] Generated password reset token for {user.email}: {reset_token}")
 
-    return ForgotPasswordResponse(
-        success=True,
-        message="Password reset link prepared. Please choose your new password.",
-        reset_token=reset_token
-    )
+    smtp_sent = False
+    if is_smtp_configured():
+        smtp_sent = await send_password_reset_email(user.email, reset_token, req.app_url)
+
+    if smtp_sent:
+        return ForgotPasswordResponse(
+            success=True,
+            message="A password reset link has been sent to your email inbox. Please check your messages.",
+            reset_token=None
+        )
+    else:
+        # If SMTP is not yet configured in .env, deliver reset token for seamless local developer testing
+        return ForgotPasswordResponse(
+            success=True,
+            message="Password reset link prepared. Please enter your new password below.",
+            reset_token=reset_token
+        )
 
 
 @router.post("/reset-password", response_model=AuthResponse)

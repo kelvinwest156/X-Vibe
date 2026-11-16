@@ -133,24 +133,30 @@ export default function AuthView({
     }
 
     try {
-      if (isSupabaseConfigured) {
-        const { error } = await resetPasswordForEmail(cleanEmail);
-        if (error) throw error;
-        setFeedback({
-          text: "Password reset instructions sent! Please check your email inbox.",
-          isError: false,
-        });
-        return;
-      }
-
-      // Direct backend workspace reset
+      // 1. Prioritize FastAPI backend SMTP service (delivers via your configured Gmail SMTP)
+      const clientOrigin = typeof window !== "undefined" ? window.location.origin : undefined;
       const res = await fetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: cleanEmail }),
+        body: JSON.stringify({
+          email: cleanEmail,
+          app_url: clientOrigin,
+        }),
       });
       const data = await res.json();
+
       if (!res.ok) {
+        // Fallback to Supabase password recovery if backend user was not found
+        if (isSupabaseConfigured) {
+          const { error } = await resetPasswordForEmail(cleanEmail);
+          if (!error) {
+            setFeedback({
+              text: "Password reset instructions sent! Please check your email inbox.",
+              isError: false,
+            });
+            return;
+          }
+        }
         throw new Error(data.detail || data.message || "Failed to initiate password reset.");
       }
 
@@ -158,12 +164,12 @@ export default function AuthView({
         setResetToken(data.reset_token);
         setMode("reset");
         setFeedback({
-          text: "Reset token generated! Enter your new password below.",
+          text: "Reset token ready! Enter your new password below.",
           isError: false,
         });
       } else {
         setFeedback({
-          text: data.message || "If an account exists, reset instructions have been issued.",
+          text: data.message || "A password reset link has been sent to your email inbox. Please check your inbox.",
           isError: false,
         });
       }
@@ -193,6 +199,49 @@ export default function AuthView({
     }
 
     try {
+      // If we have a backend resetToken (from email link param or local fallback)
+      if (resetToken && resetToken.trim()) {
+        const res = await fetch("/api/auth/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: resetToken.trim(),
+            new_password: password,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || data.message || "Failed to reset password.");
+        }
+
+        if (typeof window !== "undefined") {
+          localStorage.setItem("xvibebot_auth_token", data.token);
+          localStorage.setItem("xvibebot_tenant_id", data.tenant_id);
+          localStorage.setItem("xvibebot_user_email", data.user.email);
+          if (data.user.name) {
+            localStorage.setItem("xvibebot_user_name", data.user.name);
+          }
+        }
+
+        setFeedback({
+          text: "Password updated successfully! Welcome back.",
+          isError: false,
+        });
+
+        onAuthenticated?.(
+          {
+            uid: data.user.uid,
+            email: data.user.email,
+            displayName: data.user.name || data.user.email.split("@")[0],
+            tenant_id: data.tenant_id,
+          },
+          data.token,
+          false
+        );
+        return;
+      }
+
+      // Supabase recovery session fallback if no token was passed
       if (isSupabaseConfigured) {
         const { error } = await updateUserPassword(password);
         if (error) throw error;
@@ -208,47 +257,7 @@ export default function AuthView({
         return;
       }
 
-      if (!resetToken.trim()) {
-        throw new Error("Missing reset token. Please request a new password reset link.");
-      }
-
-      const res = await fetch("/api/auth/reset-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: resetToken.trim(),
-          new_password: password,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || data.message || "Failed to reset password.");
-      }
-
-      if (typeof window !== "undefined") {
-        localStorage.setItem("xvibebot_auth_token", data.token);
-        localStorage.setItem("xvibebot_tenant_id", data.tenant_id);
-        localStorage.setItem("xvibebot_user_email", data.user.email);
-        if (data.user.name) {
-          localStorage.setItem("xvibebot_user_name", data.user.name);
-        }
-      }
-
-      setFeedback({
-        text: "Password updated successfully! Welcome back.",
-        isError: false,
-      });
-
-      onAuthenticated?.(
-        {
-          uid: data.user.uid,
-          email: data.user.email,
-          displayName: data.user.name || data.user.email.split("@")[0],
-          tenant_id: data.tenant_id,
-        },
-        data.token,
-        false
-      );
+      throw new Error("Missing reset token. Please request a new password reset link from your email.");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to reset password.";
       setFeedback({ text: msg, isError: true });

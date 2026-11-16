@@ -160,6 +160,7 @@ class SignInRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     """Payload for requesting a password reset token/link."""
     email: str = Field(..., description="Creator email address")
+    app_url: Optional[str] = Field(None, description="Client origin URL for reset link construction")
 
 
 class ForgotPasswordResponse(BaseModel):
