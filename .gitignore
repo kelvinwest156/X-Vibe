@@ -10,7 +10,7 @@ screenshot_*.png
 # Next.js build & dependencies
 frontend/node_modules/
 frontend/.next/
-frontend/out/
+# frontend/out/ is tracked for production static hosting on Render
 
 # SQLite Database
 vibebot.db

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node -e \"require('fs').cpSync('out', '../static', {recursive: true}); console.log('✓ Synced frontend/out to static/');\"",
     "start": "next start"
   },
   "dependencies": {
