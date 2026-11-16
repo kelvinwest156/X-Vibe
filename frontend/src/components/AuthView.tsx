@@ -306,11 +306,48 @@ export default function AuthView({
     const cleanName = name.trim() || cleanEmail.split("@")[0];
 
     try {
+      // 1. Primary: Direct FastAPI backend workspace authentication
+      const endpoint = mode === "signin" ? "/api/auth/signin" : "/api/auth/signup";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          name: mode === "signup" ? cleanName : undefined,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        if (typeof window !== "undefined") {
+          localStorage.setItem("xvibebot_auth_token", data.token);
+          localStorage.setItem("xvibebot_tenant_id", data.tenant_id);
+          localStorage.setItem("xvibebot_user_email", data.user.email);
+          if (data.user.name) {
+            localStorage.setItem("xvibebot_user_name", data.user.name);
+          }
+        }
+
+        onAuthenticated?.(
+          {
+            uid: data.user.uid,
+            email: data.user.email,
+            displayName: data.user.name || cleanName,
+            tenant_id: data.tenant_id,
+          },
+          data.token,
+          mode === "signup"
+        );
+        return;
+      }
+
+      // 2. Secondary fallback: Check Supabase Auth if backend credentials didn't match
       if (isSupabaseConfigured) {
         if (mode === "signin") {
           const { user, session, error } = await signInWithEmail(cleanEmail, password);
-          if (error) throw error;
-          if (user && session) {
+          if (!error && user && session) {
             onAuthenticated?.(
               {
                 uid: user.id,
@@ -325,8 +362,7 @@ export default function AuthView({
           }
         } else {
           const { user, session, error } = await signUpWithEmail(cleanEmail, password, cleanName);
-          if (error) throw error;
-          if (user) {
+          if (!error && user) {
             if (session) {
               onAuthenticated?.(
                 {
@@ -349,42 +385,8 @@ export default function AuthView({
         }
       }
 
-      // Direct backend workspace authentication
-      const endpoint = mode === "signin" ? "/api/auth/signin" : "/api/auth/signup";
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: cleanEmail,
-          password,
-          name: mode === "signup" ? cleanName : undefined,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || data.message || "Could not verify your credentials.");
-      }
-
-      if (typeof window !== "undefined") {
-        localStorage.setItem("xvibebot_auth_token", data.token);
-        localStorage.setItem("xvibebot_tenant_id", data.tenant_id);
-        localStorage.setItem("xvibebot_user_email", data.user.email);
-        if (data.user.name) {
-          localStorage.setItem("xvibebot_user_name", data.user.name);
-        }
-      }
-
-      onAuthenticated?.(
-        {
-          uid: data.user.uid,
-          email: data.user.email,
-          displayName: data.user.name || cleanName,
-          tenant_id: data.tenant_id,
-        },
-        data.token,
-        mode === "signup"
-      );
+      // If backend failed and Supabase didn't match either, show backend error
+      throw new Error(data.detail || data.message || "Invalid email or password.");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Authentication failed. Check your connection and try again.";
       setFeedback({ text: msg, isError: true });
