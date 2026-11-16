@@ -19,6 +19,7 @@ from database import get_agent_config
 
 # Root directory reference
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+logger = logging.getLogger("x_vibebot.state")
 
 # ==============================================================================
 # In-Memory Log Buffer for Live Dashboard Stream
@@ -104,6 +105,24 @@ def get_tenant_browser_worker(tenant_id: str = "default") -> XBrowserWorker:
             data_profile = os.path.abspath(os.path.join(BASE_DIR, "data", "browser_profiles", f"x_browser_profile_{clean_tenant}"))
             legacy_profile = os.path.abspath(os.path.join(BASE_DIR, f"x_browser_profile_{clean_tenant}"))
             profile_dir = legacy_profile if os.path.exists(legacy_profile) and not os.path.exists(data_profile) else data_profile
+
+            # Auto-seed tenant profile from active local default session if uninitialized
+            os.makedirs(profile_dir, exist_ok=True)
+            tenant_cookies = os.path.join(profile_dir, "cookies_backup.json")
+            disconnected_marker = os.path.join(profile_dir, ".disconnected")
+            default_cookies = os.path.join(DEFAULT_PROFILE_DIR, "cookies_backup.json")
+            default_meta = os.path.join(DEFAULT_PROFILE_DIR, "session_metadata.json")
+
+            if not os.path.isfile(tenant_cookies) and not os.path.isfile(disconnected_marker) and os.path.isfile(default_cookies):
+                try:
+                    import shutil
+                    shutil.copy2(default_cookies, tenant_cookies)
+                    if os.path.isfile(default_meta):
+                        shutil.copy2(default_meta, os.path.join(profile_dir, "session_metadata.json"))
+                    logger.info(f"Seeded tenant '{clean_tenant}' profile with existing local X session.")
+                except Exception as e:
+                    logger.warning(f"Failed to seed tenant cookies: {e}")
+
         tenant_workers[clean_tenant] = XBrowserWorker(profile_dir=profile_dir, headless=HEADLESS)
     return tenant_workers[clean_tenant]
 

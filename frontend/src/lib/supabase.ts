@@ -1,7 +1,10 @@
 import { createClient, SupabaseClient, User, Session } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const DEFAULT_SUPABASE_URL = "https://gvmgoqsinfvuwezszmjd.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd2bWdvcXNpbmZ2dXdlenN6bWpkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMxOTQ0NTEsImV4cCI6MjEwODc3MDQ1MX0.fTjCup-vjlk3Y7ZAWmNsBGz05YfysQrClzQJJ8IJb1A";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -10,8 +13,8 @@ export const isSupabaseConfigured = Boolean(
 );
 
 export const supabase: SupabaseClient = createClient(
-  supabaseUrl || "https://placeholder-project.supabase.co",
-  supabaseAnonKey || "placeholder-anon-key",
+  supabaseUrl,
+  supabaseAnonKey,
   {
     auth: {
       persistSession: true,

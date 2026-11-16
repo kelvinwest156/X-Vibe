@@ -4,13 +4,15 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
-  ExternalLink,
   Check,
   CheckCircle2,
   AlertCircle,
   RefreshCw,
   LogOut,
   Globe,
+  Key,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 
 interface ConnectAccountModalProps {
@@ -32,9 +34,13 @@ export default function ConnectAccountModal({
   apiFetch,
   notify,
 }: ConnectAccountModalProps) {
+  const [activeTab, setActiveTab] = useState<"browser" | "token">("browser");
   const [windowOpened, setWindowOpened] = useState(false);
+  const [authToken, setAuthToken] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isConnectingToken, setIsConnectingToken] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
 
   // Close on Escape key
@@ -56,21 +62,19 @@ export default function ConnectAccountModal({
 
   const handleLaunchBrowser = async () => {
     setFeedback(null);
-    if (typeof window !== "undefined") {
-      window.open(
-        "https://x.com/login",
-        "XLoginPopup",
-        "width=660,height=760,left=220,top=90,menubar=no,toolbar=no"
-      );
-    }
     setWindowOpened(true);
     try {
-      await apiFetch("/api/browser/launch-login", { method: "POST" });
-    } catch {}
-    setFeedback({
-      text: "Sign-in window opened. Complete sign-in on X, then click Verify X connection below.",
-      isError: false,
-    });
+      const res = await apiFetch("/api/browser/launch-login", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to open browser.");
+      setFeedback({
+        text: "Dedicated Chromium window opened on your screen. Please complete sign-in there, then click Verify X connection below.",
+        isError: false,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Could not launch browser.";
+      setFeedback({ text: msg, isError: true });
+    }
   };
 
   const handleVerify = async () => {
@@ -85,7 +89,7 @@ export default function ConnectAccountModal({
         onClose();
       } else {
         setFeedback({
-          text: "No active X session detected yet. Complete sign-in in the X browser window, then click verify.",
+          text: "No active X session detected yet. Complete sign-in in the Chromium window, then click verify.",
           isError: true,
         });
       }
@@ -94,6 +98,41 @@ export default function ConnectAccountModal({
       setFeedback({ text: msg, isError: true });
     } finally {
       setIsVerifying(false);
+    }
+  };
+
+  const handleConnectToken = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanToken = authToken.trim();
+    if (!cleanToken) {
+      setFeedback({ text: "Please enter your X auth_token cookie or session JSON.", isError: true });
+      return;
+    }
+    setIsConnectingToken(true);
+    setFeedback(null);
+    try {
+      const res = await apiFetch("/api/browser/connect-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auth_token: cleanToken }),
+      });
+      const data = await res.json();
+      if (res.ok && data.is_logged_in) {
+        notify(data.message || `Connected as ${data.linked_username || "your account"}!`);
+        onSessionUpdated();
+        setAuthToken("");
+        onClose();
+      } else {
+        setFeedback({
+          text: data.message || "X rejected or expired this session token. Please copy a fresh auth_token.",
+          isError: true,
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to connect token.";
+      setFeedback({ text: msg, isError: true });
+    } finally {
+      setIsConnectingToken(false);
     }
   };
 
@@ -132,7 +171,7 @@ export default function ConnectAccountModal({
           exit={{ opacity: 0, scale: 0.97, y: 6 }}
           transition={{ duration: 0.16, ease: "easeOut" }}
           onClick={(e) => e.stopPropagation()}
-          className="bg-white dark:bg-[#171717] border border-[#E4E4E7] dark:border-[#262626] rounded-2xl w-full max-w-[440px] p-6 sm:p-7 shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.75)] text-[#111111] dark:text-[#F5F5F5] space-y-5 my-8"
+          className="bg-white dark:bg-[#171717] border border-[#E4E4E7] dark:border-[#262626] rounded-2xl w-full max-w-[460px] p-6 sm:p-7 shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.75)] text-[#111111] dark:text-[#F5F5F5] space-y-5 my-8"
         >
           {/* Header */}
           <div className="flex items-start justify-between gap-4">
@@ -176,7 +215,7 @@ export default function ConnectAccountModal({
                       {displayHandle}
                     </p>
                     <p className="text-[12px] text-[#71717A] dark:text-[#8E8E8E]">
-                      Session verified and isolated
+                      Session verified and active
                     </p>
                   </div>
                 </div>
@@ -220,17 +259,152 @@ export default function ConnectAccountModal({
               </div>
             </div>
           ) : (
-            /* Single Browser Window Action Form */
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-[#FAFAFA] dark:bg-[#121212] border border-[#E4E4E7] dark:border-[#242424] text-[12.5px] leading-relaxed text-[#52525B] dark:text-[#9E9E9E] space-y-1.5">
-                <p className="font-medium text-[#111111] dark:text-[#E5E5E5]">
-                  Interactive browser sign-in
-                </p>
-                <p className="text-pretty">
-                  Open the X sign-in window, sign in to your profile, then click <strong>Verify X connection</strong> to sync your workspace.
-                </p>
+              {/* Mode Segment Switch */}
+              <div className="grid grid-cols-2 p-1 rounded-xl bg-[#F4F4F5] dark:bg-[#1C1C1C] border border-[#E4E4E7] dark:border-[#2A2A2A] text-[12.5px] font-medium">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("browser");
+                    setFeedback(null);
+                  }}
+                  className={`py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    activeTab === "browser"
+                      ? "bg-white dark:bg-[#2A2A2A] text-[#111111] dark:text-[#F5F5F5] shadow-xs"
+                      : "text-[#71717A] dark:text-[#9E9E9E] hover:text-[#111111] dark:hover:text-[#F5F5F5]"
+                  }`}
+                >
+                  <Globe className="size-3.5" aria-hidden="true" />
+                  <span>Interactive Browser</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("token");
+                    setFeedback(null);
+                  }}
+                  className={`py-1.5 rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                    activeTab === "token"
+                      ? "bg-white dark:bg-[#2A2A2A] text-[#111111] dark:text-[#F5F5F5] shadow-xs"
+                      : "text-[#71717A] dark:text-[#9E9E9E] hover:text-[#111111] dark:hover:text-[#F5F5F5]"
+                  }`}
+                >
+                  <Key className="size-3.5" aria-hidden="true" />
+                  <span>Session Token (Cloud)</span>
+                </button>
               </div>
 
+              {/* Tab 1: Interactive Browser Mode */}
+              {activeTab === "browser" && (
+                <div className="space-y-4">
+                  <div className="p-3.5 rounded-xl bg-[#FAFAFA] dark:bg-[#121212] border border-[#E4E4E7] dark:border-[#242424] text-[12.5px] leading-relaxed text-[#52525B] dark:text-[#9E9E9E] space-y-1">
+                    <p className="font-medium text-[#111111] dark:text-[#E5E5E5]">
+                      Local Desktop Sign-in
+                    </p>
+                    <p className="text-pretty">
+                      Click below to open the dedicated Chromium window, complete sign-in with X, then return here and click <strong>Verify X connection</strong>.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={handleLaunchBrowser}
+                      className={`w-full h-10 px-4 rounded-lg text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white transition-all flex items-center justify-center gap-2 ${
+                        !windowOpened
+                          ? "bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] text-white dark:text-[#111111]"
+                          : "bg-white dark:bg-[#1E1E1E] hover:bg-[#FAFAFA] dark:hover:bg-[#262626] text-[#111111] dark:text-[#F5F5F5] border border-[#E4E4E7] dark:border-[#2E2E2E]"
+                      }`}
+                    >
+                      {windowOpened ? (
+                        <>
+                          <Check className="size-4 text-emerald-500" aria-hidden="true" />
+                          <span>Chromium window opened — open again</span>
+                        </>
+                      ) : (
+                        <>
+                          <Globe className="size-4" aria-hidden="true" />
+                          <span>Open X Chromium browser</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleVerify}
+                      disabled={isVerifying}
+                      className={`w-full h-10 px-4 rounded-lg text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white transition-all flex items-center justify-center gap-2 disabled:opacity-60 ${
+                        windowOpened
+                          ? "bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] text-white dark:text-[#111111]"
+                          : "bg-white dark:bg-[#1E1E1E] hover:bg-[#FAFAFA] dark:hover:bg-[#262626] text-[#111111] dark:text-[#F5F5F5] border border-[#E4E4E7] dark:border-[#2E2E2E]"
+                      }`}
+                    >
+                      <RefreshCw className={`size-4 ${isVerifying ? "animate-spin" : ""}`} aria-hidden="true" />
+                      <span>{isVerifying ? "Checking X session..." : "Verify X connection"}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 2: Direct Token Mode (Perfect for Cloud & Production) */}
+              {activeTab === "token" && (
+                <form onSubmit={handleConnectToken} className="space-y-3.5">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="modal-auth-token"
+                        className="text-[12.5px] font-medium text-[#111111] dark:text-[#E5E5E5]"
+                      >
+                        X auth_token cookie
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowGuide(!showGuide)}
+                        className="text-[11.5px] font-medium text-[#EA580C] hover:underline flex items-center gap-1"
+                      >
+                        <span>Where do I find this?</span>
+                        {showGuide ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+                      </button>
+                    </div>
+
+                    <input
+                      id="modal-auth-token"
+                      type="password"
+                      autoComplete="off"
+                      placeholder="Paste your 40-character auth_token value"
+                      value={authToken}
+                      onChange={(e) => setAuthToken(e.target.value)}
+                      className="w-full h-10 px-3.5 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 font-mono"
+                    />
+
+                    {showGuide && (
+                      <div className="p-3 rounded-lg bg-[#F4F4F5] dark:bg-[#181818] border border-[#E4E4E7] dark:border-[#262626] text-[11.5px] leading-relaxed text-[#52525B] dark:text-[#A3A3A3] space-y-1">
+                        <p>1. Open <strong className="text-[#111111] dark:text-white">x.com</strong> in your browser where you are logged in.</p>
+                        <p>2. Press <kbd className="px-1 py-0.5 rounded bg-white dark:bg-[#222] border border-[#D4D4D8] dark:border-[#333] font-mono">F12</kbd> (Inspect) → <strong>Application</strong> tab → <strong>Cookies</strong> → <strong>https://x.com</strong>.</p>
+                        <p>3. Double-click the <strong>auth_token</strong> cookie value, copy it, and paste it here.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isConnectingToken}
+                    className="w-full h-10 px-4 rounded-lg bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] active:scale-[0.995] text-white dark:text-[#111111] text-[13px] font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isConnectingToken ? (
+                      <>
+                        <RefreshCw className="size-4 animate-spin" aria-hidden="true" />
+                        <span>Connecting & Verifying with X...</span>
+                      </>
+                    ) : (
+                      <span>Connect with Token</span>
+                    )}
+                  </button>
+                </form>
+              )}
+
+              {/* Feedback Alert */}
               {feedback && (
                 <div
                   role="alert"
@@ -249,45 +423,6 @@ export default function ConnectAccountModal({
                   <span className="text-pretty">{feedback.text}</span>
                 </div>
               )}
-
-              <div className="space-y-2.5">
-                <button
-                  type="button"
-                  onClick={handleLaunchBrowser}
-                  className={`w-full h-10 px-4 rounded-lg text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white transition-all flex items-center justify-center gap-2 ${
-                    !windowOpened
-                      ? "bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] text-white dark:text-[#111111]"
-                      : "bg-white dark:bg-[#1E1E1E] hover:bg-[#FAFAFA] dark:hover:bg-[#262626] text-[#111111] dark:text-[#F5F5F5] border border-[#E4E4E7] dark:border-[#2E2E2E]"
-                  }`}
-                >
-                  {windowOpened ? (
-                    <>
-                      <Check className="size-4 text-emerald-500" aria-hidden="true" />
-                      <span>Sign-in window opened — open again</span>
-                    </>
-                  ) : (
-                    <>
-                      <Globe className="size-4" aria-hidden="true" />
-                      <span>Open X sign-in window</span>
-                      <ExternalLink className="size-3.5 opacity-70" aria-hidden="true" />
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleVerify}
-                  disabled={isVerifying}
-                  className={`w-full h-10 px-4 rounded-lg text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 dark:focus-visible:ring-white transition-all flex items-center justify-center gap-2 disabled:opacity-60 ${
-                    windowOpened
-                      ? "bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] text-white dark:text-[#111111]"
-                      : "bg-white dark:bg-[#1E1E1E] hover:bg-[#FAFAFA] dark:hover:bg-[#262626] text-[#111111] dark:text-[#F5F5F5] border border-[#E4E4E7] dark:border-[#2E2E2E]"
-                  }`}
-                >
-                  <RefreshCw className={`size-4 ${isVerifying ? "animate-spin" : ""}`} aria-hidden="true" />
-                  <span>{isVerifying ? "Checking X session..." : "Verify X connection"}</span>
-                </button>
-              </div>
             </div>
           )}
 

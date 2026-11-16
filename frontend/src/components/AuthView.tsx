@@ -263,10 +263,20 @@ export default function AuthView({
     try {
       if (isSupabaseConfigured) {
         const { error } = await signInWithTwitter();
-        if (error) throw error;
+        if (error) {
+          const lower = error.message?.toLowerCase() || "";
+          if (lower.includes("not enabled") || lower.includes("unsupported provider") || lower.includes("validation_failed")) {
+            setFeedback({
+              text: "X OAuth is not yet enabled in your Supabase dashboard (Authentication > Providers > Twitter). Please sign in with your email & password below.",
+              isError: true,
+            });
+            return;
+          }
+          throw error;
+        }
       } else {
         setFeedback({
-          text: "X sign-in requires NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY configured with X provider in .env.local. Continue with your email below.",
+          text: "Supabase authentication is not configured. Continue with your email and password below.",
           isError: true,
         });
       }
