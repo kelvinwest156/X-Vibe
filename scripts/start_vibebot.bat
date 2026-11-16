@@ -1,6 +1,6 @@
 @echo off
 title X-VibeBot Controller Server
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 echo ======================================================================
 echo    X-VIBEBOT: LAUNCHING AUTONOMOUS AGENT SERVER
 echo ======================================================================

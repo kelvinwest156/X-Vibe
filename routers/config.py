@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from models import AgentConfigResponse, AgentConfigUpdate
+from models import AgentConfigResponse, AgentConfigUpdate, TestKeyPayload
 from database import get_db, get_agent_config, update_agent_config
 from core.dependencies import get_current_tenant
 import core.state as state
@@ -18,10 +18,6 @@ from ai_engine import test_ai_api
 
 logger = logging.getLogger("x_vibebot.config")
 router = APIRouter(tags=["config"])
-
-
-class TestKeyPayload(BaseModel):
-    api_key: Optional[str] = None
 
 
 @router.get("/api/config", response_model=AgentConfigResponse)

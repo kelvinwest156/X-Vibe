@@ -623,3 +623,49 @@ def get_user_by_id(db: Session, user_id: str) -> Optional[User]:
     """Retrieves a user by unique user_id string."""
     return db.query(User).filter(User.user_id == user_id).first()
 
+
+def create_password_reset_token(email: str, exp_minutes: int = 60) -> str:
+    """Generates an HMAC-SHA256 signed password reset token valid for exp_minutes (default 60 mins)."""
+    payload = {
+        "action": "reset_password",
+        "email": email.strip().lower(),
+        "exp": int(time.time()) + (exp_minutes * 60)
+    }
+    payload_json = json.dumps(payload, separators=(',', ':'))
+    b64_payload = base64.urlsafe_b64encode(payload_json.encode('utf-8')).decode('utf-8').rstrip('=')
+    sig = hmac.new(AUTH_SECRET_KEY.encode('utf-8'), b64_payload.encode('utf-8'), hashlib.sha256).hexdigest()
+    return f"{b64_payload}.{sig}"
+
+
+def verify_password_reset_token(token: str) -> Optional[str]:
+    """Verifies a password reset token and returns the email if valid and unexpired."""
+    try:
+        if not token or "." not in token:
+            return None
+        b64_payload, sig = token.split(".", 1)
+        expected_sig = hmac.new(AUTH_SECRET_KEY.encode('utf-8'), b64_payload.encode('utf-8'), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        padded = b64_payload + "=" * ((4 - len(b64_payload) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode('utf-8')).decode('utf-8'))
+        if payload.get("action") != "reset_password":
+            return None
+        exp = payload.get("exp")
+        if exp and exp < time.time():
+            return None
+        return payload.get("email")
+    except Exception:
+        return None
+
+
+def update_user_password(db: Session, email: str, new_password_plain: str) -> Optional[User]:
+    """Updates the password hash for a user by email address."""
+    user = get_user_by_email(db, email)
+    if not user:
+        return None
+    user.password_hash = hash_password(new_password_plain)
+    db.commit()
+    db.refresh(user)
+    return user
+
+

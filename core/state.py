@@ -64,7 +64,16 @@ def setup_logging():
 # ==============================================================================
 
 HEADLESS = os.getenv("HEADLESS", "false").lower() in ("true", "1", "yes")
-DEFAULT_PROFILE_DIR = os.path.abspath(os.getenv("BROWSER_PROFILE_DIR", os.path.join(BASE_DIR, "x_browser_profile")))
+
+_env_profile = os.getenv("BROWSER_PROFILE_DIR")
+if _env_profile:
+    DEFAULT_PROFILE_DIR = os.path.abspath(_env_profile)
+elif os.path.exists(os.path.join(BASE_DIR, "data", "browser_profiles", "x_browser_profile")):
+    DEFAULT_PROFILE_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "browser_profiles", "x_browser_profile"))
+elif os.path.exists(os.path.join(BASE_DIR, "x_browser_profile")):
+    DEFAULT_PROFILE_DIR = os.path.abspath(os.path.join(BASE_DIR, "x_browser_profile"))
+else:
+    DEFAULT_PROFILE_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "browser_profiles", "x_browser_profile"))
 
 # Primary worker for default tenant
 browser_worker = XBrowserWorker(profile_dir=DEFAULT_PROFILE_DIR, headless=HEADLESS)
@@ -89,11 +98,12 @@ def get_tenant_browser_worker(tenant_id: str = "default") -> XBrowserWorker:
     """Returns an isolated XBrowserWorker instance with an isolated profile directory per tenant."""
     clean_tenant = re.sub(r"[^a-zA-Z0-9_\-]", "_", tenant_id or "default")
     if clean_tenant not in tenant_workers:
-        profile_dir = (
-            DEFAULT_PROFILE_DIR
-            if clean_tenant == "default"
-            else os.path.abspath(os.path.join(BASE_DIR, f"x_browser_profile_{clean_tenant}"))
-        )
+        if clean_tenant == "default":
+            profile_dir = DEFAULT_PROFILE_DIR
+        else:
+            data_profile = os.path.abspath(os.path.join(BASE_DIR, "data", "browser_profiles", f"x_browser_profile_{clean_tenant}"))
+            legacy_profile = os.path.abspath(os.path.join(BASE_DIR, f"x_browser_profile_{clean_tenant}"))
+            profile_dir = legacy_profile if os.path.exists(legacy_profile) and not os.path.exists(data_profile) else data_profile
         tenant_workers[clean_tenant] = XBrowserWorker(profile_dir=profile_dir, headless=HEADLESS)
     return tenant_workers[clean_tenant]
 

@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from models import (
     ProcessedTweet,
     ProcessedTweetResponse,
-    ApproveDraftRequest
+    ApproveDraftRequest,
+    GenerateOriginalPayload
 )
 from database import (
     get_db,
@@ -34,11 +35,6 @@ from ai_engine import generate_original_content, evaluate_tweet
 
 logger = logging.getLogger("x_vibebot.queue")
 router = APIRouter(tags=["queue"])
-
-
-class GenerateOriginalPayload(BaseModel):
-    mode: str = "auto"  # "auto", "post", or "thread"
-    custom_topic: Optional[str] = None
 
 
 @router.get("/api/pending", response_model=List[ProcessedTweetResponse])

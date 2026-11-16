@@ -13,22 +13,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database import get_db, get_agent_config, SessionLocal
-from models import ProcessedTweet
+from models import ProcessedTweet, TopicDraftPayload
 from core.dependencies import get_current_tenant
 import core.state as state
 from core.web_scout import scout_and_rank_topics, generate_draft_from_web_topic
 
 logger = logging.getLogger("x_vibebot.radar")
 router = APIRouter(prefix="/api/radar", tags=["radar"])
-
-
-class TopicDraftPayload(BaseModel):
-    title: str
-    source: str
-    url: str
-    hook_summary: Optional[str] = ""
-    suggested_query: Optional[str] = ""
-    draft_type: Optional[str] = "tweet"  # "tweet" or "thread"
 
 
 @router.get("/topics")

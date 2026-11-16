@@ -14,23 +14,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+from models import ConnectSessionPayload, CookiesImportPayload
 from database import get_db, get_agent_config, update_agent_config
 from core.dependencies import get_current_tenant
 import core.state as state
 
 logger = logging.getLogger("x_vibebot.browser")
 router = APIRouter(tags=["browser"])
-
-
-class ConnectSessionPayload(BaseModel):
-    auth_token: Optional[str] = None
-    ct0: Optional[str] = None
-    raw_cookies: Optional[str] = None
-    cookies: Optional[List[Dict[str, Any]]] = None
-
-
-class CookiesImportPayload(BaseModel):
-    cookies: List[Dict[str, Any]]
 
 
 def parse_cookie_payload(payload: ConnectSessionPayload) -> List[Dict[str, Any]]:

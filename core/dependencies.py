@@ -73,6 +73,7 @@ async def get_current_user(
     if not token:
         return None
 
+
     # 1. Check Supabase JWT
     try:
         import jwt
@@ -98,3 +99,17 @@ async def get_current_user(
         return get_user_by_id(db, payload["uid"])
 
     return None
+
+
+async def require_current_user(user: Optional[User] = Depends(get_current_user)) -> User:
+    """
+    Mandatory authentication dependency:
+    Extracts and validates current user, raising HTTP 401 if unauthenticated or token expired.
+    """
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication credentials required or session expired."
+        )
+    return user
+

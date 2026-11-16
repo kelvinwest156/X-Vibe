@@ -7,11 +7,11 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV HEADLESS=true
-ENV BROWSER_PROFILE_DIR=/data/x_browser_profile
+ENV BROWSER_PROFILE_DIR=/data/browser_profiles/x_browser_profile
 ENV DATABASE_URL=sqlite:////data/vibebot.db
 
 # Create persistent data directory
-RUN mkdir -p /data/x_browser_profile
+RUN mkdir -p /data/browser_profiles
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && playwright install chromium

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   CheckCircle2,
@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Brain,
   Lock,
+  KeyRound,
   ChevronDown,
   X as CloseIcon,
   Check,
@@ -25,6 +26,8 @@ import {
   signInWithEmail,
   signUpWithEmail,
   signInWithTwitter,
+  resetPasswordForEmail,
+  updateUserPassword,
 } from "@/lib/supabase";
 
 interface AuthViewProps {
@@ -35,7 +38,7 @@ interface AuthViewProps {
   ) => void;
   theme?: "light" | "dark";
   onToggleTheme?: () => void;
-  initialMode?: "signin" | "signup";
+  initialMode?: "signin" | "signup" | "forgot" | "reset";
   onBack?: () => void;
 }
 
@@ -79,11 +82,14 @@ export default function AuthView({
   initialMode = "signin",
   onBack,
 }: AuthViewProps) {
-  const [mode, setMode] = useState<"signin" | "signup">(initialMode);
+  const [mode, setMode] = useState<"signin" | "signup" | "forgot" | "reset">(initialMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [resetToken, setResetToken] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isXBusy, setIsXBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
@@ -92,9 +98,163 @@ export default function AuthView({
 
   const strength = useMemo(() => getPasswordStrength(password), [password]);
 
-  const switchMode = (nextMode: "signin" | "signup") => {
+  // Inspect URL parameters for password reset tokens or recovery links
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const hash = window.location.hash || "";
+      const tokenParam = params.get("token") || params.get("reset_token");
+      const modeParam = params.get("mode");
+
+      if (tokenParam) {
+        setResetToken(tokenParam);
+        setMode("reset");
+      } else if (modeParam === "reset" || hash.includes("type=recovery")) {
+        setMode("reset");
+      }
+    }
+  }, []);
+
+  const switchMode = (nextMode: "signin" | "signup" | "forgot" | "reset") => {
     setMode(nextMode);
     setFeedback(null);
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setFeedback(null);
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      setFeedback({ text: "Please provide a valid email address.", isError: true });
+      setIsSubmitting(false);
+      return;
+    }
+
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await resetPasswordForEmail(cleanEmail);
+        if (error) throw error;
+        setFeedback({
+          text: "Password reset instructions sent! Please check your email inbox.",
+          isError: false,
+        });
+        return;
+      }
+
+      // Direct backend workspace reset
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || "Failed to initiate password reset.");
+      }
+
+      if (data.reset_token) {
+        setResetToken(data.reset_token);
+        setMode("reset");
+        setFeedback({
+          text: "Reset token generated! Enter your new password below.",
+          isError: false,
+        });
+      } else {
+        setFeedback({
+          text: data.message || "If an account exists, reset instructions have been issued.",
+          isError: false,
+        });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to request password reset.";
+      setFeedback({ text: msg, isError: true });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setFeedback(null);
+
+    if (password.length < 6) {
+      setFeedback({ text: "Password must be at least 6 characters long.", isError: true });
+      setIsSubmitting(false);
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setFeedback({ text: "Passwords do not match. Please re-enter.", isError: true });
+      setIsSubmitting(false);
+      return;
+    }
+
+    try {
+      if (isSupabaseConfigured) {
+        const { error } = await updateUserPassword(password);
+        if (error) throw error;
+        setFeedback({
+          text: "Password updated successfully! Redirecting to sign in...",
+          isError: false,
+        });
+        setTimeout(() => {
+          setMode("signin");
+          setPassword("");
+          setConfirmPassword("");
+        }, 1500);
+        return;
+      }
+
+      if (!resetToken.trim()) {
+        throw new Error("Missing reset token. Please request a new password reset link.");
+      }
+
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: resetToken.trim(),
+          new_password: password,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || "Failed to reset password.");
+      }
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("xvibebot_auth_token", data.token);
+        localStorage.setItem("xvibebot_tenant_id", data.tenant_id);
+        localStorage.setItem("xvibebot_user_email", data.user.email);
+        if (data.user.name) {
+          localStorage.setItem("xvibebot_user_name", data.user.name);
+        }
+      }
+
+      setFeedback({
+        text: "Password updated successfully! Welcome back.",
+        isError: false,
+      });
+
+      onAuthenticated?.(
+        {
+          uid: data.user.uid,
+          email: data.user.email,
+          displayName: data.user.name || data.user.email.split("@")[0],
+          tenant_id: data.tenant_id,
+        },
+        data.token,
+        false
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to reset password.";
+      setFeedback({ text: msg, isError: true });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleXAuth = async () => {
@@ -415,114 +575,320 @@ export default function AuthView({
                     <span className="text-[#71717A] dark:text-[#8E8E8E]">Create workspace</span>
                   </div>
                 )}
+                {mode === "forgot" && (
+                  <div className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[#EA580C] mb-1">
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>Account Recovery</span>
+                  </div>
+                )}
+                {mode === "reset" && (
+                  <div className="inline-flex items-center gap-1.5 text-[12px] font-medium text-emerald-600 dark:text-emerald-400 mb-1">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Choose New Password</span>
+                  </div>
+                )}
                 <h1 className="font-display text-[24px] sm:text-[26px] font-semibold tracking-[-0.025em] text-[#111111] dark:text-[#F5F5F5]">
-                  {mode === "signin" ? "Sign in to X-VibeBot" : "Create your workspace"}
+                  {mode === "signin"
+                    ? "Sign in to X-VibeBot"
+                    : mode === "signup"
+                    ? "Create your workspace"
+                    : mode === "forgot"
+                    ? "Reset your password"
+                    : "Set new password"}
                 </h1>
                 <p className="text-[13.5px] leading-relaxed text-[#52525B] dark:text-[#9E9E9E]">
                   {mode === "signin"
                     ? "Enter your email and password to access your studio."
-                    : "Set up your account, then connect your X profile in the next step."}
+                    : mode === "signup"
+                    ? "Set up your account, then connect your X profile in the next step."
+                    : mode === "forgot"
+                    ? "Enter your account email and we'll send you instructions to reset your password."
+                    : "Enter and confirm your new secure password below."}
                 </p>
               </div>
 
-              {/* Secondary X SSO */}
-              <button
-                type="button"
-                onClick={handleXAuth}
-                disabled={isXBusy || isSubmitting}
-                className="w-full h-10 px-4 rounded-lg bg-white dark:bg-[#161616] hover:bg-[#FAFAFA] dark:hover:bg-[#1E1E1E] active:scale-[0.995] text-[#111111] dark:text-[#F5F5F5] font-medium text-[13.5px] border border-[#E4E4E7] dark:border-[#2A2A2A] transition-all flex items-center justify-center gap-2.5 disabled:opacity-60"
-              >
-                {isXBusy ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <svg className="w-4 h-4 shrink-0 fill-current" viewBox="0 0 24 24">
-                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                  </svg>
-                )}
-                <span>{mode === "signin" ? "Sign in with X" : "Sign up with X"}</span>
-              </button>
+              {/* Secondary X SSO (only for sign in & sign up) */}
+              {(mode === "signin" || mode === "signup") && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleXAuth}
+                    disabled={isXBusy || isSubmitting}
+                    className="w-full h-10 px-4 rounded-lg bg-white dark:bg-[#161616] hover:bg-[#FAFAFA] dark:hover:bg-[#1E1E1E] active:scale-[0.995] text-[#111111] dark:text-[#F5F5F5] font-medium text-[13.5px] border border-[#E4E4E7] dark:border-[#2A2A2A] transition-all flex items-center justify-center gap-2.5 disabled:opacity-60"
+                  >
+                    {isXBusy ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <svg className="w-4 h-4 shrink-0 fill-current" viewBox="0 0 24 24">
+                        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                      </svg>
+                    )}
+                    <span>{mode === "signin" ? "Sign in with X" : "Sign up with X"}</span>
+                  </button>
 
-              {/* Hairline Divider */}
-              <div className="relative flex items-center justify-center">
-                <div className="absolute inset-x-0 top-1/2 border-t border-[#E4E4E7] dark:border-[#242424]" />
-                <span className="relative bg-white dark:bg-[#0E0E0E] px-3 text-[12px] text-[#A1A1AA] dark:text-[#666666]">
-                  or
-                </span>
-              </div>
+                  {/* Hairline Divider */}
+                  <div className="relative flex items-center justify-center">
+                    <div className="absolute inset-x-0 top-1/2 border-t border-[#E4E4E7] dark:border-[#242424]" />
+                    <span className="relative bg-white dark:bg-[#0E0E0E] px-3 text-[12px] text-[#A1A1AA] dark:text-[#666666]">
+                      or
+                    </span>
+                  </div>
+                </>
+              )}
 
-              {/* Email & Password Form */}
-              <form onSubmit={handleEmailAuth} className="space-y-4">
-                {mode === "signup" && (
+              {/* Email & Password Form (Sign In / Sign Up) */}
+              {(mode === "signin" || mode === "signup") && (
+                <form onSubmit={handleEmailAuth} className="space-y-4">
+                  {mode === "signup" && (
+                    <div>
+                      <label
+                        htmlFor="auth-name"
+                        className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
+                      >
+                        Full name
+                      </label>
+                      <input
+                        id="auth-name"
+                        type="text"
+                        required
+                        autoComplete="name"
+                        placeholder="Alex Rivera"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="w-full h-10 px-3.5 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
+                      />
+                    </div>
+                  )}
+
                   <div>
                     <label
-                      htmlFor="auth-name"
+                      htmlFor="auth-email"
                       className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
                     >
-                      Full name
+                      Email
                     </label>
                     <input
-                      id="auth-name"
-                      type="text"
+                      id="auth-email"
+                      type="email"
                       required
-                      autoComplete="name"
-                      placeholder="Alex Rivera"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      autoComplete="email"
+                      placeholder="you@domain.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       className="w-full h-10 px-3.5 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
                     />
                   </div>
-                )}
 
-                <div>
-                  <label
-                    htmlFor="auth-email"
-                    className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
-                  >
-                    Email
-                  </label>
-                  <input
-                    id="auth-email"
-                    type="email"
-                    required
-                    autoComplete="email"
-                    placeholder="you@domain.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full h-10 px-3.5 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
-                  />
-                </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label
+                        htmlFor="auth-password"
+                        className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5]"
+                      >
+                        Password
+                      </label>
+                      {mode === "signin" && (
+                        <button
+                          type="button"
+                          onClick={() => switchMode("forgot")}
+                          className="text-[12px] font-medium text-[#EA580C] hover:text-[#C2410C] dark:hover:text-[#F97316] transition-colors focus-visible:outline-none focus-visible:underline"
+                        >
+                          Forgot password?
+                        </button>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <input
+                        id="auth-password"
+                        type={showPassword ? "text" : "password"}
+                        required
+                        minLength={6}
+                        autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full h-10 pl-3.5 pr-10 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((s) => !s)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#71717A] dark:text-[#787878] hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
 
-                <div>
-                  <label
-                    htmlFor="auth-password"
-                    className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
-                  >
-                    Password
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="auth-password"
-                      type={showPassword ? "text" : "password"}
-                      required
-                      minLength={6}
-                      autoComplete={mode === "signin" ? "current-password" : "new-password"}
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full h-10 pl-3.5 pr-10 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword((s) => !s)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#71717A] dark:text-[#787878] hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
-                      aria-label={showPassword ? "Hide password" : "Show password"}
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
+                    {/* Password Strength Meter on Sign Up */}
+                    {mode === "signup" && (
+                      <div className="mt-2 space-y-1.5">
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[1, 2, 3, 4].map((segment) => {
+                            const active = strength.score >= segment;
+                            const barColor =
+                              !active
+                                ? "bg-[#E4E4E7] dark:bg-[#242424]"
+                                : strength.score === 1
+                                ? "bg-rose-500"
+                                : strength.score === 2
+                                ? "bg-amber-500"
+                                : "bg-emerald-500";
+                            return (
+                              <div
+                                key={segment}
+                                className={`h-1 rounded-full transition-colors duration-200 ${barColor}`}
+                              />
+                            );
+                          })}
+                        </div>
+                        <p className="text-[11.5px] text-[#71717A] dark:text-[#8E8E8E]">
+                          {strength.label}
+                        </p>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Password Strength Meter on Sign Up */}
-                  {mode === "signup" && (
+                  {/* Inline Feedback Banner */}
+                  {feedback && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 3 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`p-3 rounded-lg text-[12.5px] leading-relaxed flex items-start gap-2.5 border ${
+                        feedback.isError
+                          ? "bg-rose-50/80 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-800 dark:text-rose-200"
+                          : "bg-emerald-50/80 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-200"
+                      }`}
+                    >
+                      {feedback.isError ? (
+                        <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      )}
+                      <span>{feedback.text}</span>
+                    </motion.div>
+                  )}
+
+                  {/* Single Primary Action */}
+                  <button
+                    type="submit"
+                    disabled={isSubmitting || isXBusy}
+                    className="w-full h-10 rounded-lg bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] active:scale-[0.995] text-white dark:text-[#111111] text-[13.5px] font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>{mode === "signin" ? "Signing in..." : "Creating workspace..."}</span>
+                      </>
+                    ) : (
+                      <span>{mode === "signin" ? "Sign in" : "Create account"}</span>
+                    )}
+                  </button>
+                </form>
+              )}
+
+              {/* Forgot Password Mode Form */}
+              {mode === "forgot" && (
+                <form onSubmit={handleForgotPassword} className="space-y-4">
+                  <div>
+                    <label
+                      htmlFor="forgot-email"
+                      className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
+                    >
+                      Account email
+                    </label>
+                    <input
+                      id="forgot-email"
+                      type="email"
+                      required
+                      autoComplete="email"
+                      placeholder="you@domain.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full h-10 px-3.5 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
+                    />
+                  </div>
+
+                  {/* Inline Feedback Banner */}
+                  {feedback && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 3 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`p-3 rounded-lg text-[12.5px] leading-relaxed flex items-start gap-2.5 border ${
+                        feedback.isError
+                          ? "bg-rose-50/80 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-800 dark:text-rose-200"
+                          : "bg-emerald-50/80 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-200"
+                      }`}
+                    >
+                      {feedback.isError ? (
+                        <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      )}
+                      <span>{feedback.text}</span>
+                    </motion.div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full h-10 rounded-lg bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] active:scale-[0.995] text-white dark:text-[#111111] text-[13.5px] font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Sending reset link...</span>
+                      </>
+                    ) : (
+                      <span>Send reset link</span>
+                    )}
+                  </button>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => switchMode("signin")}
+                      className="text-[12.5px] font-medium text-[#71717A] dark:text-[#9E9E9E] hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
+                    >
+                      Remember your password?{" "}
+                      <span className="text-[#EA580C] underline font-semibold">Sign in</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Reset Password Form */}
+              {mode === "reset" && (
+                <form onSubmit={handleResetPassword} className="space-y-4">
+                  <div>
+                    <label
+                      htmlFor="reset-password"
+                      className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
+                    >
+                      New password
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="reset-password"
+                        type={showPassword ? "text" : "password"}
+                        required
+                        minLength={6}
+                        autoComplete="new-password"
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full h-10 pl-3.5 pr-10 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((s) => !s)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#71717A] dark:text-[#787878] hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+
+                    {/* Password Strength Meter */}
                     <div className="mt-2 space-y-1.5">
                       <div className="grid grid-cols-4 gap-1.5">
                         {[1, 2, 3, 4].map((segment) => {
@@ -547,45 +913,85 @@ export default function AuthView({
                         {strength.label}
                       </p>
                     </div>
-                  )}
-                </div>
+                  </div>
 
-                {/* Inline Feedback Banner */}
-                {feedback && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 3 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`p-3 rounded-lg text-[12.5px] leading-relaxed flex items-start gap-2.5 border ${
-                      feedback.isError
-                        ? "bg-rose-50/80 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-800 dark:text-rose-200"
-                        : "bg-emerald-50/80 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-200"
-                    }`}
+                  <div>
+                    <label
+                      htmlFor="reset-confirm-password"
+                      className="block text-[13px] font-medium text-[#18181B] dark:text-[#E5E5E5] mb-1.5"
+                    >
+                      Confirm new password
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="reset-confirm-password"
+                        type={showConfirmPassword ? "text" : "password"}
+                        required
+                        minLength={6}
+                        autoComplete="new-password"
+                        placeholder="••••••••"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className="w-full h-10 pl-3.5 pr-10 rounded-lg border border-[#E4E4E7] dark:border-[#2A2A2A] bg-white dark:bg-[#141414] text-[13.5px] text-[#111111] dark:text-[#F5F5F5] placeholder:text-[#A1A1AA] dark:placeholder:text-[#5E5E5E] focus:outline-none focus:border-[#111111] dark:focus:border-[#666666] focus:ring-2 focus:ring-[#111111]/5 dark:focus:ring-white/5 transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword((s) => !s)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#71717A] dark:text-[#787878] hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
+                        aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Inline Feedback Banner */}
+                  {feedback && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 3 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`p-3 rounded-lg text-[12.5px] leading-relaxed flex items-start gap-2.5 border ${
+                        feedback.isError
+                          ? "bg-rose-50/80 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50 text-rose-800 dark:text-rose-200"
+                          : "bg-emerald-50/80 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-200"
+                      }`}
+                    >
+                      {feedback.isError ? (
+                        <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      )}
+                      <span>{feedback.text}</span>
+                    </motion.div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full h-10 rounded-lg bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] active:scale-[0.995] text-white dark:text-[#111111] text-[13.5px] font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-60"
                   >
-                    {feedback.isError ? (
-                      <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Updating password...</span>
+                      </>
                     ) : (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      <span>Update password</span>
                     )}
-                    <span>{feedback.text}</span>
-                  </motion.div>
-                )}
+                  </button>
 
-                {/* Single Primary Action */}
-                <button
-                  type="submit"
-                  disabled={isSubmitting || isXBusy}
-                  className="w-full h-10 rounded-lg bg-[#111111] hover:bg-[#27272A] dark:bg-[#F5F5F5] dark:hover:bg-[#E4E4E7] active:scale-[0.995] text-white dark:text-[#111111] text-[13.5px] font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-60"
-                >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>{mode === "signin" ? "Signing in..." : "Creating workspace..."}</span>
-                    </>
-                  ) : (
-                    <span>{mode === "signin" ? "Sign in" : "Create account"}</span>
-                  )}
-                </button>
-              </form>
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => switchMode("signin")}
+                      className="text-[12.5px] font-medium text-[#71717A] dark:text-[#9E9E9E] hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
+                    >
+                      Cancel and return to{" "}
+                      <span className="text-[#EA580C] underline font-semibold">Sign in</span>
+                    </button>
+                  </div>
+                </form>
+              )}
             </motion.div>
           </AnimatePresence>
         </main>

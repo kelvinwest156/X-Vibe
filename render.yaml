@@ -12,7 +12,7 @@ services:
       - key: HEADLESS
         value: "true"
       - key: BROWSER_PROFILE_DIR
-        value: /data/x_browser_profile
+        value: /data/browser_profiles/x_browser_profile
       - key: DATABASE_URL
         value: sqlite:////data/vibebot.db
       - key: AUTH_SECRET_KEY

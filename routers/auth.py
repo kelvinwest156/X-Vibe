@@ -8,7 +8,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 
-from models import SignUpRequest, SignInRequest, UserResponse, AuthResponse
+from models import (
+    SignUpRequest,
+    SignInRequest,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    ResetPasswordRequest,
+    UserResponse,
+    AuthResponse
+)
 from database import (
     get_db,
     create_user,
@@ -16,7 +24,10 @@ from database import (
     get_user_by_id,
     verify_password,
     create_auth_token,
-    verify_auth_token
+    verify_auth_token,
+    create_password_reset_token,
+    verify_password_reset_token,
+    update_user_password
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -73,6 +84,61 @@ async def signin(req: SignInRequest, db: Session = Depends(get_db)):
         ),
         tenant_id=user.tenant_id,
         message="Signed in successfully."
+    )
+
+
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
+async def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Initiates password reset by issuing a secure HMAC token."""
+    email = req.email.strip().lower()
+    if not email or "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Please provide a valid email address.")
+
+    user = get_user_by_email(db, email)
+    if not user:
+        # Don't leak user enumeration in public responses
+        return ForgotPasswordResponse(
+            success=True,
+            message="If an account exists with this email, instructions to reset your password have been issued."
+        )
+
+    reset_token = create_password_reset_token(user.email, exp_minutes=60)
+    print(f"[AUTH] Generated password reset token for {user.email}: {reset_token}")
+
+    return ForgotPasswordResponse(
+        success=True,
+        message="Password reset link prepared. Please choose your new password.",
+        reset_token=reset_token
+    )
+
+
+@router.post("/reset-password", response_model=AuthResponse)
+async def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Validates the reset token, updates password hash, and logs user in directly."""
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long.")
+
+    email = verify_password_reset_token(req.token)
+    if not email:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token. Please request a new link.")
+
+    user = update_user_password(db, email, req.new_password)
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    token = create_auth_token(user.user_id, user.email, user.tenant_id)
+    return AuthResponse(
+        success=True,
+        token=token,
+        user=UserResponse(
+            uid=user.user_id,
+            email=user.email,
+            name=user.name,
+            tenant_id=user.tenant_id,
+            created_at=user.created_at
+        ),
+        tenant_id=user.tenant_id,
+        message="Your password has been reset successfully. Welcome back!"
     )
 
 

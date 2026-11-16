@@ -90,6 +90,29 @@ export async function signOutUser(): Promise<{ error: Error | null }> {
   return { error };
 }
 
+// Request password reset email via Supabase
+export async function resetPasswordForEmail(email: string): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    throw new Error("Supabase is not configured.");
+  }
+  const redirectTo = typeof window !== "undefined" ? `${window.location.origin}/?mode=reset` : undefined;
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo,
+  });
+  return { error };
+}
+
+// Update user password after recovery
+export async function updateUserPassword(newPassword: string): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    throw new Error("Supabase is not configured.");
+  }
+  const { error } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+  return { error };
+}
+
 // Get current session
 export async function getSession(): Promise<Session | null> {
   if (!isSupabaseConfigured) return null;

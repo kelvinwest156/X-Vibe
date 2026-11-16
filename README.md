@@ -31,7 +31,7 @@ playwright install chromium
 ```
 
 ### 2. Launch the Server
-Double-click **`start_vibebot.bat`** or run:
+Double-click **`scripts/start_vibebot.bat`** or run:
 ```powershell
 python main.py
 ```
@@ -39,7 +39,7 @@ Open **`http://localhost:8000`** in your browser.
 
 ### 3. Link Your X Account & Gemini Key
 1. Paste your free **[Google Gemini API key](https://aistudio.google.com/app/apikey)** in the sidebar and click **Verify**.
-2. Double-click **`login_browser.bat`** (or click **Login** in the top bar) to sign into X in your default browser (**Brave**, **Chrome**, or **Edge**).
+2. Double-click **`scripts/login_browser.bat`** (or click **Login** in the top bar) to sign into X in your default browser (**Brave**, **Chrome**, or **Edge**).
 3. Close the login window once your X home feed loads—your **`@username`** will appear in green in the top header!
 
 ---
@@ -47,7 +47,7 @@ Open **`http://localhost:8000`** in your browser.
 ## ☁️ Deploying on Render (Recommended over Vercel)
 
 > **Why Render instead of Vercel?**  
-> Vercel only runs short-lived serverless functions (10–60s timeout) with no persistent disk and cannot run a continuous Playwright Chromium browser or background random-schedule loop. **Render** supports long-running **Docker Web Services** with a **Persistent Disk** (`/data`) that preserves both your SQLite database (`vibebot.db`) and browser profile (`/data/x_browser_profile`).
+> Vercel only runs short-lived serverless functions (10–60s timeout) with no persistent disk and cannot run a continuous Playwright Chromium browser or background random-schedule loop. **Render** supports long-running **Docker Web Services** with a **Persistent Disk** (`/data`) that preserves both your SQLite database (`vibebot.db`) and browser profiles (`/data/browser_profiles/x_browser_profile`).
 
 ### Step-by-Step Render Deployment
 1. Push this repository to your GitHub account.

@@ -1,4 +1,6 @@
-# Persistent browser profile (holds login cookies and session data)
+# Persistent runtime data & browser profiles
+data/
+browser_profiles/
 x_browser_profile/
 x_browser_profile*/
 cookies_backup*.json

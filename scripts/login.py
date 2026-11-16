@@ -3,13 +3,18 @@ X (Twitter) Manual Login Assistant for X-VibeBot.
 Launches your default browser (Brave, Chrome, or Edge) with your bot profile so you can log into X.
 """
 import sys
+import os
 import asyncio
+
+# Ensure project root is in sys.path
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 # Critical fix for Windows: Playwright subprocesses require ProactorEventLoop
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-import os
 import time
 import urllib.request
 from browser_worker import get_default_chromium_path, kill_profile_browser_processes
@@ -63,10 +68,18 @@ async def main():
     else:
         print("      Path: Using Playwright bundled Chromium")
 
-    profile_dir = os.path.abspath("./x_browser_profile")
+    env_profile = os.getenv("BROWSER_PROFILE_DIR")
+    if env_profile:
+        profile_dir = os.path.abspath(env_profile)
+    elif os.path.exists(os.path.join(BASE_DIR, "data", "browser_profiles", "x_browser_profile")):
+        profile_dir = os.path.abspath(os.path.join(BASE_DIR, "data", "browser_profiles", "x_browser_profile"))
+    elif os.path.exists(os.path.join(BASE_DIR, "x_browser_profile")):
+        profile_dir = os.path.abspath(os.path.join(BASE_DIR, "x_browser_profile"))
+    else:
+        profile_dir = os.path.abspath(os.path.join(BASE_DIR, "data", "browser_profiles", "x_browser_profile"))
     os.makedirs(profile_dir, exist_ok=True)
 
-    print("\n[2/4] Releasing any existing lock on ./x_browser_profile...")
+    print(f"\n[2/4] Releasing any existing lock on {profile_dir}...")
     pause_background_agent()
     kill_profile_browser_processes(profile_dir)
     await asyncio.sleep(1.0)
@@ -111,7 +124,7 @@ async def main():
         print(f" [OK] {browser_name} is now open on your desktop!")
         print(" 1. Sign into your X (Twitter) account in the browser window.")
         print(" 2. Once you reach your home feed, close the browser window.")
-        print(" 3. Your cookies and session will be saved in ./x_browser_profile.")
+        print(f" 3. Your cookies and session will be saved in: {profile_dir}")
         print("=" * 65 + "\n")
 
         # Keep running until the user closes the browser window
@@ -124,7 +137,7 @@ async def main():
             except Exception:
                 break
 
-        print(f"\n[DONE] {browser_name} closed. Session saved permanently into ./x_browser_profile!")
+        print(f"\n[DONE] {browser_name} closed. Session saved permanently into {profile_dir}!")
         notify_server("/api/browser/check-session")
         print("You can now return to the dashboard (http://localhost:8000) and start the agent.")
 

@@ -2,7 +2,12 @@ __pycache__/
 *.pyc
 .git/
 .env
+.env.*
+*.db
 vibebot.db
+data/
+browser_profiles/
 x_browser_profile/
+x_browser_profile*/
 tmp_test_profile/
 .agents/
