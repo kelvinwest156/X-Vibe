@@ -30,6 +30,30 @@ DB_FILE = os.getenv("DATABASE_URL", "sqlite:///./vibebot.db")
 if DB_FILE.startswith("postgres://"):
     DB_FILE = DB_FILE.replace("postgres://", "postgresql://", 1)
 
+# Ensure resilient driver routing for PostgreSQL across psycopg 3 and psycopg2
+if DB_FILE.startswith("postgresql://") or DB_FILE.startswith("postgresql+"):
+    try:
+        import psycopg
+        has_psycopg3 = True
+    except ImportError:
+        has_psycopg3 = False
+
+    try:
+        import psycopg2
+        has_psycopg2 = True
+    except ImportError:
+        has_psycopg2 = False
+
+    if DB_FILE.startswith("postgresql://"):
+        if has_psycopg3:
+            DB_FILE = DB_FILE.replace("postgresql://", "postgresql+psycopg://", 1)
+        elif has_psycopg2:
+            DB_FILE = DB_FILE.replace("postgresql://", "postgresql+psycopg2://", 1)
+    elif DB_FILE.startswith("postgresql+psycopg://") and not has_psycopg3 and has_psycopg2:
+        DB_FILE = DB_FILE.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+    elif DB_FILE.startswith("postgresql+psycopg2://") and not has_psycopg2 and has_psycopg3:
+        DB_FILE = DB_FILE.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
+
 engine_kwargs: Dict[str, Any] = {"echo": False}
 if "sqlite" in DB_FILE:
     engine_kwargs["connect_args"] = {"check_same_thread": False}
