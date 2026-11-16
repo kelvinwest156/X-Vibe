@@ -486,7 +486,10 @@ class XBrowserWorker:
             return await self.post_reply(tweet_id, text, tweet_url, should_like=should_like)
 
     async def open_headful_for_login(self):
-        """Closes any existing session and opens a visible browser window to x.com/login."""
+        """
+        Closes any existing session, opens a visible browser window to x.com/login,
+        and launches an automated background watcher that verifies sign-in and closes the window.
+        """
         marker_path = os.path.join(self.profile_dir, ".disconnected")
         if os.path.isfile(marker_path):
             try:
@@ -501,4 +504,93 @@ class XBrowserWorker:
                 await page.goto("https://x.com/login", wait_until="domcontentloaded", timeout=12000)
             except Exception as e:
                 logger.warning(f"Initial navigation notice: {e}")
-            logger.info("Browser opened for manual login. Sign into X, then close the window.")
+            logger.info("Browser opened for manual login. Auto-monitoring for sign-in completion...")
+
+        # Launch automated session verification watcher
+        asyncio.create_task(self._watch_login_and_autoclose(page))
+
+    async def _watch_login_and_autoclose(self, page: Page):
+        """
+        Actively monitors the opened login window.
+        As soon as the user logs in:
+        1. Verifies the session by detecting auth cookies or home feed navigation.
+        2. Extracts the authenticated @username.
+        3. Saves cookies and session metadata to disk.
+        4. Automatically closes the opened browser window.
+        """
+        logger.info("Session auto-verification watcher running. Waiting for X sign-in...")
+        poll_interval = 1.5
+        max_duration = 300  # 5 minutes timeout
+        start_time = time.time()
+
+        while time.time() - start_time < max_duration:
+            await asyncio.sleep(poll_interval)
+            try:
+                # If user manually closed the window, exit cleanly
+                if not self._context or page.is_closed():
+                    logger.info("Login browser window was closed by user.")
+                    return
+
+                # 1. Check for auth_token cookie
+                cookies = await self._context.cookies()
+                has_auth = any(
+                    c.get("name") == "auth_token" and len(c.get("value", "")) >= 15
+                    for c in cookies
+                    if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")
+                )
+
+                # 2. Check current page URL
+                url = (page.url or "").lower()
+                is_on_feed = "x.com/home" in url or ("x.com" in url and "login" not in url and "i/flow" not in url)
+
+                # 3. Check for in-app logged in navigation elements
+                has_app_ui = False
+                if has_auth or is_on_feed:
+                    try:
+                        switcher = await page.query_selector('[data-testid="SideNav_AccountSwitcher_Button"]')
+                        home_link = await page.query_selector('[data-testid="AppTabBar_Home_Link"]')
+                        primary_col = await page.query_selector('[data-testid="primaryColumn"]')
+                        if switcher or home_link or primary_col:
+                            has_app_ui = True
+                    except Exception:
+                        pass
+
+                # If authenticated session is confirmed
+                if has_auth and (is_on_feed or has_app_ui):
+                    logger.info("Detected successful X sign-in. Waiting 1s for token finalization...")
+                    await asyncio.sleep(1.2)
+                    if not self._context or page.is_closed():
+                        return
+
+                    # Extract the linked handle (@username)
+                    try:
+                        handle = await self._extract_logged_in_handle(page)
+                        if handle:
+                            self.logged_in_username = handle
+                    except Exception as he:
+                        logger.debug(f"Handle extraction note: {he}")
+
+                    # Save cookies and session metadata
+                    await self._backup_cookies_internal()
+
+                    logger.info(
+                        f"Successfully verified X session for {self.logged_in_username or 'account'}! "
+                        f"Automatically closing browser window now."
+                    )
+
+                    # Automatically close the opened Chromium window
+                    async with self._lock:
+                        await self._close_context_internal()
+
+                    return
+            except Exception as e:
+                # Ignore transient errors while pages are redirecting
+                logger.debug(f"Login watcher tick notice: {e}")
+                continue
+
+        logger.info("Login watcher reached maximum wait duration (5m).")
+        try:
+            async with self._lock:
+                await self._close_context_internal()
+        except Exception:
+            pass

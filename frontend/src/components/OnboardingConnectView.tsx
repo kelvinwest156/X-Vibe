@@ -50,21 +50,48 @@ export default function OnboardingConnectView({
     return raw.startsWith("@") ? raw : `@${raw}`;
   })();
 
+  // Automatic verification polling when login window is opened
+  React.useEffect(() => {
+    if (!windowOpened || isConnected) return;
+
+    let isCancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch("/api/browser/check-session", { method: "POST" });
+        const data = await res.json();
+        if (!isCancelled && res.ok && data.is_logged_in) {
+          clearInterval(interval);
+          setWindowOpened(false);
+          const handle = data.linked_username ? (data.linked_username.startsWith("@") ? data.linked_username : `@${data.linked_username}`) : "your_account";
+          setConnectedHandle(handle);
+          setFeedback({
+            text: `Verified ${handle}! The browser window has been closed automatically. Entering Creator Studio...`,
+            isError: false,
+          });
+          await onSessionConnected();
+          setTimeout(() => {
+            if (!isCancelled) onContinueToStudio();
+          }, 1400);
+        }
+      } catch {
+        // Continue polling silently
+      }
+    }, 1800);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [windowOpened, isConnected, apiFetch, onSessionConnected, onContinueToStudio]);
+
   const handleOpenBrowserWindow = async () => {
     setFeedback(null);
-    if (typeof window !== "undefined") {
-      window.open(
-        "https://x.com/login",
-        "XLoginPopup",
-        "width=660,height=760,left=220,top=90,menubar=no,toolbar=no"
-      );
-    }
     setWindowOpened(true);
     try {
       await apiFetch("/api/browser/launch-login", { method: "POST" });
     } catch {}
     setFeedback({
-      text: "Sign-in window opened. Complete sign-in on X, then click Verify X connection below.",
+      text: "Sign-in window opened on your screen. Complete sign-in on X — X-VibeBot will automatically verify your account and close the window for you.",
       isError: false,
     });
   };
@@ -357,7 +384,7 @@ export default function OnboardingConnectView({
                         Interactive sign-in window
                       </p>
                       <p className="text-[12.5px] text-[#71717A] dark:text-[#8E8E8E] leading-relaxed text-pretty">
-                        Open the X sign-in window, sign in to your profile, then click verify to sync your workspace.
+                        Open the X sign-in window and sign in to your profile. X-VibeBot will automatically verify your session and close the window for you!
                       </p>
                     </div>
                   </div>
@@ -396,8 +423,8 @@ export default function OnboardingConnectView({
                           : "bg-white dark:bg-[#1A1A1A] hover:bg-[#FAFAFA] dark:hover:bg-[#222222] text-[#111111] dark:text-[#F5F5F5] border border-[#E4E4E7] dark:border-[#2E2E2E]"
                       }`}
                     >
-                      <RefreshCw className={`size-4 ${isVerifying ? "animate-spin" : ""}`} aria-hidden="true" />
-                      <span>{isVerifying ? "Verifying connection..." : "Verify X connection"}</span>
+                      <RefreshCw className={`size-4 ${isVerifying || windowOpened ? "animate-spin" : ""}`} aria-hidden="true" />
+                      <span>{isVerifying ? "Verifying connection..." : windowOpened ? "Auto-verifying session..." : "Verify X connection"}</span>
                     </button>
                   </div>
                 </div>

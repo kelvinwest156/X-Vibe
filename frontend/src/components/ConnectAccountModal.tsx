@@ -53,6 +53,40 @@ export default function ConnectAccountModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
+  // Automatic session check loop while login window is opened
+  useEffect(() => {
+    if (!isOpen || !windowOpened || isLoggedIn) return;
+
+    let isCancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch("/api/browser/check-session", { method: "POST" });
+        const data = await res.json();
+        if (!isCancelled && res.ok && data.is_logged_in) {
+          clearInterval(interval);
+          setWindowOpened(false);
+          const handle = data.linked_username ? (data.linked_username.startsWith("@") ? data.linked_username : `@${data.linked_username}`) : "your account";
+          notify(`Verified active session for ${handle}!`);
+          setFeedback({
+            text: `Connected ${handle}! The sign-in window has been verified and closed automatically.`,
+            isError: false,
+          });
+          onSessionUpdated();
+          setTimeout(() => {
+            if (!isCancelled) onClose();
+          }, 1400);
+        }
+      } catch {
+        // Continue polling silently
+      }
+    }, 1800);
+
+    return () => {
+      isCancelled = true;
+      clearInterval(interval);
+    };
+  }, [isOpen, windowOpened, isLoggedIn, apiFetch, notify, onSessionUpdated, onClose]);
+
   if (!isOpen) return null;
 
   const displayHandle = (() => {
@@ -68,7 +102,7 @@ export default function ConnectAccountModal({
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to open browser.");
       setFeedback({
-        text: "Dedicated Chromium window opened on your screen. Please complete sign-in there, then click Verify X connection below.",
+        text: "Dedicated Chromium window opened on your screen. Sign in to X — X-VibeBot will automatically verify your account and close the window for you.",
         isError: false,
       });
     } catch (err: unknown) {
@@ -303,7 +337,7 @@ export default function ConnectAccountModal({
                       Local Desktop Sign-in
                     </p>
                     <p className="text-pretty">
-                      Click below to open the dedicated Chromium window, complete sign-in with X, then return here and click <strong>Verify X connection</strong>.
+                      Click below to open the dedicated Chromium window and sign in. X-VibeBot will automatically detect your sign-in, verify your session, and close the window for you!
                     </p>
                   </div>
 
