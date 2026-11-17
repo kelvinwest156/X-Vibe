@@ -146,13 +146,29 @@ def set_new_random_cooldown(min_mins: int, max_mins: int):
 
 
 def sync_detected_username(db: Session, tenant_id: str = "default", worker: Optional[XBrowserWorker] = None):
-    """Saves worker.logged_in_username to AgentConfig for the specified tenant if newly detected."""
+    """Saves worker.logged_in_username and active session cookies to AgentConfig for persistent cloud restarts."""
     w = worker or get_tenant_browser_worker(tenant_id)
-    if w.logged_in_username:
-        cfg = get_agent_config(db, tenant_id=tenant_id)
-        if cfg.linked_username != w.logged_in_username:
-            cfg.linked_username = w.logged_in_username
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+    changed = False
+    if w.logged_in_username and cfg.linked_username != w.logged_in_username:
+        cfg.linked_username = w.logged_in_username
+        changed = True
+
+    if os.path.isfile(w.cookies_backup_path):
+        try:
+            with open(w.cookies_backup_path, "r", encoding="utf-8") as f:
+                c_data = f.read()
+            if c_data and len(c_data) > 10 and c_data != getattr(cfg, "cookies_json", None):
+                cfg.cookies_json = c_data
+                changed = True
+        except Exception:
+            pass
+
+    if changed:
+        try:
             db.commit()
+        except Exception as ce:
+            logger.debug(f"DB commit error during sync: {ce}")
 
 
 def update_env_variable(key: str, value: str):

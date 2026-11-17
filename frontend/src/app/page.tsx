@@ -63,6 +63,8 @@ interface AgentStatus {
   cooldown_active: boolean;
   cooldown_seconds_remaining: number;
   within_active_hours: boolean;
+  active_hours_start?: number;
+  active_hours_end?: number;
   scheduled_count: number;
   is_logged_in: boolean;
   linked_username?: string | null;
@@ -1033,15 +1035,15 @@ export default function HomePage() {
 
         {/* Account Connection or Agent Status Strip */}
         {status && !status.is_logged_in ? (
-          <div className="bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#2A2A2A] rounded-xl px-4 py-3.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+          <div className="bg-white dark:bg-[#181818] border border-amber-300 dark:border-amber-700/60 rounded-xl px-4 py-3.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
             <div className="flex items-center gap-3">
-              <span className="w-2.5 h-2.5 rounded-full bg-[#EA580C] shrink-0" />
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
               <div className="space-y-0.5">
                 <p className="font-semibold text-slate-900 dark:text-white">
-                  Connect your X account to activate scanning and publishing
+                  X Account Not Connected — Bot is Idling
                 </p>
                 <p className="text-slate-500 dark:text-[#A3A3A3]">
-                  Connect your X account through an isolated browser window to activate live feed scanning and AI drafting.
+                  Your cloud worker needs an active X session token to scan feeds and post. Click below to connect your account.
                 </p>
               </div>
             </div>
@@ -1053,25 +1055,69 @@ export default function HomePage() {
               <span>Connect X account</span>
             </button>
           </div>
-        ) : (
-          status &&
-          !status.is_active && (
-            <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 rounded-xl px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>
-                  <strong>Studio Agent Paused:</strong> Background scanning and auto-reply scheduling are paused.
-                </span>
-              </div>
+        ) : status && !status.is_active ? (
+          <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/50 rounded-xl px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Studio Agent Paused:</strong> Background scanning and auto-reply scheduling are stopped.
+              </span>
+            </div>
+            <button
+              onClick={toggleAgent}
+              className="text-amber-900 dark:text-amber-100 font-semibold underline hover:text-amber-700 text-left"
+            >
+              Resume Agent
+            </button>
+          </div>
+        ) : status && !status.within_active_hours ? (
+          <div className="bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/70 dark:border-indigo-900/50 rounded-xl px-4 py-3 text-xs text-indigo-800 dark:text-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-indigo-600 shrink-0" />
+              <span>
+                <strong>Outside Active Hours:</strong> Bot is currently resting ({status.active_hours_start ?? 8}:00 - {status.active_hours_end ?? 23}:00). It will resume scanning automatically when active hours begin.
+              </span>
+            </div>
+            <button
+              onClick={() => setTab("settings")}
+              className="text-indigo-900 dark:text-indigo-100 font-semibold underline hover:text-indigo-700 text-left"
+            >
+              Adjust Hours in Settings
+            </button>
+          </div>
+        ) : status && !status.auto_pilot_mode && status.pending_approvals_count > 0 ? (
+          <div className="bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-900/50 rounded-xl px-4 py-3 text-xs text-blue-800 dark:text-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>
+                <strong>{status.pending_approvals_count} Drafts Waiting for Approval:</strong> Auto-Pilot is OFF (Human-in-the-Loop Mode). Posts will not publish until you approve them in the Review Queue.
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
               <button
-                onClick={toggleAgent}
-                className="text-amber-900 dark:text-amber-100 font-semibold underline hover:text-amber-700 text-left"
+                onClick={() => setTab("queue")}
+                className="btn btn-primary !h-7 !px-3 text-xs"
               >
-                Resume Agent
+                Review Drafts ({status.pending_approvals_count})
               </button>
             </div>
-          )
-        )}
+          </div>
+        ) : status && status.auto_pilot_mode && status.scheduled_count > 0 ? (
+          <div className="bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/50 rounded-xl px-4 py-2.5 text-xs text-emerald-800 dark:text-emerald-200 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Auto-Pilot Active:</strong> {status.scheduled_count} post(s) queued for organic randomized publishing.
+              </span>
+            </div>
+            <button
+              onClick={() => setTab("queue")}
+              className="text-emerald-900 dark:text-emerald-100 font-semibold underline hover:text-emerald-700 text-xs"
+            >
+              View Schedule
+            </button>
+          </div>
+        ) : null}
 
         <AnimatePresence mode="wait">
           <motion.div

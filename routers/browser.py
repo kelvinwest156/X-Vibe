@@ -195,6 +195,18 @@ async def check_session(
     """Checks whether the browser session for the requesting tenant is currently logged into X."""
     state.is_manual_login_active = False
     worker = state.get_tenant_browser_worker(tenant_id)
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+
+    # Cloud persistence: restore cookies from database if container wiped the local profile
+    if not os.path.isfile(worker.cookies_backup_path) and getattr(cfg, "cookies_json", None):
+        try:
+            db_cookies = json.loads(cfg.cookies_json)
+            if isinstance(db_cookies, list) and db_cookies:
+                await worker.import_cookies(db_cookies)
+                logger.info(f"Restored X session cookies for tenant '{tenant_id}' from database.")
+        except Exception as ce:
+            logger.debug(f"DB cookie restore notice: {ce}")
+
     logged_in = False
     try:
         logged_in = await asyncio.wait_for(worker.check_login_status(), timeout=12.0)
@@ -237,8 +249,10 @@ async def connect_session_endpoint(
         if tenant_id == "default":
             state.is_session_logged_in = is_logged
         if is_logged:
-            state.sync_detected_username(db, tenant_id=tenant_id, worker=worker)
             cfg = get_agent_config(db, tenant_id=tenant_id)
+            cfg.cookies_json = json.dumps(cookies)
+            db.commit()
+            state.sync_detected_username(db, tenant_id=tenant_id, worker=worker)
             handle = worker.logged_in_username or cfg.linked_username or "Connected Account"
             return {
                 "success": True,

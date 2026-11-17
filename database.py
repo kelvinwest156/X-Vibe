@@ -90,6 +90,8 @@ def init_db():
             ("hourly_action_cap", "INTEGER DEFAULT 6"),
             ("smart_query_enabled", "BOOLEAN DEFAULT 1" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT true"),
             ("warmup_mode", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
+            ("cookies_json", "TEXT"),
+            ("api_key", "VARCHAR(512)"),
         ]
         with engine.connect() as conn:
             for col_name, col_def in migrations_cfg:

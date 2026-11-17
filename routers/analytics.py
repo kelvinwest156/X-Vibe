@@ -82,6 +82,18 @@ async def get_status(
         config.active_hours_end if config.active_hours_end is not None else 23
     )
 
+    # Cloud persistence: hydrate cookies from database if local profile was wiped
+    if not os.path.isfile(worker.cookies_backup_path) and getattr(config, "cookies_json", None):
+        try:
+            db_cookies = json.loads(config.cookies_json)
+            if isinstance(db_cookies, list) and db_cookies:
+                os.makedirs(worker.profile_dir, exist_ok=True)
+                with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
+                    json.dump(db_cookies, f, indent=2)
+                logger.info(f"Restored session cookies for tenant '{tenant_id}' from database in status endpoint.")
+        except Exception:
+            pass
+
     has_saved_session = (
         os.path.isfile(worker.cookies_backup_path)
         and not os.path.isfile(os.path.join(worker.profile_dir, ".disconnected"))
@@ -90,7 +102,7 @@ async def get_status(
         state.tenant_login_states.get(tenant_id, False)
         or bool(worker.logged_in_username)
         or bool(config.linked_username)
-    ) and has_saved_session
+    ) and (has_saved_session or bool(getattr(config, "cookies_json", None)))
 
     return AgentStatusResponse(
         is_active=config.is_active,
@@ -107,6 +119,8 @@ async def get_status(
         cooldown_active=cooldown_rem > 0,
         cooldown_seconds_remaining=cooldown_rem,
         within_active_hours=within_hours,
+        active_hours_start=config.active_hours_start if config.active_hours_start is not None else 8,
+        active_hours_end=config.active_hours_end if config.active_hours_end is not None else 23,
         scheduled_count=sched_count,
         browser_connected=worker.is_running,
         is_logged_in=tenant_logged_in,

@@ -100,6 +100,15 @@ async def scheduled_queue_dispatcher_loop():
                     act_type = target.action_type or "reply"
                     logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}) [tenant={target_tenant}]. Publishing now (hourly {hourly_used + 1}/{hourly_cap})...")
                     worker = state.get_tenant_browser_worker(target_tenant)
+                    if not os.path.isfile(worker.cookies_backup_path) and getattr(config, "cookies_json", None):
+                        try:
+                            saved_cookies = json.loads(config.cookies_json)
+                            if isinstance(saved_cookies, list) and saved_cookies:
+                                os.makedirs(worker.profile_dir, exist_ok=True)
+                                with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
+                                    json.dump(saved_cookies, f, indent=2)
+                        except Exception:
+                            pass
                     success = await worker.execute_tweet_action(
                         act_type,
                         target.tweet_id,
@@ -234,6 +243,24 @@ async def background_automation_loop():
                             continue
 
                     worker = state.get_tenant_browser_worker(curr_tenant_id)
+
+                    # Ensure cookies and API key persist across cloud container restarts
+                    if not os.path.isfile(worker.cookies_backup_path) and getattr(config, "cookies_json", None):
+                        try:
+                            saved_cookies = json.loads(config.cookies_json)
+                            if isinstance(saved_cookies, list) and saved_cookies:
+                                os.makedirs(worker.profile_dir, exist_ok=True)
+                                with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
+                                    json.dump(saved_cookies, f, indent=2)
+                                logger.info(f"Tenant '{curr_tenant_id}': Restored session cookies from database.")
+                        except Exception as ce:
+                            logger.debug(f"Cookie restore note: {ce}")
+
+                    if getattr(config, "api_key", None) and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+                        if config.api_key.startswith("sk-"):
+                            os.environ["DEEPSEEK_API_KEY"] = config.api_key
+                        else:
+                            os.environ["GEMINI_API_KEY"] = config.api_key
                     try:
                         tenant_is_logged = await worker.check_login_status()
                         state.tenant_login_states[curr_tenant_id] = tenant_is_logged

@@ -75,6 +75,19 @@ def get_active_provider(custom_key: Optional[str] = None) -> str:
 def get_gemini_client(custom_key: Optional[str] = None):
     """Returns a Google GenAI Client or None if unconfigured."""
     api_key = custom_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        try:
+            from database import SessionLocal, AgentConfig
+            db = SessionLocal()
+            try:
+                cfg = db.query(AgentConfig).filter(AgentConfig.api_key.isnot(None)).first()
+                if cfg and cfg.api_key and not cfg.api_key.startswith("sk-"):
+                    api_key = cfg.api_key
+            finally:
+                db.close()
+        except Exception:
+            pass
+
     if not api_key or api_key == "your_gemini_api_key_here":
         return None
     try:
@@ -98,6 +111,19 @@ def get_gemini_client(custom_key: Optional[str] = None):
 def get_deepseek_client(custom_key: Optional[str] = None):
     """Returns an AsyncOpenAI client configured for DeepSeek or None."""
     api_key = custom_key or os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        try:
+            from database import SessionLocal, AgentConfig
+            db = SessionLocal()
+            try:
+                cfg = db.query(AgentConfig).filter(AgentConfig.api_key.isnot(None)).first()
+                if cfg and cfg.api_key and cfg.api_key.startswith("sk-"):
+                    api_key = cfg.api_key
+            finally:
+                db.close()
+        except Exception:
+            pass
+
     if not api_key or api_key == "your_deepseek_api_key_here":
         return None
     try:

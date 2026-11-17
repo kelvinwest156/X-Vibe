@@ -100,6 +100,8 @@ class AgentConfig(Base):
     persona_prompt = Column(Text, default="Casual, sharp, dry humor, short sentences, no corporate buzzwords")
     selected_model = Column(String(64), default="gemini-3.8-flash")
     linked_username = Column(String(128), nullable=True)       # Detected @handle of logged-in X account
+    cookies_json = Column(Text, nullable=True)                 # Persisted session cookies for surviving cloud container restarts
+    api_key = Column(String(512), nullable=True)              # Persisted Gemini or DeepSeek API key
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def effective_daily_cap(self) -> int:
@@ -310,6 +312,8 @@ class AgentStatusResponse(BaseModel):
     cooldown_active: bool
     cooldown_seconds_remaining: int
     within_active_hours: bool
+    active_hours_start: int = 8
+    active_hours_end: int = 23
     scheduled_count: int
     browser_connected: bool
     is_logged_in: bool

@@ -54,6 +54,37 @@ async def lifespan(app: FastAPI):
     """Manages application startup (database init, background worker loops) and graceful shutdown."""
     init_db()
     logger.info("Database verified.")
+
+    # Cloud Persistence: Hydrate API keys and browser session cookies from DB on startup
+    try:
+        from database import SessionLocal, AgentConfig
+        db_init = SessionLocal()
+        try:
+            cfgs = db_init.query(AgentConfig).all()
+            for c in cfgs:
+                if c.api_key and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+                    if c.api_key.startswith("sk-"):
+                        os.environ["DEEPSEEK_API_KEY"] = c.api_key
+                    else:
+                        os.environ["GEMINI_API_KEY"] = c.api_key
+                    logger.info(f"Hydrated AI API key from database for tenant '{c.tenant_id}'.")
+                if c.cookies_json:
+                    worker = state.get_tenant_browser_worker(c.tenant_id or "default")
+                    if not os.path.isfile(worker.cookies_backup_path):
+                        try:
+                            saved_cookies = json.loads(c.cookies_json)
+                            if isinstance(saved_cookies, list) and saved_cookies:
+                                os.makedirs(worker.profile_dir, exist_ok=True)
+                                with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
+                                    json.dump(saved_cookies, f, indent=2)
+                                logger.info(f"Hydrated persistent session cookies for tenant '{c.tenant_id}'.")
+                        except Exception as ce:
+                            logger.debug(f"Cookie hydration note for {c.tenant_id}: {ce}")
+        finally:
+            db_init.close()
+    except Exception as e:
+        logger.warning(f"Startup DB hydration note: {e}")
+
     state.bg_worker_task = asyncio.create_task(background_automation_loop())
     state.scheduler_worker_task = asyncio.create_task(scheduled_queue_dispatcher_loop())
     yield
