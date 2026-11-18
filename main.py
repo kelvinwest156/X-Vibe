@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
         try:
             cfgs = db_init.query(AgentConfig).all()
             for c in cfgs:
-                if c.api_key and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+                if c.api_key and not os.getenv("DEEPSEEK_API_KEY") and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
                     if c.api_key.startswith("sk-"):
                         os.environ["DEEPSEEK_API_KEY"] = c.api_key
                     else:

@@ -28,7 +28,7 @@ async def get_config(
     """Retrieves runtime configuration toggles for the requesting tenant."""
     cfg = get_agent_config(db, tenant_id=tenant_id)
     worker = state.get_tenant_browser_worker(tenant_id)
-    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or getattr(cfg, "api_key", None) or ""
+    current_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or getattr(cfg, "api_key", None) or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
         id=cfg.id,
@@ -72,7 +72,7 @@ async def update_config_endpoint(
     worker = state.get_tenant_browser_worker(tenant_id)
     logger.info(f"Settings updated for tenant '{tenant_id}'.")
 
-    current_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or getattr(updated, "api_key", None) or ""
+    current_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or getattr(updated, "api_key", None) or ""
     masked_key = (current_key[:4] + "..." + current_key[-4:]) if len(current_key) > 8 else ("***" if current_key else "")
     return AgentConfigResponse(
         id=updated.id,

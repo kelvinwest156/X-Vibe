@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any
 from services.ai_client import (
     get_active_provider,
     get_best_available_model,
+    sanitize_model_for_provider,
     get_gemini_client,
     get_deepseek_client,
     format_ai_error,
@@ -106,7 +107,7 @@ async def _evaluate_with_gemini(
             "raw_response": "NO_API_KEY"
         }
 
-    chosen_model = model_name or "gemini-2.0-flash"
+    chosen_model = sanitize_model_for_provider("gemini", model_name)
     clean_model = chosen_model.replace("models/", "")
     user_content_text = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
     if extra_context:
@@ -222,7 +223,7 @@ async def _evaluate_with_deepseek(
             "raw_response": "NO_API_KEY"
         }
 
-    chosen_model = model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    chosen_model = sanitize_model_for_provider("deepseek", model_name)
     user_content = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
     if extra_context:
         user_content += f"\nContext: {extra_context}"
@@ -278,11 +279,9 @@ async def evaluate_tweet(
     Evaluates a scraped tweet using DeepSeek API (with few-shot memory).
     Returns should_reply, reply_text, dynamic variants, should_like, urgency_score, and reasoning.
     """
-    if not model_name or model_name == "auto":
-        provider, resolved_model = get_best_available_model(task_type="evaluate", custom_key=custom_key)
-    else:
-        provider = get_active_provider(custom_key)
-        resolved_model = model_name
+    provider, resolved_model = get_best_available_model(task_type="evaluate", custom_key=custom_key)
+    if model_name and model_name != "auto":
+        resolved_model = sanitize_model_for_provider(provider, model_name)
 
     if provider == "gemini":
         return await _evaluate_with_gemini(
@@ -317,7 +316,7 @@ async def evaluate_tweet(
             return await _evaluate_with_gemini(
                 tweet_text=tweet_text,
                 tweet_author=tweet_author,
-                model_name="gemini-2.0-flash",
+                model_name=sanitize_model_for_provider("gemini"),
                 custom_key=custom_key,
                 search_query=search_query,
                 persona_prompt=persona_prompt,

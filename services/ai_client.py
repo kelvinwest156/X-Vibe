@@ -59,6 +59,24 @@ KNOWN_DEEPSEEK_MODELS: List[Dict[str, str]] = [
 ]
 
 
+def sanitize_model_for_provider(provider: str, model_name: Optional[str] = None) -> str:
+    """
+    Ensures the model name sent to an AI provider is always valid for that specific provider.
+    Eliminates 400 Bad Request errors when switching providers or running autonomous mode.
+    """
+    if provider == "deepseek":
+        valid = {"deepseek-chat", "deepseek-reasoner"}
+        if model_name and model_name.strip().lower() in valid:
+            return model_name.strip().lower()
+        return os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    elif provider == "gemini":
+        valid = {"gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"}
+        if model_name and model_name.strip().lower() in valid:
+            return model_name.strip().lower()
+        return os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    return model_name or "deepseek-chat"
+
+
 def get_best_available_model(task_type: str = "general", custom_key: Optional[str] = None) -> Tuple[str, str]:
     """
     Intelligently determines the best provider and model for the task at execution time.
@@ -70,11 +88,11 @@ def get_best_available_model(task_type: str = "general", custom_key: Optional[st
     if provider == "deepseek":
         ds_client = get_deepseek_client(custom_key)
         if ds_client:
-            return "deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+            return "deepseek", sanitize_model_for_provider("deepseek")
 
     gemini_client = get_gemini_client(custom_key)
     if gemini_client:
-        return "gemini", os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        return "gemini", sanitize_model_for_provider("gemini")
 
     return "deepseek", "deepseek-chat"
 

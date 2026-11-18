@@ -257,7 +257,7 @@ async def background_automation_loop():
                         except Exception as ce:
                             logger.debug(f"Cookie restore note: {ce}")
 
-                    if getattr(config, "api_key", None) and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+                    if getattr(config, "api_key", None) and not os.getenv("DEEPSEEK_API_KEY") and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
                         if config.api_key.startswith("sk-"):
                             os.environ["DEEPSEEK_API_KEY"] = config.api_key
                         else:
@@ -387,7 +387,7 @@ async def background_automation_loop():
                         )
 
                         if ai_result.get("raw_response") == "NO_API_KEY":
-                            logger.warning("Paused: Paste your Google Gemini API key in Settings first.")
+                            logger.warning("Paused: AI API key not configured. Check environment variables.")
                             break
 
                         db = SessionLocal()

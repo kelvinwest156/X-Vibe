@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, List
 from services.ai_client import (
     get_active_provider,
     get_best_available_model,
+    sanitize_model_for_provider,
     get_gemini_client,
     get_deepseek_client,
     format_ai_error,
@@ -104,7 +105,7 @@ async def _generate_original_with_deepseek(
         live_tweets=live_tweets,
         learning_memory=learning_memory
     )
-    chosen_model = model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    chosen_model = sanitize_model_for_provider("deepseek", model_name)
 
     kwargs = {
         "model": chosen_model,
@@ -152,11 +153,9 @@ async def generate_original_content(
     or lets the AI autonomously choose the best format (mode='auto') synthesized from real-time
     X conversations, user voice memory, and live Google Search grounding.
     """
-    if not model_name or model_name == "auto":
-        provider, resolved_model = get_best_available_model(task_type=mode, custom_key=custom_key)
-    else:
-        provider = get_active_provider(custom_key=custom_key)
-        resolved_model = model_name
+    provider, resolved_model = get_best_available_model(task_type=mode, custom_key=custom_key)
+    if model_name and model_name != "auto":
+        resolved_model = sanitize_model_for_provider(provider, model_name)
 
     if provider == "deepseek":
         res = await _generate_original_with_deepseek(
@@ -212,7 +211,7 @@ async def generate_original_content(
         learning_memory=learning_memory
     )
 
-    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).replace("models/", "")
+    chosen_model = sanitize_model_for_provider("gemini", model_name)
 
     try:
         from google.genai import types
@@ -354,7 +353,7 @@ Rules:
             try:
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        model=sanitize_model_for_provider("deepseek", model_name),
                         messages=[
                             {"role": "system", "content": "You are a trend scout inventing concise 2-4 word X search queries in JSON."},
                             {"role": "user", "content": prompt}
@@ -378,7 +377,7 @@ Rules:
     if not client:
         return base_niche
 
-    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).replace("models/", "")
+    chosen_model = sanitize_model_for_provider("gemini", model_name)
     try:
         from google.genai import types
         for candidate in list(dict.fromkeys([chosen_model, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.5-flash"])):
@@ -456,7 +455,7 @@ Write a crisp, high-signal executive brief in JSON with these exact keys:
             try:
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        model=sanitize_model_for_provider("deepseek", model_name),
                         messages=[
                             {"role": "system", "content": "You are an executive growth strategist analyzing telemetry in JSON."},
                             {"role": "user", "content": prompt}

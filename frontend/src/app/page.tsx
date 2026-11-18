@@ -515,7 +515,7 @@ export default function HomePage() {
         active_hours_end: Number(sleep) || 23,
         search_query: query.trim(),
         persona_prompt: persona.trim(),
-        selected_model: model,
+        selected_model: "auto",
       };
       if (apiKey.trim()) payload.api_key = apiKey.trim();
       const res = await apiFetch("/api/config", {
@@ -1679,7 +1679,7 @@ export default function HomePage() {
                     </p>
                   </div>
 
-                  {/* AI Routing & DeepSeek Key Verification */}
+                  {/* AI Routing Engine */}
                   <div className="space-y-4 pt-6 border-t border-slate-100 dark:border-[#262626]">
                     <div>
                       <div className="flex items-center justify-between">
@@ -1699,39 +1699,12 @@ export default function HomePage() {
                           </span>
                         </div>
                         <span className="text-[11px] font-medium text-slate-500 dark:text-[#A3A3A3]">
-                          Best Available
+                          Connected
                         </span>
                       </div>
                       <p className="text-[11.5px] text-slate-500 dark:text-[#A3A3A3] mt-1.5 leading-relaxed">
-                        The system automatically routes all post evaluations, query scouting, and thread synthesis to the best available model with zero rate-limit freezes.
+                        API credentials and model failovers are securely managed on the server.
                       </p>
-                    </div>
-
-                    <div>
-                      <label className="label">
-                        DeepSeek API Key{" "}
-                        <span className="text-slate-400 font-normal">
-                          (leave blank to keep {config?.masked_api_key ? "configured" : "default"})
-                        </span>
-                      </label>
-                      <div className="flex gap-2">
-                        <input
-                          type="password"
-                          className="field flex-1"
-                          value={apiKey}
-                          onChange={(e) => setApiKey(e.target.value)}
-                          placeholder="sk-..."
-                        />
-                        <button
-                          type="button"
-                          onClick={verifyKey}
-                          disabled={busy.key || !apiKey.trim()}
-                          className="btn text-xs shrink-0"
-                        >
-                          {busy.key ? <Spin /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                          <span>{busy.key ? "Verifying..." : "Verify Key"}</span>
-                        </button>
-                      </div>
                     </div>
                   </div>
                 </section>

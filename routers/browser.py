@@ -119,11 +119,16 @@ async def trigger_scrape_now(
     """Manually queues an immediate feed scan and AI evaluation for the active tenant."""
     state.is_manual_login_active = False
 
-    has_key = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+    has_key = bool(
+        (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+        or (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+        or getattr(cfg, "api_key", None)
+    )
     if not has_key:
         return {
             "status": "missing_api_key",
-            "message": "Add your Gemini API key in Settings before scanning."
+            "message": "AI API key is missing. Please configure DEEPSEEK_API_KEY in your environment variables."
         }
 
     worker = state.get_tenant_browser_worker(tenant_id)

@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional
 import httpx
 import xml.etree.ElementTree as ET
 
-from ai_engine import get_gemini_client, get_deepseek_client, get_active_provider, _clean_json_markdown
+from ai_engine import get_gemini_client, get_deepseek_client, get_active_provider, sanitize_model_for_provider, _clean_json_markdown
 
 logger = logging.getLogger("x_vibebot.web_scout")
 
@@ -267,7 +267,7 @@ Respond ONLY with valid JSON:
             try:
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        model=sanitize_model_for_provider("deepseek", model_name),
                         messages=[
                             {"role": "system", "content": "You are an influential creator on X. Respond ONLY with valid JSON."},
                             {"role": "user", "content": prompt}
