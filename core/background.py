@@ -4,6 +4,7 @@ Runs the continuous feed scraping loop, AI tweet evaluation, multimodal analysis
 self-learning memory ingestion, and human-like randomized queue dispatcher.
 """
 
+import os
 import asyncio
 import logging
 import random
