@@ -48,28 +48,48 @@ KNOWN_GEMINI_MODELS: List[Dict[str, str]] = [
 KNOWN_DEEPSEEK_MODELS: List[Dict[str, str]] = [
     {
         "id": "deepseek-chat",
-        "name": "DeepSeek-V3 (deepseek-chat)",
-        "description": "General conversational & coding model."
+        "name": "DeepSeek-V3 (deepseek-chat - Recommended)",
+        "description": "High-speed flagship conversational model for authentic X replies & threads."
     },
     {
         "id": "deepseek-reasoner",
         "name": "DeepSeek-R1 (deepseek-reasoner)",
-        "description": "Advanced reasoning model."
+        "description": "Advanced reasoning model for deep strategic analysis."
     }
 ]
 
 
-def get_active_provider(custom_key: Optional[str] = None) -> str:
-    """Determines whether to use Google Gemini or DeepSeek based on keys/config."""
-    if custom_key:
-        if custom_key.strip().startswith("sk-"):
-            return "deepseek"
-        return "gemini"
-
-    provider = os.getenv("AI_PROVIDER", "gemini").lower()
+def get_best_available_model(task_type: str = "general", custom_key: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Intelligently determines the best provider and model for the task at execution time.
+    Priority:
+    1. DeepSeek (deepseek-chat) if key is present (high speed, generous quota, no 429 caps).
+    2. Google Gemini (gemini-2.0-flash) if DeepSeek is not configured.
+    """
+    provider = get_active_provider(custom_key)
     if provider == "deepseek":
+        ds_client = get_deepseek_client(custom_key)
+        if ds_client:
+            return "deepseek", os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    gemini_client = get_gemini_client(custom_key)
+    if gemini_client:
+        return "gemini", os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+    return "deepseek", "deepseek-chat"
+
+
+def get_active_provider(custom_key: Optional[str] = None) -> str:
+    """Determines whether to use DeepSeek or Google Gemini based on keys/config."""
+    if custom_key:
+        if custom_key.strip().startswith("AIza"):
+            return "gemini"
         return "deepseek"
-    return "gemini"
+
+    provider = os.getenv("AI_PROVIDER", "deepseek").lower()
+    if provider == "gemini":
+        return "gemini"
+    return "deepseek"
 
 
 def get_gemini_client(custom_key: Optional[str] = None):
@@ -140,21 +160,18 @@ def get_deepseek_client(custom_key: Optional[str] = None):
 def format_ai_error(err: Any) -> str:
     """Translates raw AI provider error objects into clean, helpful, human-readable explanations."""
     err_str = str(err)
-    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
-        m_delay = re.search(r"retry in ([\d\w\.]+)", err_str, re.IGNORECASE)
-        delay_info = f" (resets in {m_delay.group(1)})" if m_delay else ""
-        return (
-            f"Gemini API rate limit or model quota reached{delay_info}. "
-            f"Bot will automatically fail over to Gemini 2.0/1.5 Flash (1,500 req/day quota) or DeepSeek."
-        )
-    if "400" in err_str or "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
-        return "Invalid Gemini API key. Please check or replace your key in Settings."
+    if "Insufficient Balance" in err_str or "insufficient_quota" in err_str.lower() or "balance" in err_str.lower():
+        return "DeepSeek account balance is low. Please check or top up credits at platform.deepseek.com."
+    if "401" in err_str or "AuthenticationError" in err_str or "API_KEY_INVALID" in err_str or "invalid_api_key" in err_str.lower():
+        return "Invalid DeepSeek API key. Please check or replace your key in Settings."
+    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "rate_limit" in err_str.lower():
+        return "DeepSeek rate limit reached. Retrying automatically in a moment..."
     if "403" in err_str or "PERMISSION_DENIED" in err_str:
-        return "Gemini API permission denied. Ensure Generative Language API is enabled on your Google Cloud project."
-    if "503" in err_str or "UNAVAILABLE" in err_str:
-        return "Google Gemini models are temporarily busy. Retrying automatically in a moment..."
+        return "DeepSeek API permission denied. Ensure your API key has proper access."
+    if "503" in err_str or "UNAVAILABLE" in err_str or "ServiceUnavailable" in err_str:
+        return "DeepSeek servers are temporarily busy. Retrying automatically..."
     if "Timeout" in err_str or "timed out" in err_str.lower():
-        return "AI model response timed out. Please try again or switch model in Settings."
+        return "DeepSeek API response timed out. Retrying automatically..."
     clean = re.sub(r"\{.*?\}", "", err_str).replace("\n", " ").strip()
     return clean[:180] if clean else err_str[:180]
 
@@ -313,23 +330,33 @@ async def _test_deepseek_api(custom_key: Optional[str] = None) -> Dict[str, Any]
             "success": False,
             "provider": "deepseek",
             "error": "DeepSeek API key is not configured",
-            "hint": "Enter your DeepSeek API key.",
+            "hint": "Paste your DeepSeek API key (sk-...) in Settings.",
             "models": KNOWN_DEEPSEEK_MODELS
         }
     try:
-        await client.models.list()
+        # Quick validation with timeout
+        await asyncio.wait_for(
+            client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=5
+            ),
+            timeout=8.0
+        )
         return {
             "success": True,
             "provider": "deepseek",
             "error": None,
-            "hint": "Connected to DeepSeek",
+            "hint": "Connected to DeepSeek (deepseek-chat)",
             "models": KNOWN_DEEPSEEK_MODELS
         }
     except Exception as e:
+        err_str = str(e)
+        logger.warning(f"DeepSeek test key error: {err_str}")
         return {
             "success": False,
             "provider": "deepseek",
-            "error": str(e),
-            "hint": f"DeepSeek auth failed: {str(e)}",
+            "error": err_str,
+            "hint": format_ai_error(e),
             "models": KNOWN_DEEPSEEK_MODELS
         }

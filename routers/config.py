@@ -45,7 +45,7 @@ async def get_config(
         smart_query_enabled=bool(getattr(cfg, "smart_query_enabled", True)),
         warmup_mode=bool(getattr(cfg, "warmup_mode", False)),
         persona_prompt=cfg.persona_prompt or "",
-        selected_model=cfg.selected_model or "gemini-2.0-flash",
+        selected_model=cfg.selected_model or "auto",
         linked_username=worker.logged_in_username or cfg.linked_username,
         masked_api_key=masked_key,
         updated_at=cfg.updated_at
@@ -89,7 +89,7 @@ async def update_config_endpoint(
         smart_query_enabled=bool(getattr(updated, "smart_query_enabled", True)),
         warmup_mode=bool(getattr(updated, "warmup_mode", False)),
         persona_prompt=updated.persona_prompt or "",
-        selected_model=updated.selected_model or "gemini-2.0-flash",
+        selected_model=updated.selected_model or "auto",
         linked_username=worker.logged_in_username or updated.linked_username,
         masked_api_key=masked_key,
         updated_at=updated.updated_at

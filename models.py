@@ -98,7 +98,7 @@ class AgentConfig(Base):
     smart_query_enabled = Column(Boolean, default=True)       # Let AI + Google Search invent fresh queries per scan
     warmup_mode = Column(Boolean, default=False)              # Gentle account warmup mode (caps daily to 8 & widens delays)
     persona_prompt = Column(Text, default="Casual, sharp, dry humor, short sentences, no corporate buzzwords")
-    selected_model = Column(String(64), default="gemini-2.0-flash")
+    selected_model = Column(String(64), default="auto")
     linked_username = Column(String(128), nullable=True)       # Detected @handle of logged-in X account
     cookies_json = Column(Text, nullable=True)                 # Persisted session cookies for surviving cloud container restarts
     api_key = Column(String(512), nullable=True)              # Persisted Gemini or DeepSeek API key
@@ -193,7 +193,7 @@ class AgentConfigUpdate(BaseModel):
     smart_query_enabled: Optional[bool] = Field(None, description="Enable autonomous Google Search trend discovery")
     warmup_mode: Optional[bool] = Field(None, description="Activate gentle anti-detection account warmup")
     persona_prompt: Optional[str] = Field(None, description="Voice and tone instructions for the AI")
-    selected_model: Optional[str] = Field(None, description="Model ID e.g. gemini-2.0-flash")
+    selected_model: Optional[str] = Field("auto", description="Model ID or 'auto' for autonomous best-model routing")
     api_key: Optional[str] = Field(None, description="Optional custom Gemini or DeepSeek API key")
 
 

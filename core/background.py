@@ -220,7 +220,7 @@ async def background_automation_loop():
                         smart_query_on = bool(getattr(config, "smart_query_enabled", True))
                         base_query = config.search_query
                         persona = config.persona_prompt
-                        selected_model = config.selected_model or "gemini-2.0-flash"
+                        selected_model = config.selected_model or "auto"
                         start_hr = config.active_hours_start if config.active_hours_start is not None else 8
                         end_hr = config.active_hours_end if config.active_hours_end is not None else 23
                         daily_used = get_daily_actions_count(db, tenant_id=curr_tenant_id)

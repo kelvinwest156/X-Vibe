@@ -127,7 +127,7 @@ async def get_status(
         linked_username=worker.logged_in_username or config.linked_username,
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
-        selected_model=config.selected_model or "gemini-2.0-flash",
+        selected_model=config.selected_model or "auto",
         recent_logs=[
             SystemLogEntry(
                 timestamp=entry["timestamp"],
@@ -401,7 +401,7 @@ async def get_analytics_endpoint(
                 top_authors=top_authors,
                 learning_memory=learning_memory,
                 niche=state.active_search_query_state or cfg.search_query or "AI & Tech",
-                model_name=cfg.selected_model or "gemini-2.5-flash",
+                model_name=cfg.selected_model or "auto",
                 force_refresh=refresh_brief
             ),
             timeout=2.5
@@ -485,5 +485,5 @@ async def get_stats_summary(
         "hourly_action_cap": getattr(cfg, "hourly_action_cap", 6),
         "pending_count": pending_count,
         "scheduled_count": scheduled_count,
-        "selected_model": cfg.selected_model or "gemini-2.0-flash"
+        "selected_model": cfg.selected_model or "auto"
     }

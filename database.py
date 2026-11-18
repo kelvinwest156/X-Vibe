@@ -81,7 +81,7 @@ def init_db():
         cfg_cols = [c["name"] for c in inspector.get_columns("agent_config")]
         migrations_cfg = [
             ("tenant_id", "VARCHAR(128) DEFAULT 'default'"),
-            ("selected_model", "VARCHAR(64) DEFAULT 'gemini-2.0-flash'"),
+            ("selected_model", "VARCHAR(64) DEFAULT 'auto'"),
             ("max_cooldown_minutes", "INTEGER DEFAULT 45"),
             ("active_hours_start", "INTEGER DEFAULT 8"),
             ("active_hours_end", "INTEGER DEFAULT 23"),
@@ -101,12 +101,11 @@ def init_db():
                         conn.commit()
                     except Exception:
                         pass
-            # Auto-upgrade any tenants configured with the 20-req/day capped model or invalid preview models
+            # Auto-upgrade any tenants to autonomous best-available-model routing
             try:
                 conn.exec_driver_sql(
-                    "UPDATE agent_config SET selected_model = 'gemini-2.0-flash' "
-                    "WHERE selected_model IN ('gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite') "
-                    "OR selected_model IS NULL"
+                    "UPDATE agent_config SET selected_model = 'auto' "
+                    "WHERE selected_model != 'auto' OR selected_model IS NULL"
                 )
                 conn.commit()
             except Exception:
@@ -154,7 +153,7 @@ def init_db():
                 smart_query_enabled=True,
                 warmup_mode=False,
                 persona_prompt="Casual, sharp, dry humor, short sentences, no corporate buzzwords",
-                selected_model="gemini-2.0-flash"
+                selected_model="auto"
             )
             db.add(config)
             db.commit()
@@ -163,8 +162,8 @@ def init_db():
             if not getattr(config, "tenant_id", None):
                 config.tenant_id = "default"
                 changed = True
-            if not config.selected_model or config.selected_model in ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]:
-                config.selected_model = "gemini-2.0-flash"
+            if not config.selected_model or config.selected_model != "auto":
+                config.selected_model = "auto"
                 changed = True
             if config.max_cooldown_minutes is None:
                 config.max_cooldown_minutes = max(30, (config.min_cooldown_minutes or 15) * 2)

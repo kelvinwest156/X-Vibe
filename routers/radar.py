@@ -88,7 +88,7 @@ async def draft_from_topic(
     drafts = await generate_draft_from_web_topic(
         topic=topic_data,
         persona_prompt=cfg.persona_prompt or "Casual, sharp, short sentences",
-        model_name=cfg.selected_model or "gemini-2.5-flash"
+        model_name=cfg.selected_model or "auto"
     )
 
     action_type = "thread" if payload.draft_type == "thread" else "post"

@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional
 import httpx
 import xml.etree.ElementTree as ET
 
-from ai_engine import get_gemini_client, _clean_json_markdown
+from ai_engine import get_gemini_client, get_deepseek_client, get_active_provider, _clean_json_markdown
 
 logger = logging.getLogger("x_vibebot.web_scout")
 
@@ -121,24 +121,7 @@ async def scout_and_rank_topics(
     if not raw_news:
         return []
 
-    client = get_gemini_client(custom_key=custom_key)
-    if not client:
-        # Fallback without AI enrichment
-        results = []
-        for it in raw_news[:limit]:
-            results.append({
-                "title": it["title"],
-                "source": it["source"],
-                "url": it["link"],
-                "suggested_query": " ".join(it["title"].split()[:3]),
-                "hook_summary": f"Breaking coverage from {it['source']}.",
-                "relevance_score": 8,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-        _TOPIC_CACHE[niche_key] = (now, results)
-        return results
-
-    # Enrich with Gemini for high-signal creator hooks & 2-4 word X search queries
+    provider = get_active_provider(custom_key=custom_key)
     titles_list = "\n".join([f"{i+1}. {it['title']} (Source: {it['source']})" for i, it in enumerate(raw_news)])
     prompt = f"""You are an elite X (Twitter) creator trend strategist.
 User's Niche: "{niche}"
@@ -162,30 +145,61 @@ Respond ONLY with valid JSON array of objects:
 ]"""
 
     enriched_map: Dict[int, Dict[str, Any]] = {}
-    try:
-        from google.genai import types
-        resp = await asyncio.wait_for(
-            client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.7,
-                    max_output_tokens=500
+    if provider == "deepseek":
+        ds_client = get_deepseek_client(custom_key=custom_key)
+        if ds_client:
+            try:
+                resp = await asyncio.wait_for(
+                    ds_client.chat.completions.create(
+                        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        messages=[
+                            {"role": "system", "content": "You are a trend strategist analyzing news for creators. Output valid JSON."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.7,
+                        max_tokens=800
+                    ),
+                    timeout=8.0
                 )
-            ),
-            timeout=4.5
-        )
-        if resp and resp.text:
-            cleaned = _clean_json_markdown(resp.text)
-            data = json.loads(cleaned)
-            if isinstance(data, list):
-                for item in data:
-                    idx = item.get("index")
-                    if idx:
-                        enriched_map[idx] = item
-    except Exception as e:
-        logger.debug(f"Gemini trend enrichment fast fallback: {e}")
+                raw = resp.choices[0].message.content or ""
+                cleaned = _clean_json_markdown(raw)
+                data = json.loads(cleaned)
+                items = data if isinstance(data, list) else (data.get("topics") or data.get("headlines") or (list(data.values())[0] if data and isinstance(list(data.values())[0], list) else []))
+                if isinstance(items, list):
+                    for item in items:
+                        idx = item.get("index")
+                        if idx:
+                            enriched_map[idx] = item
+            except Exception as e:
+                logger.debug(f"DeepSeek trend enrichment fallback: {e}")
+
+    client = get_gemini_client(custom_key=custom_key)
+    if client and not enriched_map:
+        try:
+            from google.genai import types
+            resp = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.7,
+                        max_output_tokens=500
+                    )
+                ),
+                timeout=4.5
+            )
+            if resp and resp.text:
+                cleaned = _clean_json_markdown(resp.text)
+                data = json.loads(cleaned)
+                if isinstance(data, list):
+                    for item in data:
+                        idx = item.get("index")
+                        if idx:
+                            enriched_map[idx] = item
+        except Exception as e:
+            logger.debug(f"Gemini trend enrichment fast fallback: {e}")
 
     results: List[Dict[str, Any]] = []
     for i, it in enumerate(raw_news):
@@ -217,23 +231,17 @@ Respond ONLY with valid JSON array of objects:
 async def generate_draft_from_web_topic(
     topic: Dict[str, Any],
     persona_prompt: str = "Casual, sharp, dry humor, short sentences",
-    model_name: str = "gemini-2.5-flash",
+    model_name: str = "deepseek-chat",
     custom_key: Optional[str] = None
 ) -> Dict[str, str]:
     """
     Synthesizes an original standalone tweet and a 3-tweet thread based on a breaking web topic.
+    Uses DeepSeek with Gemini fallback.
     """
-    client = get_gemini_client(custom_key=custom_key)
     title = topic.get("title", "")
     source = topic.get("source", "Google News")
     url = topic.get("url", "")
     hook_summary = topic.get("hook_summary", "")
-
-    if not client:
-        return {
-            "single_tweet": f"Interesting development: {title}.\n\nWhat's your take on this?",
-            "thread": f"1/3 Breaking: {title} via {source}.\n\n2/3 Here is why this matters for creators and builders.\n\n3/3 Full details: {url}"
-        }
 
     prompt = f"""You are an influential creator on X (Twitter).
 Persona Voice: "{persona_prompt}"
@@ -252,9 +260,43 @@ Respond ONLY with valid JSON:
   "thread": "1/3 First tweet...\\n\\n2/3 Second tweet...\\n\\n3/3 Third tweet..."
 }}"""
 
+    provider = get_active_provider(custom_key=custom_key)
+    if provider == "deepseek":
+        ds_client = get_deepseek_client(custom_key=custom_key)
+        if ds_client:
+            try:
+                resp = await asyncio.wait_for(
+                    ds_client.chat.completions.create(
+                        model=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        messages=[
+                            {"role": "system", "content": "You are an influential creator on X. Respond ONLY with valid JSON."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.85,
+                        max_tokens=650
+                    ),
+                    timeout=10.0
+                )
+                raw = resp.choices[0].message.content or ""
+                data = json.loads(_clean_json_markdown(raw))
+                return {
+                    "single_tweet": str(data.get("single_tweet", "")).strip(),
+                    "thread": str(data.get("thread", "")).strip()
+                }
+            except Exception as e:
+                logger.debug(f"DeepSeek web topic draft fallback: {e}")
+
+    client = get_gemini_client(custom_key=custom_key)
+    if not client:
+        return {
+            "single_tweet": f"Interesting development: {title}.\n\nWhat's your take on this?",
+            "thread": f"1/3 Breaking: {title} via {source}.\n\n2/3 Here is why this matters for creators and builders.\n\n3/3 Full details: {url}"
+        }
+
     try:
         from google.genai import types
-        chosen = (model_name or "gemini-2.5-flash").replace("models/", "")
+        chosen = (model_name if "gemini" in model_name else "gemini-2.0-flash").replace("models/", "")
         resp = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model=chosen,

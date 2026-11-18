@@ -118,16 +118,17 @@ const STATUS_STYLE: Record<string, string> = {
 function cleanErrorMessage(raw: string): string {
   if (!raw) return "An unexpected error occurred.";
   const lower = raw.toLowerCase();
-  if (raw.includes("429") || lower.includes("resource_exhausted") || lower.includes("quota")) {
-    const match = raw.match(/retry in ([\d\w\.]+)/i);
-    const delayInfo = match ? ` (resets in ${match[1]})` : "";
-    return `Google Gemini Free Tier daily quota limit reached (20 requests/day limit)${delayInfo}. Please switch your API key or model in Settings, or configure DeepSeek API for higher capacity.`;
+  if (raw.includes("Insufficient Balance") || lower.includes("insufficient_quota") || lower.includes("balance")) {
+    return "DeepSeek account balance is low. Please check or top up credits at platform.deepseek.com.";
   }
-  if (raw.includes("API_KEY_INVALID") || lower.includes("api key not valid") || lower.includes("invalid api key")) {
-    return "Invalid Gemini API key. Please check or replace your key in Settings.";
+  if (raw.includes("401") || lower.includes("invalid api key") || raw.includes("AuthenticationError")) {
+    return "Invalid DeepSeek API key. Please check or replace your key in Settings.";
+  }
+  if (raw.includes("429") || lower.includes("rate_limit") || lower.includes("resource_exhausted") || lower.includes("quota")) {
+    return "AI rate limit reached. The system is automatically retrying with backup failover.";
   }
   if (raw.includes("PERMISSION_DENIED") || raw.includes("403")) {
-    return "API permission denied. Ensure Generative Language API is enabled on your Google Cloud project.";
+    return "API permission denied. Please verify your API key in Settings.";
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
     return "AI request timed out. Please try again or switch model in Settings.";
@@ -387,7 +388,7 @@ export default function HomePage() {
   );
 
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("gemini-2.0-flash");
+  const [model, setModel] = useState("auto");
   const [query, setQuery] = useState("");
   const [persona, setPersona] = useState("");
   const [cap, setCap] = useState(15);
@@ -401,11 +402,8 @@ export default function HomePage() {
   const [sleep, setSleep] = useState(23);
   const [autopilot, setAutopilot] = useState(false);
   const [models, setModels] = useState<string[]>([
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-2.5-flash",
-    "gemini-3.8-flash",
+    "deepseek-chat",
+    "deepseek-reasoner",
   ]);
 
   const refresh = useCallback(async () => {
@@ -440,7 +438,7 @@ export default function HomePage() {
       if (!res.ok) return;
       const c = await res.json();
       setConfig(c);
-      setModel(c.selected_model || "gemini-2.0-flash");
+      setModel(c.selected_model || "auto");
       setQuery(c.search_query || "");
       setPersona(c.persona_prompt || "");
       setCap(c.daily_action_cap || 15);
@@ -552,9 +550,8 @@ export default function HomePage() {
       if (res.ok) {
         const d = await res.json();
         if (d.success) {
-          if (d.models?.length) setModels(d.models.map((m: { id: string }) => m.id));
           setApiKey("");
-          notify("Gemini API key verified successfully");
+          notify("DeepSeek API key verified successfully");
           loadConfig();
         } else {
           notify(d.hint || d.error || "Key not accepted", true);
@@ -1167,7 +1164,7 @@ export default function HomePage() {
                       onClick={() => createOriginal("auto")}
                       disabled={creating !== null}
                       className="btn btn-primary !h-9 !px-2.5 sm:!px-3.5 text-xs truncate"
-                      title="Let Gemini pick the best post or thread format"
+                      title="Let the best AI model pick the optimal post or thread format"
                     >
                       {creating === "auto" ? <Spin /> : <Sparkles className="w-3.5 h-3.5" />}
                       <span>{creating === "auto" ? "Synthesizing..." : "Smart Auto"}</span>
@@ -1208,7 +1205,7 @@ export default function HomePage() {
                     <p className="text-xs text-slate-500 dark:text-[#A3A3A3] max-w-md mx-auto leading-relaxed">
                       Scan your feed to discover live niche conversations, or trigger{" "}
                       <strong className="text-slate-700 dark:text-[#E5E5E5]">Smart Auto-Draft</strong> above to let
-                      Gemini compose an original post or multi-part thread.
+                      AI compose an original post or multi-part thread.
                     </p>
                     <div className="pt-2">
                       <button onClick={scan} disabled={scanning} className="btn btn-primary text-xs">
@@ -1377,7 +1374,7 @@ export default function HomePage() {
                                     target="_blank"
                                     rel="noreferrer"
                                     className="shrink-0 block"
-                                    title="Attached tweet image analyzed by Gemini Vision"
+                                    title="Attached tweet image analyzed with AI"
                                   >
                                     <img
                                       src={item.media_url}
@@ -1623,7 +1620,7 @@ export default function HomePage() {
                       Voice, Persona & Discovery
                     </h3>
                     <p className="text-xs text-slate-500 dark:text-[#A3A3A3] mt-0.5">
-                      Tune Gemini&apos;s writing persona and autonomous niche exploration
+                      Tune the AI&apos;s writing persona and autonomous niche exploration
                     </p>
                   </div>
 
@@ -1650,7 +1647,7 @@ export default function HomePage() {
                         Smart AI Search Discovery
                       </span>
                       <span className="text-xs text-slate-500 dark:text-[#A3A3A3] leading-normal block">
-                        Allows Gemini to formulate dynamic 2–4 word search pulses for every scan, preventing query stagnation and discovering fresh conversational threads.
+                        Allows the AI to formulate dynamic 2–4 word search pulses for every scan, preventing query stagnation and discovering fresh conversational threads.
                       </span>
                     </div>
                   </label>
@@ -1682,26 +1679,37 @@ export default function HomePage() {
                     </p>
                   </div>
 
-                  {/* AI Model & Key Verification */}
+                  {/* AI Routing & DeepSeek Key Verification */}
                   <div className="space-y-4 pt-6 border-t border-slate-100 dark:border-[#262626]">
                     <div>
-                      <label className="label">Active Model</label>
-                      <select
-                        className="field"
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                      >
-                        {models.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex items-center justify-between">
+                        <label className="label">AI Routing Engine</label>
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                          Autonomous
+                        </span>
+                      </div>
+                      <div className="mt-1.5 p-3 rounded-lg bg-slate-50 dark:bg-[#1f1f1f] border border-slate-200/60 dark:border-[#2d2d2d] flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <span className="font-semibold text-slate-900 dark:text-white">
+                            DeepSeek-V3
+                          </span>
+                          <span className="text-slate-400 dark:text-[#737373]">
+                            (Primary Engine · Auto-Failover Enabled)
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-medium text-slate-500 dark:text-[#A3A3A3]">
+                          Best Available
+                        </span>
+                      </div>
+                      <p className="text-[11.5px] text-slate-500 dark:text-[#A3A3A3] mt-1.5 leading-relaxed">
+                        The system automatically routes all post evaluations, query scouting, and thread synthesis to the best available model with zero rate-limit freezes.
+                      </p>
                     </div>
 
                     <div>
                       <label className="label">
-                        Gemini API Key{" "}
+                        DeepSeek API Key{" "}
                         <span className="text-slate-400 font-normal">
                           (leave blank to keep {config?.masked_api_key ? "configured" : "default"})
                         </span>
@@ -1712,7 +1720,7 @@ export default function HomePage() {
                           className="field flex-1"
                           value={apiKey}
                           onChange={(e) => setApiKey(e.target.value)}
-                          placeholder="AIzaSy..."
+                          placeholder="sk-..."
                         />
                         <button
                           type="button"

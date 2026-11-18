@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, List
 
 from services.ai_client import (
     get_active_provider,
+    get_best_available_model,
     get_gemini_client,
     get_deepseek_client,
     format_ai_error,
@@ -108,7 +109,7 @@ async def _generate_original_with_deepseek(
     kwargs = {
         "model": chosen_model,
         "messages": [
-            {"role": "system", "content": "You are a professional social media strategist writing real, punchy X posts."},
+            {"role": "system", "content": "You are a professional social media strategist writing real, punchy X posts. Output valid JSON."},
             {"role": "user", "content": prompt}
         ],
         "max_tokens": 1500
@@ -117,9 +118,24 @@ async def _generate_original_with_deepseek(
         kwargs["response_format"] = {"type": "json_object"}
         kwargs["temperature"] = 0.82
 
-    response = await client.chat.completions.create(**kwargs)
-    raw_text = response.choices[0].message.content or ""
-    return _parse_original_json_payload(raw_text, requested_mode=mode, topic=topic)
+    try:
+        response = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=20.0)
+        raw_text = response.choices[0].message.content or ""
+        logger.info(f"DeepSeek ({chosen_model}) generated original {mode} on '{topic[:40]}'")
+        return _parse_original_json_payload(raw_text, requested_mode=mode, topic=topic)
+    except Exception as e:
+        logger.error(f"Error calling DeepSeek API for original {mode}: {e}")
+        clean_err = format_ai_error(e)
+        return {
+            "success": False,
+            "action_type": "post" if mode == "auto" else mode,
+            "text": None,
+            "variants_json": None,
+            "urgency_score": 5,
+            "topic_summary": clean_err,
+            "error": clean_err,
+            "error_code": 500
+        }
 
 
 async def generate_original_content(
@@ -136,17 +152,28 @@ async def generate_original_content(
     or lets the AI autonomously choose the best format (mode='auto') synthesized from real-time
     X conversations, user voice memory, and live Google Search grounding.
     """
-    provider = get_active_provider(custom_key=custom_key)
+    if not model_name or model_name == "auto":
+        provider, resolved_model = get_best_available_model(task_type=mode, custom_key=custom_key)
+    else:
+        provider = get_active_provider(custom_key=custom_key)
+        resolved_model = model_name
+
     if provider == "deepseek":
-        return await _generate_original_with_deepseek(
+        res = await _generate_original_with_deepseek(
             mode=mode,
             search_query=search_query,
             persona_prompt=persona_prompt,
             live_tweets=live_tweets,
-            model_name=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            model_name=resolved_model,
             custom_key=custom_key,
             learning_memory=learning_memory
         )
+        if res.get("success") and res.get("text"):
+            return res
+        if get_gemini_client(custom_key=custom_key):
+            logger.info("DeepSeek original generation failed; attempting fallback to Gemini...")
+        else:
+            return res
 
     client = get_gemini_client(custom_key=custom_key)
     if not client:
@@ -163,7 +190,7 @@ async def generate_original_content(
                 learning_memory=learning_memory
             )
         fallback_mode = "post" if mode == "auto" else mode
-        msg = "Google Gemini API key not configured. Enter your key in Settings to generate content."
+        msg = "DeepSeek API key not configured. Enter your key in Settings to generate content."
         return {
             "success": False,
             "action_type": fallback_mode,
@@ -298,9 +325,7 @@ async def generate_smart_search_query(
     natural 2-to-4 word X search query on each scan cycle so the bot never camps on one stale keyword.
     """
     base_niche = (niche_topic or "AI agents, coding, and tech").strip()
-    client = get_gemini_client(custom_key=custom_key)
-    if not client:
-        return base_niche
+    provider = get_active_provider(custom_key=custom_key)
 
     recent_context = ""
     if recent_tweets:
@@ -322,6 +347,36 @@ Rules:
 - Do NOT use complex boolean operators, quotes, or hashtags.
 - Vary the angle from the literal niche string (e.g. specific tools, hot debates, builder problems, or breaking topics within "{base_niche}").
 - Respond ONLY with JSON: {{"query": "your 2-4 word search query"}}"""
+
+    if provider == "deepseek":
+        ds_client = get_deepseek_client(custom_key=custom_key)
+        if ds_client:
+            try:
+                resp = await asyncio.wait_for(
+                    ds_client.chat.completions.create(
+                        model=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        messages=[
+                            {"role": "system", "content": "You are a trend scout inventing concise 2-4 word X search queries in JSON."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.88,
+                        max_tokens=100
+                    ),
+                    timeout=8.0
+                )
+                raw = resp.choices[0].message.content or ""
+                data = json.loads(_clean_json_markdown(raw))
+                q = str(data.get("query", "")).strip().strip('"').strip("'")
+                if 2 <= len(q) <= 48:
+                    logger.info(f"DeepSeek Smart Query invented search query: '{q}' (from niche '{base_niche}')")
+                    return q
+            except Exception as e:
+                logger.debug(f"DeepSeek smart query notice: {e}")
+
+    client = get_gemini_client(custom_key=custom_key)
+    if not client:
+        return base_niche
 
     chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).replace("models/", "")
     try:
@@ -379,10 +434,7 @@ async def generate_strategy_brief(
         "suggested_query": niche or "AI agents coding"
     }
 
-    client = get_gemini_client(custom_key=custom_key)
-    if not client:
-        return fallback_brief
-
+    provider = get_active_provider(custom_key=custom_key)
     top_handles = ", ".join([f"{a.get('author')} ({a.get('score', 0)} score)" for a in (top_authors or [])[:4]]) or "Building initial author sample"
     prompt = f"""You are an executive X (Twitter) Growth Strategist analyzing live telemetry for an autonomous browser agent.
 Niche: {niche or 'General Tech & AI'}
@@ -397,6 +449,40 @@ Write a crisp, high-signal executive brief in JSON with these exact keys:
   "recommended_action": "1 specific, actionable next step for the user to boost engagement safely",
   "suggested_query": "a fresh 2-4 word X search query to test next"
 }}"""
+
+    if provider == "deepseek":
+        ds_client = get_deepseek_client(custom_key=custom_key)
+        if ds_client:
+            try:
+                resp = await asyncio.wait_for(
+                    ds_client.chat.completions.create(
+                        model=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        messages=[
+                            {"role": "system", "content": "You are an executive growth strategist analyzing telemetry in JSON."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.75,
+                        max_tokens=300
+                    ),
+                    timeout=8.0
+                )
+                raw = resp.choices[0].message.content or ""
+                parsed = json.loads(_clean_json_markdown(raw))
+                brief = {
+                    "headline": str(parsed.get("headline") or fallback_brief["headline"]).strip(),
+                    "insight": str(parsed.get("insight") or fallback_brief["insight"]).strip(),
+                    "recommended_action": str(parsed.get("recommended_action") or fallback_brief["recommended_action"]).strip(),
+                    "suggested_query": str(parsed.get("suggested_query") or fallback_brief["suggested_query"]).strip(),
+                }
+                _strategy_brief_cache = {"timestamp": now_ts, "data": brief}
+                return brief
+            except Exception as e:
+                logger.debug(f"DeepSeek strategy brief notice: {e}")
+
+    client = get_gemini_client(custom_key=custom_key)
+    if not client:
+        return fallback_brief
 
     try:
         from google.genai import types

@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any
 
 from services.ai_client import (
     get_active_provider,
+    get_best_available_model,
     get_gemini_client,
     get_deepseek_client,
     format_ai_error,
@@ -204,9 +205,10 @@ async def _evaluate_with_deepseek(
     persona_prompt: Optional[str] = None,
     extra_context: Optional[str] = None,
     temperature: float = 0.75,
+    media_url: Optional[str] = None,
     learning_memory: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Fallback evaluation with DeepSeek API."""
+    """Evaluation with DeepSeek API."""
     client = get_deepseek_client(custom_key=custom_key)
     if not client:
         return {
@@ -220,10 +222,12 @@ async def _evaluate_with_deepseek(
             "raw_response": "NO_API_KEY"
         }
 
-    chosen_model = model_name or "deepseek-chat"
+    chosen_model = model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     user_content = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
     if extra_context:
         user_content += f"\nContext: {extra_context}"
+    if media_url:
+        user_content += f"\n[Note: An image is attached to this tweet: {media_url}]"
 
     try:
         kwargs = {
@@ -232,17 +236,20 @@ async def _evaluate_with_deepseek(
                 {"role": "system", "content": build_system_prompt(search_query, persona_prompt, learning_memory=learning_memory)},
                 {"role": "user", "content": user_content}
             ],
-            "max_tokens": 500
+            "max_tokens": 1000
         }
         if "reasoner" not in chosen_model.lower():
             kwargs["response_format"] = {"type": "json_object"}
             kwargs["temperature"] = temperature
 
-        response = await client.chat.completions.create(**kwargs)
+        response = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=15.0)
         raw_output = response.choices[0].message.content or ""
+        logger.info(f"DeepSeek ({chosen_model}) evaluated @{tweet_author}")
         return _parse_ai_json_payload(raw_output)
     except Exception as e:
         err_msg = str(e)
+        logger.error(f"Error calling DeepSeek API ({chosen_model}): {err_msg}")
+        clean_err = format_ai_error(e)
         return {
             "should_reply": False,
             "reply_text": None,
@@ -250,7 +257,7 @@ async def _evaluate_with_deepseek(
             "variants_json": None,
             "should_like": False,
             "urgency_score": 1,
-            "reasoning": f"DeepSeek API Error: {err_msg[:120]}",
+            "reasoning": clean_err,
             "raw_response": f"ERROR: {err_msg}"
         }
 
@@ -268,16 +275,20 @@ async def evaluate_tweet(
     learning_memory: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Evaluates a scraped tweet using Google Gemini Multimodal Vision + Few-Shot Memory (or DeepSeek fallback).
+    Evaluates a scraped tweet using DeepSeek API (with few-shot memory).
     Returns should_reply, reply_text, dynamic variants, should_like, urgency_score, and reasoning.
     """
-    provider = get_active_provider(custom_key)
+    if not model_name or model_name == "auto":
+        provider, resolved_model = get_best_available_model(task_type="evaluate", custom_key=custom_key)
+    else:
+        provider = get_active_provider(custom_key)
+        resolved_model = model_name
 
     if provider == "gemini":
         return await _evaluate_with_gemini(
             tweet_text=tweet_text,
             tweet_author=tweet_author,
-            model_name=model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            model_name=resolved_model,
             custom_key=custom_key,
             search_query=search_query,
             persona_prompt=persona_prompt,
@@ -287,14 +298,32 @@ async def evaluate_tweet(
             learning_memory=learning_memory
         )
     else:
-        return await _evaluate_with_deepseek(
+        res = await _evaluate_with_deepseek(
             tweet_text=tweet_text,
             tweet_author=tweet_author,
-            model_name=model_name or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            model_name=resolved_model,
             custom_key=custom_key,
             search_query=search_query,
             persona_prompt=persona_prompt,
             extra_context=extra_context,
             temperature=temperature,
+            media_url=media_url,
             learning_memory=learning_memory
         )
+        if res.get("reply_text") or (res.get("should_reply") is False and res.get("raw_response") != "NO_API_KEY" and "ERROR:" not in res.get("raw_response", "")):
+            return res
+        if get_gemini_client(custom_key=custom_key):
+            logger.info("DeepSeek call did not complete; falling back to Gemini...")
+            return await _evaluate_with_gemini(
+                tweet_text=tweet_text,
+                tweet_author=tweet_author,
+                model_name="gemini-2.0-flash",
+                custom_key=custom_key,
+                search_query=search_query,
+                persona_prompt=persona_prompt,
+                extra_context=extra_context,
+                temperature=temperature,
+                media_url=media_url,
+                learning_memory=learning_memory
+            )
+        return res
