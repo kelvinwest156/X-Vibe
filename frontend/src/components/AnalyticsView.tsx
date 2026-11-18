@@ -183,6 +183,7 @@ export default function AnalyticsView({
   const [scanningWeb, setScanningWeb] = useState(false);
   const [draftingId, setDraftingId] = useState<string | null>(null);
   const [draftSuccessToast, setDraftSuccessToast] = useState<string | null>(null);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const {
     kpis,
@@ -499,13 +500,64 @@ export default function AnalyticsView({
             <div className="flex items-center gap-3 text-[11.5px]">
               <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-medium">
                 <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" />
-                Estimated Reach
+                {hoveredIndex !== null && chartDays[hoveredIndex]
+                  ? `${chartDays[hoveredIndex].date}: ${chartDays[hoveredIndex].impressions.toLocaleString()} reach`
+                  : "Estimated Reach"}
               </span>
             </div>
           </div>
 
-          <div className="w-full overflow-hidden">
-            <svg viewBox={`0 0 ${GW} ${GH}`} className="w-full h-44 overflow-visible">
+          <div className="w-full relative select-none">
+            {/* Interactive Floating Tooltip */}
+            <AnimatePresence>
+              {hoveredIndex !== null && chartDays[hoveredIndex] && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 3 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  transition={{ duration: 0.1 }}
+                  className={`absolute z-30 pointer-events-none transition-all duration-75 ease-out ${
+                    hoveredIndex === 0
+                      ? "translate-x-1"
+                      : hoveredIndex === chartDays.length - 1
+                      ? "-translate-x-full -ml-1"
+                      : "-translate-x-1/2"
+                  }`}
+                  style={{
+                    left: `${(gx(hoveredIndex) / GW) * 100}%`,
+                    top: `${Math.max(4, Math.min(60, (gy(chartDays[hoveredIndex].impressions) / GH) * 100 - 36))}%`,
+                  }}
+                >
+                  <div className="bg-slate-900/95 dark:bg-[#1E1E1E]/95 backdrop-blur-md text-white border border-slate-700/60 dark:border-[#383838] rounded-xl px-3 py-2 shadow-xl text-left whitespace-nowrap min-w-[130px]">
+                    <div className="flex items-center justify-between gap-3 text-[10.5px] text-slate-400 dark:text-[#A3A3A3] pb-1 border-b border-slate-800 dark:border-[#2D2D2D] mb-1">
+                      <span className="font-semibold text-slate-200 dark:text-slate-100">{chartDays[hoveredIndex].date}</span>
+                      {chartDays[hoveredIndex].impressions === maxImp && (
+                        <span className="text-[9.5px] px-1.5 py-0.2 rounded bg-blue-500/25 text-blue-400 font-bold uppercase tracking-wider">
+                          Peak
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-[16px] font-bold text-white tabular-nums tracking-tight">
+                        {chartDays[hoveredIndex].impressions.toLocaleString()}
+                      </span>
+                      <span className="text-[10.5px] text-blue-400 font-medium">views</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 dark:text-[#A3A3A3] flex items-center gap-1.5 mt-0.5">
+                      <span>{chartDays[hoveredIndex].interactions ?? 0} interactions</span>
+                      <span>·</span>
+                      <span>{chartDays[hoveredIndex].published ?? 0} published</span>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <svg
+              viewBox={`0 0 ${GW} ${GH}`}
+              className="w-full h-44 overflow-visible"
+              onMouseLeave={() => setHoveredIndex(null)}
+            >
               <defs>
                 <linearGradient id="reachGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.32" />
@@ -539,6 +591,21 @@ export default function AnalyticsView({
                 );
               })}
 
+              {/* Active Hover Crosshair Guideline */}
+              {hoveredIndex !== null && (
+                <line
+                  x1={gx(hoveredIndex)}
+                  y1={padT}
+                  x2={gx(hoveredIndex)}
+                  y2={GH - padB}
+                  stroke="#3B82F6"
+                  strokeWidth="1.5"
+                  strokeDasharray="3 3"
+                  strokeOpacity="0.55"
+                  className="pointer-events-none transition-all duration-75"
+                />
+              )}
+
               {/* Area & Line */}
               <motion.path
                 d={impArea}
@@ -559,28 +626,78 @@ export default function AnalyticsView({
               />
 
               {/* Data points */}
-              {impPoints.map(([px, py], i) => (
-                <circle
-                  key={i}
-                  cx={px}
-                  cy={py}
-                  r="3.5"
-                  className="fill-white dark:fill-[#181818] stroke-blue-600 dark:stroke-blue-400 stroke-2"
-                />
-              ))}
+              {impPoints.map(([px, py], i) => {
+                const isHovered = hoveredIndex === i;
+                return (
+                  <g key={i} className="pointer-events-none transition-all duration-150">
+                    {isHovered && (
+                      <>
+                        <circle
+                          cx={px}
+                          cy={py}
+                          r="10"
+                          className="fill-blue-500/25 dark:fill-blue-400/25 animate-ping"
+                        />
+                        <circle
+                          cx={px}
+                          cy={py}
+                          r="7.5"
+                          className="fill-blue-500/30 dark:fill-blue-400/30"
+                        />
+                      </>
+                    )}
+                    <circle
+                      cx={px}
+                      cy={py}
+                      r={isHovered ? "5.5" : "3.5"}
+                      className={
+                        isHovered
+                          ? "fill-blue-600 dark:fill-blue-400 stroke-white dark:stroke-[#181818] stroke-2 transition-all duration-150"
+                          : "fill-white dark:fill-[#181818] stroke-blue-600 dark:stroke-blue-400 stroke-2 transition-all duration-150"
+                      }
+                    />
+                  </g>
+                );
+              })}
 
               {/* X Axis Labels */}
-              {chartDays.map((d, i) => (
-                <text
-                  key={i}
-                  x={gx(i)}
-                  y={GH - 6}
-                  textAnchor="middle"
-                  className="text-[10px] fill-slate-400 dark:fill-[#737373]"
-                >
-                  {d.date}
-                </text>
-              ))}
+              {chartDays.map((d, i) => {
+                const isHovered = hoveredIndex === i;
+                return (
+                  <text
+                    key={i}
+                    x={gx(i)}
+                    y={GH - 6}
+                    textAnchor="middle"
+                    className={`text-[10px] transition-colors duration-150 ${
+                      isHovered
+                        ? "fill-blue-600 dark:fill-blue-400 font-bold"
+                        : "fill-slate-400 dark:fill-[#737373]"
+                    }`}
+                  >
+                    {d.date}
+                  </text>
+                );
+              })}
+
+              {/* Transparent Hit-Areas for Effortless Mouse & Touch Interaction */}
+              {chartDays.map((_, i) => {
+                const xLeft = i === 0 ? 0 : (gx(i - 1) + gx(i)) / 2;
+                const xRight = i === chartDays.length - 1 ? GW : (gx(i) + gx(i + 1)) / 2;
+                return (
+                  <rect
+                    key={`hit-${i}`}
+                    x={xLeft}
+                    y={0}
+                    width={xRight - xLeft}
+                    height={GH}
+                    fill="transparent"
+                    className="cursor-pointer"
+                    onMouseEnter={() => setHoveredIndex(i)}
+                    onTouchStart={() => setHoveredIndex(i)}
+                  />
+                );
+              })}
             </svg>
           </div>
         </div>
