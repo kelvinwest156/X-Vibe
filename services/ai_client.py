@@ -19,29 +19,29 @@ _last_working_gemini_model: Optional[str] = None
 
 KNOWN_GEMINI_MODELS: List[Dict[str, str]] = [
     {
-        "id": "gemini-3.8-flash",
-        "name": "Gemini 3.8 Flash (Recommended)",
-        "description": "Google's latest ultra-fast flagship Flash model."
+        "id": "gemini-2.0-flash",
+        "name": "Gemini 2.0 Flash (Recommended - 1,500 req/day)",
+        "description": "Google's high-speed production model with generous 1,500 requests/day quota."
     },
     {
-        "id": "gemini-3.7-flash",
-        "name": "Gemini 3.7 Flash",
-        "description": "High-speed Flash model with reliable low-latency availability."
+        "id": "gemini-1.5-flash",
+        "name": "Gemini 1.5 Flash (Production Standard - 1,500 req/day)",
+        "description": "Battle-tested, reliable Flash model with 1,500 requests/day headroom."
     },
     {
-        "id": "gemini-3.6-flash",
-        "name": "Gemini 3.6 Flash",
-        "description": "Fast, balanced model for natural conversational replies."
-    },
-    {
-        "id": "gemini-3.5-flash",
-        "name": "Gemini 3.5 Flash",
-        "description": "Lightweight Flash model with generous quota headroom."
+        "id": "gemini-1.5-flash-8b",
+        "name": "Gemini 1.5 Flash 8B (High Speed & Quota)",
+        "description": "Ultra-lightweight, lowest-latency model for rapid evaluations."
     },
     {
         "id": "gemini-2.5-flash",
         "name": "Gemini 2.5 Flash",
-        "description": "Previous-gen Flash model."
+        "description": "Next-generation Flash model preview."
+    },
+    {
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash (Experimental - 20 req/day limit)",
+        "description": "Preview model with strict 20 requests/day limit on Free Tier."
     }
 ]
 
@@ -144,8 +144,8 @@ def format_ai_error(err: Any) -> str:
         m_delay = re.search(r"retry in ([\d\w\.]+)", err_str, re.IGNORECASE)
         delay_info = f" (resets in {m_delay.group(1)})" if m_delay else ""
         return (
-            f"Google Gemini Free Tier daily quota limit reached (20 requests/day limit){delay_info}. "
-            f"Switch your API key or model in Settings, or configure DeepSeek API for higher capacity."
+            f"Gemini API rate limit or model quota reached{delay_info}. "
+            f"Bot will automatically fail over to Gemini 2.0/1.5 Flash (1,500 req/day quota) or DeepSeek."
         )
     if "400" in err_str or "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
         return "Invalid Gemini API key. Please check or replace your key in Settings."
@@ -258,7 +258,7 @@ async def _test_gemini_api(custom_key: Optional[str] = None) -> Dict[str, Any]:
             logger.debug(f"Model list fallback notice: {list_err}")
 
         if not discovered_models:
-            for candidate in ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-2.5-flash"]:
+            for candidate in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.5-flash", "gemini-3.8-flash"]:
                 try:
                     await client.aio.models.generate_content(
                         model=candidate,
@@ -274,10 +274,11 @@ async def _test_gemini_api(custom_key: Optional[str] = None) -> Dict[str, Any]:
         if discovered_models:
             discovered_models.sort(
                 key=lambda x: (
-                    0 if x["id"] == "gemini-3.8-flash" else
-                    (1 if x["id"] == "gemini-3.7-flash" else
-                    (2 if x["id"] == "gemini-3.6-flash" else
-                    (3 if "flash" in x["id"] else 4)))
+                    0 if x["id"] == "gemini-2.0-flash" else
+                    (1 if x["id"] == "gemini-1.5-flash" else
+                    (2 if x["id"] == "gemini-1.5-flash-8b" else
+                    (3 if x["id"] == "gemini-2.5-flash" else
+                    (4 if "flash" in x["id"] else 5))))
                 )
             )
 

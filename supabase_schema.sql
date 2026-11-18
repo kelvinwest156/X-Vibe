@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS public.agent_config (
     smart_query_enabled BOOLEAN DEFAULT true,
     warmup_mode BOOLEAN DEFAULT false,
     persona_prompt TEXT DEFAULT 'Casual, sharp, dry humor, short sentences, no corporate buzzwords',
-    selected_model TEXT DEFAULT 'gemini-3.8-flash',
+    selected_model TEXT DEFAULT 'gemini-2.0-flash',
     linked_username TEXT,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -117,7 +117,7 @@ BEGIN
         new.id::text,
         new.id,
         false,
-        'gemini-3.8-flash'
+        'gemini-2.0-flash'
     )
     ON CONFLICT (tenant_id) DO NOTHING;
 

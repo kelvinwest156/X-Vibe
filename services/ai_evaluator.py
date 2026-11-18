@@ -81,7 +81,7 @@ def _parse_ai_json_payload(raw_output: str) -> Dict[str, Any]:
 async def _evaluate_with_gemini(
     tweet_text: str,
     tweet_author: Optional[str] = None,
-    model_name: str = "gemini-3.8-flash",
+    model_name: str = "gemini-2.0-flash",
     custom_key: Optional[str] = None,
     search_query: Optional[str] = None,
     persona_prompt: Optional[str] = None,
@@ -105,7 +105,7 @@ async def _evaluate_with_gemini(
             "raw_response": "NO_API_KEY"
         }
 
-    chosen_model = model_name or "gemini-3.8-flash"
+    chosen_model = model_name or "gemini-2.0-flash"
     clean_model = chosen_model.replace("models/", "")
     user_content_text = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
     if extra_context:
@@ -137,11 +137,11 @@ async def _evaluate_with_gemini(
             fallback_candidates.append(_last_working_gemini_model)
         fallback_candidates.extend([
             clean_model,
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.8-flash",
-            "gemini-3.5-flash-lite"
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-2.5-flash",
+            "gemini-3.8-flash"
         ])
         models_to_try = list(dict.fromkeys(fallback_candidates))
 
@@ -277,7 +277,7 @@ async def evaluate_tweet(
         return await _evaluate_with_gemini(
             tweet_text=tweet_text,
             tweet_author=tweet_author,
-            model_name=model_name or os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+            model_name=model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
             custom_key=custom_key,
             search_query=search_query,
             persona_prompt=persona_prompt,

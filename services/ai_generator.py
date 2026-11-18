@@ -185,7 +185,7 @@ async def generate_original_content(
         learning_memory=learning_memory
     )
 
-    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-3.8-flash")).replace("models/", "")
+    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).replace("models/", "")
 
     try:
         from google.genai import types
@@ -195,12 +195,11 @@ async def generate_original_content(
         if _last_working_gemini_model:
             fallback_candidates.append(_last_working_gemini_model)
         fallback_candidates.extend([
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.7-flash",
             chosen_model,
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-8b",
+            "gemini-2.5-flash",
             "gemini-3.8-flash"
         ])
         models_to_try = list(dict.fromkeys(fallback_candidates))
@@ -239,7 +238,12 @@ async def generate_original_content(
                 except Exception as e:
                     last_err = e
                     response = None
-                    if use_search and ("503" not in str(e) and "UNAVAILABLE" not in str(e)):
+                    err_str = str(e)
+                    # If this model hit 429 quota exhaustion or 404 not found, immediately cascade to next model
+                    if any(code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "404", "NOT_FOUND"]):
+                        logger.info(f"Model {candidate_model} busy/quota ({err_str[:60]}); cascading to next fallback model...")
+                        break
+                    if use_search and ("503" not in err_str and "UNAVAILABLE" not in err_str):
                         continue
                     break
             if response and response.text:
@@ -319,10 +323,10 @@ Rules:
 - Vary the angle from the literal niche string (e.g. specific tools, hot debates, builder problems, or breaking topics within "{base_niche}").
 - Respond ONLY with JSON: {{"query": "your 2-4 word search query"}}"""
 
-    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-3.6-flash")).replace("models/", "")
+    chosen_model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).replace("models/", "")
     try:
         from google.genai import types
-        for candidate in [chosen_model, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.7-flash"]:
+        for candidate in list(dict.fromkeys([chosen_model, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.5-flash"])):
             try:
                 resp = await asyncio.wait_for(
                     client.aio.models.generate_content(
@@ -396,8 +400,8 @@ Write a crisp, high-signal executive brief in JSON with these exact keys:
 
     try:
         from google.genai import types
-        chosen = (model_name or _last_working_gemini_model or "gemini-2.5-flash").replace("models/", "")
-        candidates = list(dict.fromkeys([chosen, "gemini-2.5-flash", "gemini-3.6-flash", "gemini-3.5-flash"]))
+        chosen = (model_name or _last_working_gemini_model or "gemini-2.0-flash").replace("models/", "")
+        candidates = list(dict.fromkeys([chosen, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.5-flash"]))
 
         async def _try_candidates() -> Optional[Dict[str, str]]:
             for cand in candidates:

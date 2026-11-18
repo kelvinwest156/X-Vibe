@@ -205,7 +205,7 @@ async def regenerate_tweet_draft(
             search_query=cfg.search_query,
             persona_prompt=(cfg.persona_prompt or "") + " | Take a completely fresh, different angle.",
             live_tweets=live_context,
-            model_name=cfg.selected_model or "gemini-3.8-flash",
+            model_name=cfg.selected_model or "gemini-2.0-flash",
             learning_memory=learning_memory
         )
         if not gen.get("success") or not gen.get("text"):
@@ -234,7 +234,7 @@ async def regenerate_tweet_draft(
     ai_result = await evaluate_tweet(
         tweet_text=tweet.tweet_text or "",
         tweet_author=tweet.tweet_author,
-        model_name=cfg.selected_model or "gemini-3.8-flash",
+        model_name=cfg.selected_model or "gemini-2.0-flash",
         search_query=cfg.search_query,
         persona_prompt=(cfg.persona_prompt or "") + " | Write a completely fresh, different angle.",
         extra_context=f"Engagement: {tweet.tweet_metrics or ''}",
@@ -298,7 +298,7 @@ async def generate_original_endpoint(
         search_query=topic,
         persona_prompt=cfg.persona_prompt,
         live_tweets=live_context,
-        model_name=cfg.selected_model or "gemini-3.8-flash",
+        model_name=cfg.selected_model or "gemini-2.0-flash",
         learning_memory=learning_memory
     )
     if not gen.get("success") or not gen.get("text"):

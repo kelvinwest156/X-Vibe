@@ -387,7 +387,7 @@ export default function HomePage() {
   );
 
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("gemini-3.8-flash");
+  const [model, setModel] = useState("gemini-2.0-flash");
   const [query, setQuery] = useState("");
   const [persona, setPersona] = useState("");
   const [cap, setCap] = useState(15);
@@ -401,10 +401,11 @@ export default function HomePage() {
   const [sleep, setSleep] = useState(23);
   const [autopilot, setAutopilot] = useState(false);
   const [models, setModels] = useState<string[]>([
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
     "gemini-2.5-flash",
+    "gemini-3.8-flash",
   ]);
 
   const refresh = useCallback(async () => {
@@ -439,7 +440,7 @@ export default function HomePage() {
       if (!res.ok) return;
       const c = await res.json();
       setConfig(c);
-      setModel(c.selected_model || "gemini-3.8-flash");
+      setModel(c.selected_model || "gemini-2.0-flash");
       setQuery(c.search_query || "");
       setPersona(c.persona_prompt || "");
       setCap(c.daily_action_cap || 15);
