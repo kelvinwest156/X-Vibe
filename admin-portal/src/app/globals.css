@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --canvas: #FAFAFA;
+  --surface: #FFFFFF;
+  --line: #E4E4E7;
+  --ink: #111111;
+  --muted: #52525B;
+  --accent: #059669;
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #0B0B0C;
+  --surface: #141416;
+  --line: #262629;
+  --ink: #F5F5F5;
+  --muted: #A1A1AA;
+  --accent: #059669;
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--canvas);
+    color: var(--ink);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: var(--line);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

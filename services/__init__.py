@@ -13,12 +13,21 @@ from services.ai_client import (
     get_deepseek_client,
     format_ai_error,
     test_ai_api,
+    log_deepseek_usage,
+    check_tenant_token_budget,
 )
 from services.ai_prompts import (
     build_system_prompt,
+    build_batch_evaluation_prompt,
+    build_variants_prompt,
 )
 from services.ai_evaluator import (
     evaluate_tweet,
+    evaluate_tweets_batch,
+    generate_reply_variants,
+)
+from services.tweet_filter import (
+    should_prefilter_skip,
 )
 from services.ai_generator import (
     generate_original_content,
@@ -43,10 +52,17 @@ __all__ = [
     "get_deepseek_client",
     "format_ai_error",
     "test_ai_api",
+    "log_deepseek_usage",
+    "check_tenant_token_budget",
     # Prompts
     "build_system_prompt",
-    # Evaluator
+    "build_batch_evaluation_prompt",
+    "build_variants_prompt",
+    # Evaluator & pre-filter
     "evaluate_tweet",
+    "evaluate_tweets_batch",
+    "generate_reply_variants",
+    "should_prefilter_skip",
     # Generator
     "generate_original_content",
     "generate_smart_search_query",

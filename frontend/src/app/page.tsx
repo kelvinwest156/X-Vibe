@@ -54,6 +54,8 @@ interface AgentStatus {
   auto_pilot_mode: boolean;
   daily_action_cap: number;
   daily_actions_used: number;
+  daily_tokens_used?: number;
+  daily_token_cap?: number;
   hourly_action_cap?: number;
   hourly_actions_used?: number;
   smart_query_enabled?: boolean;
@@ -71,6 +73,10 @@ interface AgentStatus {
   pending_approvals_count: number;
   total_processed_count: number;
   selected_model: string;
+  plan_tier?: string;
+  subscription_status?: string;
+  trial_days_remaining?: number | null;
+  daily_original_post_cap?: number;
   recent_logs: SystemLog[];
 }
 
@@ -663,7 +669,7 @@ export default function HomePage() {
       if (res.ok) {
         const d = await res.json();
         setDrafts((p) => ({ ...p, [id]: d.generated_text || "" }));
-        notify("New creative angles generated");
+        notify("Fresh draft generated");
         refresh();
       } else {
         const errMsg = await extractApiError(res, "Could not rewrite draft");
@@ -673,6 +679,38 @@ export default function HomePage() {
       notify(err?.message || "Failed to regenerate draft", true);
     } finally {
       setBusy((p) => ({ ...p, [`r_${id}`]: false }));
+    }
+  };
+
+  const generateAngles = async (id: string) => {
+    setBusy((p) => ({ ...p, [`v_${id}`]: true }));
+    try {
+      const res = await apiFetch(`/api/queue/${id}/variants`, { method: "POST" });
+      if (res.ok) {
+        const d = await res.json();
+        const newVariantsJson = d.variants_json || (d.variants ? JSON.stringify(d.variants) : null);
+        if (newVariantsJson) {
+          setPending((prev) =>
+            prev.map((item) =>
+              item.tweet_id === id ? { ...item, variants_json: newVariantsJson } : item
+            )
+          );
+          const keys = Object.keys(d.variants || {});
+          if (keys.length > 0) {
+            setVariantSel((p) => ({ ...p, [id]: keys[0] }));
+            setDrafts((p) => ({ ...p, [id]: d.variants[keys[0]] }));
+          }
+        }
+        notify("Generated 3 alternative angles");
+        refresh();
+      } else {
+        const errMsg = await extractApiError(res, "Could not generate 3 angles");
+        notify(errMsg, true);
+      }
+    } catch (err: any) {
+      notify(err?.message || "Failed to generate angles", true);
+    } finally {
+      setBusy((p) => ({ ...p, [`v_${id}`]: false }));
     }
   };
 
@@ -723,6 +761,45 @@ export default function HomePage() {
       }
     } catch (err: any) {
       notify(err?.message || "Could not skip post", true);
+    }
+  };
+
+  const clearStaleDrafts = async () => {
+    setBusy((p) => ({ ...p, clear_stale: true }));
+    try {
+      const res = await apiFetch("/api/queue/clear-stale", { method: "POST" });
+      if (res.ok) {
+        const d = await res.json();
+        notify(d.message || "Expired stale unreviewed drafts");
+        refresh();
+      } else {
+        const err = await extractApiError(res, "Could not clear stale drafts");
+        notify(err, true);
+      }
+    } catch (err: any) {
+      notify(err?.message || "Failed to clear stale drafts", true);
+    } finally {
+      setBusy((p) => ({ ...p, clear_stale: false }));
+    }
+  };
+
+  const clearAllPending = async () => {
+    if (!confirm("Dismiss all pending drafts in your review queue?")) return;
+    setBusy((p) => ({ ...p, clear_all: true }));
+    try {
+      const res = await apiFetch("/api/queue/clear-all", { method: "POST" });
+      if (res.ok) {
+        const d = await res.json();
+        notify(d.message || "Cleared pending queue");
+        refresh();
+      } else {
+        const err = await extractApiError(res, "Could not clear queue");
+        notify(err, true);
+      }
+    } catch (err: any) {
+      notify(err?.message || "Failed to clear queue", true);
+    } finally {
+      setBusy((p) => ({ ...p, clear_all: false }));
     }
   };
 
@@ -1084,14 +1161,36 @@ export default function HomePage() {
             </button>
           </div>
         ) : status && !status.auto_pilot_mode && status.pending_approvals_count > 0 ? (
-          <div className="bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-900/50 rounded-xl px-4 py-3 text-xs text-blue-800 dark:text-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className={`${
+            status.pending_approvals_count >= 8
+              ? "bg-amber-50/90 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200"
+              : "bg-blue-50/80 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-900/50 text-blue-800 dark:text-blue-200"
+          } rounded-xl px-4 py-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5`}>
             <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-blue-600 shrink-0" />
+              <Sparkles className={`w-4 h-4 shrink-0 ${status.pending_approvals_count >= 8 ? "text-amber-600" : "text-blue-600"}`} />
               <span>
-                <strong>{status.pending_approvals_count} Drafts Waiting for Approval:</strong> Auto-Pilot is OFF (Human-in-the-Loop Mode). Posts will not publish until you approve them in the Review Queue.
+                {status.pending_approvals_count >= 8 ? (
+                  <>
+                    <strong>Review Queue Full ({status.pending_approvals_count} Drafts):</strong> Automated scans are paused to conserve AI tokens. Approve drafts or click below to auto-expire old unreviewed drafts.
+                  </>
+                ) : (
+                  <>
+                    <strong>{status.pending_approvals_count} Drafts Waiting for Approval:</strong> Auto-Pilot is OFF (Human-in-the-Loop Mode). Posts will not publish until you approve them in the Review Queue.
+                  </>
+                )}
               </span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              {status.pending_approvals_count >= 8 && (
+                <button
+                  onClick={clearStaleDrafts}
+                  disabled={busy.clear_stale}
+                  className="btn !h-7 !px-2.5 text-xs text-amber-900 dark:text-amber-100 border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                  title="Auto-expire unreviewed drafts older than 24 hours"
+                >
+                  {busy.clear_stale ? <Spin /> : <span>Clear Stale (&gt;24h)</span>}
+                </button>
+              )}
               <button
                 onClick={() => setTab("queue")}
                 className="btn btn-primary !h-7 !px-3 text-xs"
@@ -1116,6 +1215,84 @@ export default function HomePage() {
             </button>
           </div>
         ) : null}
+
+        {/* Clean Daily AI Token Cap Progress Strip */}
+        {status && (() => {
+          const tokensUsed = status.daily_tokens_used ?? 0;
+          const tokenCap = Math.max(1, status.daily_token_cap ?? 50000);
+          const pct = Math.min(100, Math.round((tokensUsed / tokenCap) * 100));
+          const isMax = tokensUsed >= tokenCap;
+          const isHigh = !isMax && pct >= 80;
+          const barColor = isMax
+            ? "bg-rose-500"
+            : isHigh
+            ? "bg-amber-500"
+            : "bg-emerald-500";
+          const textTone = isMax
+            ? "text-rose-600 dark:text-rose-400"
+            : isHigh
+            ? "text-amber-600 dark:text-amber-400"
+            : "text-slate-500 dark:text-[#A3A3A3]";
+
+          return (
+            <div className="bg-white dark:bg-[#181818] border border-slate-200/80 dark:border-[#262626] rounded-xl px-4 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-center justify-between sm:justify-start gap-2.5 shrink-0 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`size-2 rounded-full shrink-0 ${barColor}`}
+                    aria-hidden="true"
+                  />
+                  <span className="text-xs font-medium text-slate-700 dark:text-[#E5E5E5]">
+                    Daily AI Usage
+                  </span>
+                  <span className={`text-[10.5px] font-semibold px-2 py-0.5 rounded-full border ${
+                    status.subscription_status === "expired"
+                      ? "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800"
+                      : status.plan_tier === "growth"
+                      ? "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800"
+                      : status.plan_tier === "pro"
+                      ? "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800"
+                      : status.plan_tier === "starter"
+                      ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800"
+                      : "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800"
+                  }`}>
+                    {status.subscription_status === "expired"
+                      ? "Trial Expired"
+                      : status.plan_tier === "trial"
+                      ? `Free Trial (${status.trial_days_remaining ?? 7}d left)`
+                      : status.plan_tier === "growth"
+                      ? "Growth"
+                      : status.plan_tier === "pro"
+                      ? "Creator Pro"
+                      : "Starter"}
+                  </span>
+                </div>
+                <span className={`text-xs font-medium tabular-nums ${textTone}`}>
+                  {tokensUsed.toLocaleString()} / {tokenCap.toLocaleString()} tokens
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3 flex-1 sm:max-w-xs">
+                <div
+                  className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-[#262626] overflow-hidden"
+                  role="progressbar"
+                  aria-label="Daily AI token usage"
+                  aria-valuenow={tokensUsed}
+                  aria-valuemin={0}
+                  aria-valuemax={tokenCap}
+                >
+                  <div
+                    className={`h-full rounded-full ${barColor}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <span className={`text-[11px] font-semibold tabular-nums shrink-0 ${textTone}`}>
+                  {isMax ? "Cap reached" : `${pct}%`}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
 
         <AnimatePresence mode="wait">
           <motion.div
@@ -1157,6 +1334,16 @@ export default function HomePage() {
                     >
                       Sort: {queueSort === "urgency" ? "Urgency" : "Newest"}
                     </button>
+                    {pending.length > 0 && (
+                      <button
+                        onClick={clearStaleDrafts}
+                        disabled={busy.clear_stale}
+                        className="btn !h-9 !px-2.5 text-xs shrink-0 text-slate-600 dark:text-slate-300"
+                        title="Expire unreviewed drafts older than 24h"
+                      >
+                        {busy.clear_stale ? <Spin /> : <span>Clear Stale (&gt;24h)</span>}
+                      </button>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-3 sm:flex items-center gap-2">
@@ -1386,29 +1573,49 @@ export default function HomePage() {
                               </div>
                             )}
 
-                            {/* Creative Angle Chips & Rewrite */}
+                            {/* Creative Angle Chips, On-Demand 3 Angles & Rewrite */}
                             <div className="flex items-center justify-between flex-wrap gap-2 pt-1">
                               <div className="flex items-center gap-1.5 flex-wrap">
-                                {keys.map((k) => {
-                                  const sel = (variantSel[item.tweet_id] || keys[0]) === k;
-                                  return (
-                                    <button
-                                      key={k}
-                                      type="button"
-                                      onClick={() => {
-                                        setVariantSel((p) => ({ ...p, [item.tweet_id]: k }));
-                                        setDrafts((p) => ({ ...p, [item.tweet_id]: variants[k] }));
-                                      }}
-                                      className={`h-7 px-3 rounded-md text-[12px] font-medium transition-all ${
-                                        sel
-                                          ? "bg-slate-900 dark:bg-white text-white dark:text-black shadow-xs font-semibold"
-                                          : "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2C2C2C] text-slate-700 dark:text-[#D4D4D4] border border-slate-200/60 dark:border-[#2E2E2E]"
-                                      }`}
-                                    >
-                                      {k}
-                                    </button>
-                                  );
-                                })}
+                                {keys.length > 0 ? (
+                                  keys.map((k) => {
+                                    const sel = (variantSel[item.tweet_id] || keys[0]) === k;
+                                    return (
+                                      <button
+                                        key={k}
+                                        type="button"
+                                        onClick={() => {
+                                          setVariantSel((p) => ({ ...p, [item.tweet_id]: k }));
+                                          setDrafts((p) => ({ ...p, [item.tweet_id]: variants[k] }));
+                                        }}
+                                        className={`h-7 px-3 rounded-md text-[12px] font-medium transition-colors ${
+                                          sel
+                                            ? "bg-slate-900 dark:bg-white text-white dark:text-black shadow-xs font-semibold"
+                                            : "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2C2C2C] text-slate-700 dark:text-[#D4D4D4] border border-slate-200/60 dark:border-[#2E2E2E]"
+                                        }`}
+                                      >
+                                        {k}
+                                      </button>
+                                    );
+                                  })
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => generateAngles(item.tweet_id)}
+                                    disabled={busy[`v_${item.tweet_id}`] || busy[`r_${item.tweet_id}`]}
+                                    className="h-7 px-3 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5 bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2C2C2C] text-slate-700 dark:text-[#E5E5E5] border border-slate-200/80 dark:border-[#2E2E2E] transition-colors disabled:opacity-60"
+                                  >
+                                    {busy[`v_${item.tweet_id}`] ? (
+                                      <Spin className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <Sparkles className="w-3.5 h-3.5 text-slate-600 dark:text-[#A3A3A3]" />
+                                    )}
+                                    <span>
+                                      {busy[`v_${item.tweet_id}`]
+                                        ? "Generating angles..."
+                                        : "Generate 3 angles"}
+                                    </span>
+                                  </button>
+                                )}
                                 {type === "thread" && (
                                   <span className="text-[11px] text-slate-400 dark:text-[#737373] ml-1">
                                     (Posts separated with ---)
@@ -1417,6 +1624,7 @@ export default function HomePage() {
                               </div>
 
                               <button
+                                type="button"
                                 onClick={() => regenerate(item.tweet_id)}
                                 disabled={busy[`r_${item.tweet_id}`]}
                                 className="text-xs text-slate-500 dark:text-[#A3A3A3] hover:text-slate-900 dark:hover:text-white font-medium inline-flex items-center gap-1 px-2.5 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-[#222222] transition-colors"

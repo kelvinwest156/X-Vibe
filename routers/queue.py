@@ -27,11 +27,17 @@ from database import (
     update_tweet_status,
     get_recent_tweets,
     get_learning_memory,
-    record_processed_tweet
+    record_processed_tweet,
+    expire_stale_drafts
 )
 from core.dependencies import get_current_tenant
 import core.state as state
-from ai_engine import generate_original_content, evaluate_tweet
+from ai_engine import (
+    generate_original_content,
+    evaluate_tweet,
+    generate_reply_variants,
+    check_tenant_token_budget,
+)
 
 logger = logging.getLogger("x_vibebot.queue")
 router = APIRouter(tags=["queue"])
@@ -44,7 +50,39 @@ async def get_pending_approvals_endpoint(
     db: Session = Depends(get_db)
 ):
     """Retrieves all pending tweets waiting for approval or currently scheduled in the queue."""
+    # Opportunistically auto-expire drafts older than 24h
+    expire_stale_drafts(db, tenant_id=tenant_id, max_age_hours=24)
     return get_pending_tweets(db, tenant_id=tenant_id)
+
+
+@router.post("/api/queue/clear-stale")
+async def clear_stale_queue(
+    max_age_hours: int = 24,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    """Expires all pending drafts older than specified hours (default 24h)."""
+    expired_count = expire_stale_drafts(db, tenant_id=tenant_id, max_age_hours=max_age_hours)
+    return {"success": True, "expired_count": expired_count, "message": f"Expired {expired_count} stale draft(s)."}
+
+
+@router.post("/api/queue/clear-all")
+async def clear_all_pending(
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    """Dismisses all current pending drafts for the tenant to unblock scans."""
+    pending_items = db.query(ProcessedTweet).filter(
+        ProcessedTweet.tenant_id.in_([tenant_id, "default"]),
+        ProcessedTweet.status == "pending_approval"
+    ).all()
+    count = len(pending_items)
+    for item in pending_items:
+        item.status = "skipped"
+        item.error_message = "Dismissed by creator"
+    if count > 0:
+        db.commit()
+    return {"success": True, "dismissed_count": count, "message": f"Dismissed {count} pending draft(s)."}
 
 
 @router.post("/api/approve/{tweet_id}")
@@ -178,13 +216,16 @@ async def reject_tweet(
     return {"status": "skipped", "tweet_id": tweet_id}
 
 
-@router.post("/api/regenerate/{tweet_id}")
-async def regenerate_tweet_draft(
+@router.post("/api/queue/{tweet_id}/variants")
+async def generate_queue_variants_endpoint(
     tweet_id: str,
     tenant_id: str = Depends(get_current_tenant),
     db: Session = Depends(get_db)
 ):
-    """Regenerates 3 fresh context-specific variants for a reply, original post, or thread."""
+    """
+    On-demand generation of 3 alternative reply angles for a queued draft.
+    Checks tenant daily token budget, generates 3 crisp angles, saves variants_json, and returns them.
+    """
     tweet = db.query(ProcessedTweet).filter(
         ProcessedTweet.tweet_id == tweet_id,
         ProcessedTweet.tenant_id.in_([tenant_id, "default"])
@@ -192,8 +233,64 @@ async def regenerate_tweet_draft(
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
 
+    allowed, used_today, daily_cap = check_tenant_token_budget(tenant_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily AI token cap reached ({used_today:,}/{daily_cap:,} tokens). Resets at UTC midnight."
+        )
+
     cfg = get_agent_config(db, tenant_id=tenant_id)
-    learning_memory = get_learning_memory(db, tenant_id=tenant_id)
+    res = await generate_reply_variants(
+        tweet_text=tweet.tweet_text or "",
+        tweet_author=tweet.tweet_author or "creator",
+        current_reply=tweet.generated_text or "",
+        persona_prompt=cfg.persona_prompt,
+        model_name=cfg.selected_model or "auto",
+        tenant_id=tenant_id,
+    )
+    if not res.get("success") or not res.get("variants"):
+        err_msg = res.get("error") or "Failed to generate angle variants"
+        status_code = 429 if ("quota" in err_msg.lower() or "429" in err_msg) else 500
+        raise HTTPException(status_code=status_code, detail=err_msg)
+
+    tweet.variants_json = res["variants_json"]
+    if tenant_id and tenant_id != "default" and tweet.tenant_id == "default":
+        tweet.tenant_id = tenant_id
+    db.commit()
+    db.refresh(tweet)
+
+    logger.info(f"Generated 3 on-demand angle variants for @{tweet.tweet_author} (tenant={tenant_id})")
+    return {
+        "tweet_id": tweet_id,
+        "variants": res["variants"],
+        "variants_json": tweet.variants_json,
+    }
+
+
+@router.post("/api/regenerate/{tweet_id}")
+async def regenerate_tweet_draft(
+    tweet_id: str,
+    tenant_id: str = Depends(get_current_tenant),
+    db: Session = Depends(get_db)
+):
+    """Regenerates a fresh draft for a reply, original post, or thread."""
+    tweet = db.query(ProcessedTweet).filter(
+        ProcessedTweet.tweet_id == tweet_id,
+        ProcessedTweet.tenant_id.in_([tenant_id, "default"])
+    ).first()
+    if not tweet:
+        raise HTTPException(status_code=404, detail="Tweet not found")
+
+    allowed, used_today, daily_cap = check_tenant_token_budget(tenant_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily AI token cap reached ({used_today:,}/{daily_cap:,} tokens). Resets at UTC midnight."
+        )
+
+    cfg = get_agent_config(db, tenant_id=tenant_id)
+    learning_memory = get_learning_memory(db, limit_approved=4, limit_skipped=3, tenant_id=tenant_id)
     if tweet.action_type in ("post", "thread"):
         recent_db_tweets = get_recent_tweets(db, limit=8, tenant_id=tenant_id)
         live_context = [
@@ -206,7 +303,9 @@ async def regenerate_tweet_draft(
             persona_prompt=(cfg.persona_prompt or "") + " | Take a completely fresh, different angle.",
             live_tweets=live_context,
             model_name=cfg.selected_model or "auto",
-            learning_memory=learning_memory
+            learning_memory=learning_memory,
+            include_variants=False,
+            tenant_id=tenant_id,
         )
         if not gen.get("success") or not gen.get("text"):
             err_msg = gen.get("error") or gen.get("topic_summary") or "Failed to regenerate"
@@ -240,7 +339,9 @@ async def regenerate_tweet_draft(
         extra_context=f"Engagement: {tweet.tweet_metrics or ''}",
         temperature=0.9,
         media_url=getattr(tweet, "media_url", None),
-        learning_memory=learning_memory
+        learning_memory=learning_memory,
+        include_variants=False,
+        tenant_id=tenant_id,
     )
 
     if not ai_result.get("reply_text"):
@@ -277,6 +378,13 @@ async def generate_original_endpoint(
     Generates a fresh Original Post or Multi-Post Thread from real-time conversations,
     user voice memory, and current Google Search information, adding it directly to the Queue.
     """
+    allowed, used_today, daily_cap = check_tenant_token_budget(tenant_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily AI token cap reached ({used_today:,}/{daily_cap:,} tokens). Resets at UTC midnight."
+        )
+
     cfg = get_agent_config(db, tenant_id=tenant_id)
     req_mode = payload.mode if payload.mode in ("auto", "post", "thread") else "auto"
     topic = (payload.custom_topic or state.active_search_query_state or cfg.search_query or "tech & culture").strip()
@@ -291,7 +399,7 @@ async def generate_original_endpoint(
         for r in recent_db_tweets
         if r.action_type == "reply" and r.tweet_text
     ]
-    learning_memory = get_learning_memory(db, tenant_id=tenant_id)
+    learning_memory = get_learning_memory(db, limit_approved=4, limit_skipped=3, tenant_id=tenant_id)
 
     gen = await generate_original_content(
         mode=req_mode,
@@ -299,7 +407,9 @@ async def generate_original_endpoint(
         persona_prompt=cfg.persona_prompt,
         live_tweets=live_context,
         model_name=cfg.selected_model or "auto",
-        learning_memory=learning_memory
+        learning_memory=learning_memory,
+        include_variants=False,
+        tenant_id=tenant_id,
     )
     if not gen.get("success") or not gen.get("text"):
         err_msg = gen.get("error") or gen.get("topic_summary") or "Failed to generate content"

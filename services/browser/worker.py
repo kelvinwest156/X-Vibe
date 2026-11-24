@@ -51,6 +51,7 @@ class XBrowserWorker:
         self._context: Optional[BrowserContext] = None
         self._lock = asyncio.Lock()
         self.is_running = False
+        self.last_used_at: float = 0.0
         self.logged_in_username: Optional[str] = None
         self.last_error: Optional[str] = None
         self._mouse_x: float = 640.0
@@ -61,6 +62,35 @@ class XBrowserWorker:
     @property
     def cookies_backup_path(self) -> str:
         return os.path.join(self.profile_dir, "cookies_backup.json")
+
+    def get_memory_stats(self) -> Dict[str, Any]:
+        """Returns runtime status, idle duration, and estimated RAM usage (MB) for this browser worker."""
+        idle_seconds = int(max(0.0, time.time() - self.last_used_at)) if self.last_used_at else 0
+        estimated_ram_mb = 0.0
+        if self.is_running:
+            measured_mb = 0.0
+            try:
+                import psutil
+                norm_prof = os.path.normpath(self.profile_dir).lower()
+                for proc in psutil.process_iter(["name", "cmdline", "memory_info"]):
+                    try:
+                        cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                        if norm_prof and norm_prof in cmdline:
+                            mem = proc.info.get("memory_info")
+                            if mem:
+                                measured_mb += mem.rss / (1024 * 1024)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            estimated_ram_mb = round(measured_mb, 1) if measured_mb > 0 else 160.0
+
+        return {
+            "is_running": self.is_running,
+            "idle_seconds": idle_seconds,
+            "estimated_ram_mb": estimated_ram_mb,
+            "logged_in_username": self.logged_in_username,
+        }
 
     async def _apply_stealth(self, page: Page):
         """Applies stealth overrides to mask automation signatures."""
@@ -136,6 +166,7 @@ class XBrowserWorker:
         self._context.on("page", lambda p: asyncio.create_task(self._apply_stealth(p)))
         self._context.on("close", lambda: setattr(self, "_context", None))
         self.is_running = True
+        self.last_used_at = time.time()
         return self._context
 
     async def _get_page_internal(self, force_headful: bool = False) -> Page:
@@ -298,6 +329,7 @@ class XBrowserWorker:
 
     async def check_login_status(self) -> bool:
         """Navigates to X, verifies if session is active, and extracts linked @username."""
+        self.last_used_at = time.time()
         disconnected_marker = os.path.join(self.profile_dir, ".disconnected")
         if os.path.isfile(disconnected_marker):
             return False
@@ -412,10 +444,12 @@ class XBrowserWorker:
     async def scrape_feed(self, search_query: Optional[str] = None, limit: int = 8) -> List[Dict[str, Any]]:
         """Scrapes tweets from Home timeline or search query with engagement metrics and media/quote context."""
         async with self._lock:
+            self.last_used_at = time.time()
             page = await self._get_page_internal()
             items, handle = await actions.scrape_feed_action(
                 page, search_query=search_query, limit=limit, logged_in_username=self.logged_in_username
             )
+            self.last_used_at = time.time()
             if handle:
                 self.logged_in_username = handle
             return items
@@ -429,6 +463,7 @@ class XBrowserWorker:
     ) -> bool:
         """Publishes a reply with humanized biometric reading dwell and typing."""
         async with self._lock:
+            self.last_used_at = time.time()
             page = await self._get_page_internal()
             ok, err, new_mouse = await actions.post_reply_action(
                 page=page,
@@ -438,6 +473,7 @@ class XBrowserWorker:
                 should_like=should_like,
                 mouse_pos=(self._mouse_x, self._mouse_y)
             )
+            self.last_used_at = time.time()
             self._mouse_x, self._mouse_y = new_mouse
             self.last_error = err
             return ok
@@ -445,12 +481,14 @@ class XBrowserWorker:
     async def post_original(self, post_text: str) -> bool:
         """Publishes a standalone original post on X with humanized typing and mouse clicks."""
         async with self._lock:
+            self.last_used_at = time.time()
             page = await self._get_page_internal()
             ok, err, new_mouse = await actions.post_original_action(
                 page=page,
                 post_text=post_text,
                 mouse_pos=(self._mouse_x, self._mouse_y)
             )
+            self.last_used_at = time.time()
             self._mouse_x, self._mouse_y = new_mouse
             self.last_error = err
             return ok
@@ -458,12 +496,14 @@ class XBrowserWorker:
     async def post_thread(self, thread_text: str) -> bool:
         """Publishes a multi-post thread on X."""
         async with self._lock:
+            self.last_used_at = time.time()
             page = await self._get_page_internal()
             ok, err, new_mouse = await actions.post_thread_action(
                 page=page,
                 thread_text=thread_text,
                 mouse_pos=(self._mouse_x, self._mouse_y)
             )
+            self.last_used_at = time.time()
             self._mouse_x, self._mouse_y = new_mouse
             self.last_error = err
             return ok

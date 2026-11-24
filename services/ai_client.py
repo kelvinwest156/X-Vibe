@@ -378,3 +378,108 @@ async def _test_deepseek_api(custom_key: Optional[str] = None) -> Dict[str, Any]
             "hint": format_ai_error(e),
             "models": KNOWN_DEEPSEEK_MODELS
         }
+
+
+def log_deepseek_usage(
+    response: Any,
+    tenant_id: str = "default",
+    task_type: str = "general",
+    model_name: str = "deepseek-chat",
+) -> Optional[Dict[str, Any]]:
+    """
+    Safely extracts prompt_tokens, completion_tokens, prompt_cache_hit_tokens,
+    and prompt_cache_miss_tokens from a DeepSeek/OpenAI completion response
+    and persists it to TokenUsageLog. Never raises on telemetry errors.
+    """
+    if response is None:
+        return None
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    try:
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        # DeepSeek returns prompt_cache_hit_tokens & prompt_cache_miss_tokens on usage
+        # (sometimes nested under model_extra or prompt_tokens_details.cached_tokens)
+        cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+        cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+
+        extra = getattr(usage, "model_extra", None) or {}
+        if cache_hit is None and isinstance(extra, dict):
+            cache_hit = extra.get("prompt_cache_hit_tokens")
+        if cache_miss is None and isinstance(extra, dict):
+            cache_miss = extra.get("prompt_cache_miss_tokens")
+
+        if cache_hit is None:
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                cache_hit = getattr(details, "cached_tokens", None)
+                if cache_hit is None and isinstance(details, dict):
+                    cache_hit = details.get("cached_tokens")
+
+        hit_tokens = max(0, int(cache_hit or 0))
+        if cache_miss is not None:
+            miss_tokens = max(0, int(cache_miss or 0))
+        else:
+            miss_tokens = max(0, prompt_tokens - hit_tokens)
+
+        from database import SessionLocal, record_token_usage
+
+        db = SessionLocal()
+        try:
+            row = record_token_usage(
+                db=db,
+                tenant_id=tenant_id or "default",
+                provider="deepseek",
+                model=model_name or "deepseek-chat",
+                task_type=task_type or "general",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cache_hit_tokens=hit_tokens,
+                cache_miss_tokens=miss_tokens,
+            )
+            logger.debug(
+                f"Token telemetry [{tenant_id}/{task_type}]: prompt={prompt_tokens} "
+                f"(hit={hit_tokens}, miss={miss_tokens}), completion={completion_tokens}, "
+                f"cost=${row.estimated_cost_usd:.6f}"
+            )
+            return {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cache_hit_tokens": hit_tokens,
+                "cache_miss_tokens": miss_tokens,
+                "estimated_cost_usd": row.estimated_cost_usd,
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"Token telemetry logging skipped: {e}")
+        return None
+
+
+def check_tenant_token_budget(tenant_id: str = "default") -> Tuple[bool, int, int]:
+    """
+    Checks whether a tenant is within their daily AI token budget.
+    Returns (allowed, used_today, daily_cap).
+    """
+    try:
+        from database import SessionLocal, get_agent_config, get_tenant_daily_tokens, get_platform_settings
+
+        db = SessionLocal()
+        try:
+            cfg = get_agent_config(db, tenant_id=tenant_id or "default")
+            ps = get_platform_settings(db)
+            daily_cap = int(
+                getattr(cfg, "daily_token_cap", None)
+                or getattr(ps, "default_daily_token_cap", None)
+                or 50000
+            )
+            used_today = get_tenant_daily_tokens(db, tenant_id=tenant_id or "default")
+            return (used_today < daily_cap), used_today, daily_cap
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"Token budget check fallback (allowing): {e}")
+        return True, 0, 50000

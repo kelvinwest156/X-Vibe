@@ -18,6 +18,7 @@ from services.ai_client import (
     get_gemini_client,
     get_deepseek_client,
     format_ai_error,
+    log_deepseek_usage,
     _sanitize_ai_tells,
     _clean_json_markdown,
 )
@@ -29,7 +30,12 @@ _last_working_gemini_model: Optional[str] = None
 _strategy_brief_cache: Dict[str, Any] = {"timestamp": 0.0, "data": None}
 
 
-def _parse_original_json_payload(raw_text: str, requested_mode: str, topic: str) -> Dict[str, Any]:
+def _parse_original_json_payload(
+    raw_text: str,
+    requested_mode: str,
+    topic: str,
+    include_variants: bool = False,
+) -> Dict[str, Any]:
     """Safely extracts JSON payload from Gemini or DeepSeek output."""
     cleaned = _clean_json_markdown(raw_text)
     data = json.loads(cleaned)
@@ -58,7 +64,7 @@ def _parse_original_json_payload(raw_text: str, requested_mode: str, topic: str)
     primary = clean_item(str(data.get("text", "") or ""))
     if not primary and variants:
         primary = next(iter(variants.values()))
-    if primary and not variants:
+    if include_variants and primary and not variants:
         variants["Primary Angle"] = primary
 
     topic_summary = str(data.get("topic_summary", f"Live pulse on {topic}")).strip()
@@ -68,7 +74,7 @@ def _parse_original_json_payload(raw_text: str, requested_mode: str, topic: str)
         "action_type": resolved_mode,
         "text": primary,
         "variants": variants,
-        "variants_json": json.dumps(variants, ensure_ascii=False),
+        "variants_json": json.dumps(variants, ensure_ascii=False) if variants else None,
         "urgency_score": urgency_score,
         "topic_summary": topic_summary
     }
@@ -81,9 +87,11 @@ async def _generate_original_with_deepseek(
     live_tweets: Optional[List[Dict[str, Any]]] = None,
     model_name: Optional[str] = None,
     custom_key: Optional[str] = None,
-    learning_memory: Optional[Dict[str, Any]] = None
+    learning_memory: Optional[Dict[str, Any]] = None,
+    include_variants: bool = False,
+    tenant_id: str = "default",
 ) -> Dict[str, Any]:
-    """Generates original post or thread with DeepSeek API."""
+    """Generates original post or thread with DeepSeek API and logs token usage."""
     client = get_deepseek_client(custom_key=custom_key)
     if not client:
         return {
@@ -103,7 +111,8 @@ async def _generate_original_with_deepseek(
         topic=topic,
         voice=voice,
         live_tweets=live_tweets,
-        learning_memory=learning_memory
+        learning_memory=learning_memory,
+        include_variants=include_variants,
     )
     chosen_model = sanitize_model_for_provider("deepseek", model_name)
 
@@ -113,7 +122,7 @@ async def _generate_original_with_deepseek(
             {"role": "system", "content": "You are a professional social media strategist writing real, punchy X posts. Output valid JSON."},
             {"role": "user", "content": prompt}
         ],
-        "max_tokens": 1500
+        "max_tokens": 1400 if include_variants else 650
     }
     if "reasoner" not in chosen_model.lower():
         kwargs["response_format"] = {"type": "json_object"}
@@ -121,9 +130,20 @@ async def _generate_original_with_deepseek(
 
     try:
         response = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=20.0)
+        log_deepseek_usage(
+            response,
+            tenant_id=tenant_id,
+            task_type="original_post",
+            model_name=chosen_model,
+        )
         raw_text = response.choices[0].message.content or ""
         logger.info(f"DeepSeek ({chosen_model}) generated original {mode} on '{topic[:40]}'")
-        return _parse_original_json_payload(raw_text, requested_mode=mode, topic=topic)
+        return _parse_original_json_payload(
+            raw_text,
+            requested_mode=mode,
+            topic=topic,
+            include_variants=include_variants,
+        )
     except Exception as e:
         logger.error(f"Error calling DeepSeek API for original {mode}: {e}")
         clean_err = format_ai_error(e)
@@ -146,7 +166,9 @@ async def generate_original_content(
     live_tweets: Optional[List[Dict[str, Any]]] = None,
     model_name: Optional[str] = None,
     custom_key: Optional[str] = None,
-    learning_memory: Optional[Dict[str, Any]] = None
+    learning_memory: Optional[Dict[str, Any]] = None,
+    include_variants: bool = False,
+    tenant_id: str = "default",
 ) -> Dict[str, Any]:
     """
     Generates an original standalone X post (mode='post'), a multi-post thread (mode='thread'),
@@ -165,7 +187,9 @@ async def generate_original_content(
             live_tweets=live_tweets,
             model_name=resolved_model,
             custom_key=custom_key,
-            learning_memory=learning_memory
+            learning_memory=learning_memory,
+            include_variants=include_variants,
+            tenant_id=tenant_id,
         )
         if res.get("success") and res.get("text"):
             return res
@@ -186,7 +210,9 @@ async def generate_original_content(
                 live_tweets=live_tweets,
                 model_name=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
                 custom_key=custom_key,
-                learning_memory=learning_memory
+                learning_memory=learning_memory,
+                include_variants=include_variants,
+                tenant_id=tenant_id,
             )
         fallback_mode = "post" if mode == "auto" else mode
         msg = "DeepSeek API key not configured. Enter your key in Settings to generate content."
@@ -208,7 +234,8 @@ async def generate_original_content(
         topic=topic,
         voice=voice,
         live_tweets=live_tweets,
-        learning_memory=learning_memory
+        learning_memory=learning_memory,
+        include_variants=include_variants,
     )
 
     chosen_model = sanitize_model_for_provider("gemini", model_name)
@@ -278,7 +305,12 @@ async def generate_original_content(
         if not response or not response.text:
             raise last_err or RuntimeError("Empty response from Gemini")
 
-        return _parse_original_json_payload(response.text, requested_mode=mode, topic=topic)
+        return _parse_original_json_payload(
+            response.text,
+            requested_mode=mode,
+            topic=topic,
+            include_variants=include_variants,
+        )
 
     except Exception as e:
         logger.error(f"Error generating original {mode}: {e}")
@@ -294,7 +326,9 @@ async def generate_original_content(
                     live_tweets=live_tweets,
                     model_name=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
                     custom_key=custom_key,
-                    learning_memory=learning_memory
+                    learning_memory=learning_memory,
+                    include_variants=include_variants,
+                    tenant_id=tenant_id,
                 )
             except Exception as ds_err:
                 logger.error(f"DeepSeek failover error: {ds_err}")
@@ -316,7 +350,8 @@ async def generate_smart_search_query(
     niche_topic: str,
     recent_tweets: Optional[List[Dict[str, Any]]] = None,
     model_name: Optional[str] = None,
-    custom_key: Optional[str] = None
+    custom_key: Optional[str] = None,
+    tenant_id: str = "default",
 ) -> str:
     """
     Autonomous Trend & Search Query Discovery:
@@ -351,9 +386,10 @@ Rules:
         ds_client = get_deepseek_client(custom_key=custom_key)
         if ds_client:
             try:
+                ds_model = sanitize_model_for_provider("deepseek", model_name)
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=sanitize_model_for_provider("deepseek", model_name),
+                        model=ds_model,
                         messages=[
                             {"role": "system", "content": "You are a trend scout inventing concise 2-4 word X search queries in JSON."},
                             {"role": "user", "content": prompt}
@@ -363,6 +399,12 @@ Rules:
                         max_tokens=100
                     ),
                     timeout=8.0
+                )
+                log_deepseek_usage(
+                    resp,
+                    tenant_id=tenant_id,
+                    task_type="smart_query",
+                    model_name=ds_model,
                 )
                 raw = resp.choices[0].message.content or ""
                 data = json.loads(_clean_json_markdown(raw))
@@ -415,7 +457,8 @@ async def generate_strategy_brief(
     niche: str,
     model_name: Optional[str] = None,
     custom_key: Optional[str] = None,
-    force_refresh: bool = False
+    force_refresh: bool = False,
+    tenant_id: str = "default",
 ) -> Dict[str, str]:
     """
     Generates an executive AI Strategy Brief for the Power BI Analytics tab.
@@ -453,9 +496,10 @@ Write a crisp, high-signal executive brief in JSON with these exact keys:
         ds_client = get_deepseek_client(custom_key=custom_key)
         if ds_client:
             try:
+                ds_model = sanitize_model_for_provider("deepseek", model_name)
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=sanitize_model_for_provider("deepseek", model_name),
+                        model=ds_model,
                         messages=[
                             {"role": "system", "content": "You are an executive growth strategist analyzing telemetry in JSON."},
                             {"role": "user", "content": prompt}
@@ -465,6 +509,12 @@ Write a crisp, high-signal executive brief in JSON with these exact keys:
                         max_tokens=300
                     ),
                     timeout=8.0
+                )
+                log_deepseek_usage(
+                    resp,
+                    tenant_id=tenant_id,
+                    task_type="strategy_brief",
+                    model_name=ds_model,
                 )
                 raw = resp.choices[0].message.content or ""
                 parsed = json.loads(_clean_json_markdown(raw))

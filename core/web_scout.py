@@ -17,13 +17,36 @@ from typing import List, Dict, Any, Optional
 import httpx
 import xml.etree.ElementTree as ET
 
-from ai_engine import get_gemini_client, get_deepseek_client, get_active_provider, sanitize_model_for_provider, _clean_json_markdown
+from ai_engine import (
+    get_gemini_client,
+    get_deepseek_client,
+    get_active_provider,
+    sanitize_model_for_provider,
+    log_deepseek_usage,
+    _clean_json_markdown,
+)
 
 logger = logging.getLogger("x_vibebot.web_scout")
 
 # In-memory cached topics per niche to avoid redundant requests: {niche: (timestamp, [topics])}
 _TOPIC_CACHE: Dict[str, Any] = {}
-CACHE_TTL_SECONDS = 900  # 15 minutes
+CACHE_TTL_SECONDS = 7200  # 2 hours (default; dynamically overridden by PlatformSettings)
+
+
+def _get_effective_cache_ttl() -> int:
+    """Reads dynamic web_radar_cache_seconds from PlatformSettings, falling back to 7200s (2h)."""
+    try:
+        from database import SessionLocal, get_platform_settings
+        db = SessionLocal()
+        try:
+            ps = get_platform_settings(db)
+            if ps and ps.web_radar_cache_seconds and ps.web_radar_cache_seconds > 0:
+                return int(ps.web_radar_cache_seconds)
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return CACHE_TTL_SECONDS
 
 
 def _clean_headline(raw_title: str) -> tuple[str, str]:
@@ -101,20 +124,23 @@ async def fetch_google_news_topics(query: str = "artificial intelligence", limit
 async def scout_and_rank_topics(
     niche: str = "tech",
     limit: int = 4,
-    custom_key: Optional[str] = None
+    custom_key: Optional[str] = None,
+    tenant_id: str = "default",
 ) -> List[Dict[str, Any]]:
     """
-    Scouts the web for breaking niche topics, asks Gemini to extract an optimal 2-4 word X search query,
+    Scouts the web for breaking niche topics, asks DeepSeek/Gemini to extract an optimal 2-4 word X search query,
     and returns a ranked list of creator-ready trend items with hot-take summaries.
+    Cached for 2 hours (or PlatformSettings.web_radar_cache_seconds).
     """
     global _TOPIC_CACHE
     niche_key = (niche or "tech").strip().lower()
+    cache_ttl = _get_effective_cache_ttl()
 
     # Check cache
     now = datetime.utcnow().timestamp()
     if niche_key in _TOPIC_CACHE:
         cached_time, cached_items = _TOPIC_CACHE[niche_key]
-        if now - cached_time < CACHE_TTL_SECONDS and cached_items:
+        if now - cached_time < cache_ttl and cached_items:
             return cached_items[:limit]
 
     raw_news = await fetch_google_news_topics(query=niche, limit=limit + 2)
@@ -149,9 +175,10 @@ Respond ONLY with valid JSON array of objects:
         ds_client = get_deepseek_client(custom_key=custom_key)
         if ds_client:
             try:
+                ds_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                        model=ds_model,
                         messages=[
                             {"role": "system", "content": "You are a trend strategist analyzing news for creators. Output valid JSON."},
                             {"role": "user", "content": prompt}
@@ -161,6 +188,12 @@ Respond ONLY with valid JSON array of objects:
                         max_tokens=800
                     ),
                     timeout=8.0
+                )
+                log_deepseek_usage(
+                    resp,
+                    tenant_id=tenant_id,
+                    task_type="web_scout",
+                    model_name=ds_model,
                 )
                 raw = resp.choices[0].message.content or ""
                 cleaned = _clean_json_markdown(raw)
@@ -232,51 +265,76 @@ async def generate_draft_from_web_topic(
     topic: Dict[str, Any],
     persona_prompt: str = "Casual, sharp, dry humor, short sentences",
     model_name: str = "deepseek-chat",
-    custom_key: Optional[str] = None
+    custom_key: Optional[str] = None,
+    draft_type: str = "tweet",
+    tenant_id: str = "default",
 ) -> Dict[str, str]:
     """
-    Synthesizes an original standalone tweet and a 3-tweet thread based on a breaking web topic.
-    Uses DeepSeek with Gemini fallback.
+    Synthesizes an original standalone tweet OR a 3-tweet thread based on a breaking web topic.
+    Only generates the requested format (draft_type='tweet' by default) to save output tokens.
     """
     title = topic.get("title", "")
     source = topic.get("source", "Google News")
     url = topic.get("url", "")
     hook_summary = topic.get("hook_summary", "")
+    req_type = (draft_type or "tweet").strip().lower()
+
+    if req_type == "thread":
+        format_req = (
+            'Requirement:\n'
+            '- "thread": A punchy 3-tweet thread separated by "\\n---\\n" (each <240 chars, NO "1/3" or "🧵"). '
+            'Breaks down the news, why it matters, and asks the audience for their reaction.\n\n'
+            'Respond ONLY with valid JSON:\n{\n  "thread": "Post 1\\n---\\nPost 2\\n---\\nPost 3"\n}'
+        )
+        max_tok = 420
+    elif req_type == "both":
+        format_req = (
+            'Requirements:\n'
+            '1. "single_tweet": A standalone, viral X post (under 240 chars). Engaging hook, opinionated take or sharp question, NO hashtag overload.\n'
+            '2. "thread": A punchy 3-tweet thread separated by "\\n---\\n". Breaks down the news, why it matters, and asks for reaction.\n\n'
+            'Respond ONLY with valid JSON:\n{\n  "single_tweet": "Your punchy standalone tweet",\n  "thread": "Post 1\\n---\\nPost 2\\n---\\nPost 3"\n}'
+        )
+        max_tok = 600
+    else:
+        format_req = (
+            'Requirement:\n'
+            '- "single_tweet": A standalone, punchy X post (under 240 chars). Sharp take or question, NO corporate clichés, NO em-dashes, max 0-1 hashtags.\n\n'
+            'Respond ONLY with valid JSON:\n{\n  "single_tweet": "Your punchy standalone tweet"\n}'
+        )
+        max_tok = 220
 
     prompt = f"""You are an influential creator on X (Twitter).
+{format_req}
+
 Persona Voice: "{persona_prompt}"
-
-Write content based on this breaking story from {source}:
+Breaking Story from {source}:
 Title: "{title}"
-Context / Hook: "{hook_summary}"
-
-Requirements:
-1. "single_tweet": A standalone, viral X post (under 240 chars). Engaging hook, opinionated take or sharp question, NO corporate clichés, NO hashtag overload (max 1 or 0 hashtags).
-2. "thread": A punchy 3-tweet thread (numbered 1/3, 2/3, 3/3). Breaks down the news, why it matters, and asks the audience for their reaction.
-
-Respond ONLY with valid JSON:
-{{
-  "single_tweet": "Your punchy standalone tweet",
-  "thread": "1/3 First tweet...\\n\\n2/3 Second tweet...\\n\\n3/3 Third tweet..."
-}}"""
+Context / Hook: "{hook_summary}" """
 
     provider = get_active_provider(custom_key=custom_key)
     if provider == "deepseek":
         ds_client = get_deepseek_client(custom_key=custom_key)
         if ds_client:
             try:
+                ds_model = sanitize_model_for_provider("deepseek", model_name)
                 resp = await asyncio.wait_for(
                     ds_client.chat.completions.create(
-                        model=sanitize_model_for_provider("deepseek", model_name),
+                        model=ds_model,
                         messages=[
                             {"role": "system", "content": "You are an influential creator on X. Respond ONLY with valid JSON."},
                             {"role": "user", "content": prompt}
                         ],
                         response_format={"type": "json_object"},
                         temperature=0.85,
-                        max_tokens=650
+                        max_tokens=max_tok
                     ),
                     timeout=10.0
+                )
+                log_deepseek_usage(
+                    resp,
+                    tenant_id=tenant_id,
+                    task_type="web_draft",
+                    model_name=ds_model,
                 )
                 raw = resp.choices[0].message.content or ""
                 data = json.loads(_clean_json_markdown(raw))
@@ -291,7 +349,7 @@ Respond ONLY with valid JSON:
     if not client:
         return {
             "single_tweet": f"Interesting development: {title}.\n\nWhat's your take on this?",
-            "thread": f"1/3 Breaking: {title} via {source}.\n\n2/3 Here is why this matters for creators and builders.\n\n3/3 Full details: {url}"
+            "thread": f"Breaking: {title} via {source}.\n---\nHere is why this matters for creators and builders.\n---\nFull details: {url}"
         }
 
     try:
@@ -304,7 +362,7 @@ Respond ONLY with valid JSON:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.85,
-                    max_output_tokens=650
+                    max_output_tokens=max_tok
                 )
             ),
             timeout=5.0
@@ -320,5 +378,5 @@ Respond ONLY with valid JSON:
 
     return {
         "single_tweet": f"Interesting shift: {title}.\n\nCurious how this plays out.",
-        "thread": f"1/3 New update: {title}.\n\n2/3 The implications for builders are huge.\n\n3/3 What are your thoughts?"
+        "thread": f"New update: {title}.\n---\nThe implications for builders are huge.\n---\nWhat are your thoughts?"
     }

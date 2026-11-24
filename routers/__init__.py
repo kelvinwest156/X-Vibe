@@ -11,6 +11,8 @@ from routers.browser import router as browser_router
 from routers.analytics import router as analytics_router
 from routers.system import router as system_router
 from routers.radar import router as radar_router
+from routers.admin import router as admin_router
+from routers.billing import router as billing_router
 
 __all__ = [
     "auth_router",
@@ -19,5 +21,7 @@ __all__ = [
     "browser_router",
     "analytics_router",
     "system_router",
-    "radar_router"
+    "radar_router",
+    "admin_router",
+    "billing_router"
 ]

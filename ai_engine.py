@@ -15,6 +15,8 @@ from services.ai_client import (
     get_deepseek_client,
     format_ai_error,
     test_ai_api,
+    log_deepseek_usage,
+    check_tenant_token_budget,
     _test_gemini_api,
     _test_deepseek_api,
     _fetch_image_bytes,
@@ -25,16 +27,23 @@ from services.ai_client import (
 # Prompt Engineering & Few-Shot Voice Memory
 from services.ai_prompts import (
     build_system_prompt,
+    build_batch_evaluation_prompt,
+    build_variants_prompt,
     _build_original_prompt_and_instructions,
 )
 
-# Multimodal Evaluation & Angle Discovery
+# Multimodal Evaluation, Batching & Angle Discovery
 from services.ai_evaluator import (
     evaluate_tweet,
+    evaluate_tweets_batch,
+    generate_reply_variants,
     _evaluate_with_gemini,
     _evaluate_with_deepseek,
     _parse_ai_json_payload,
 )
+
+# Zero-Token Python Spam Pre-Filter
+from services.tweet_filter import should_prefilter_skip
 
 # Content Generation, Query Scout & Telemetry Strategy Brief
 from services.ai_generator import (
@@ -56,14 +65,21 @@ __all__ = [
     "get_deepseek_client",
     "format_ai_error",
     "test_ai_api",
+    "log_deepseek_usage",
+    "check_tenant_token_budget",
     "_test_gemini_api",
     "_test_deepseek_api",
     "_fetch_image_bytes",
     "_sanitize_ai_tells",
     "_clean_json_markdown",
     "build_system_prompt",
+    "build_batch_evaluation_prompt",
+    "build_variants_prompt",
     "_build_original_prompt_and_instructions",
     "evaluate_tweet",
+    "evaluate_tweets_batch",
+    "generate_reply_variants",
+    "should_prefilter_skip",
     "_evaluate_with_gemini",
     "_evaluate_with_deepseek",
     "_parse_ai_json_payload",

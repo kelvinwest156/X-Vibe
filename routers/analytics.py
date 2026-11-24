@@ -5,6 +5,8 @@ Aggregates engagement metrics, status KPIs, AI strategy briefs, and post audit h
 
 import os
 import re
+import json
+import logging
 import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -20,8 +22,10 @@ from models import (
 from database import (
     get_db,
     get_agent_config,
+    get_platform_settings,
     get_daily_actions_count,
     get_hourly_actions_count,
+    get_tenant_daily_tokens,
     get_learning_memory,
     get_pending_tweets,
     get_scheduled_count,
@@ -32,6 +36,7 @@ from core.dependencies import get_current_tenant
 import core.state as state
 from ai_engine import generate_strategy_brief
 
+logger = logging.getLogger("x_vibebot.analytics")
 router = APIRouter(tags=["analytics"])
 
 
@@ -72,6 +77,15 @@ async def get_status(
     hourly_used = get_hourly_actions_count(db, tenant_id=tenant_id)
     effective_hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
     learning_mem = get_learning_memory(db, limit_approved=1, limit_skipped=1, tenant_id=tenant_id)
+    ps = get_platform_settings(db)
+    from services.plans import is_subscription_valid
+    sub_ok, sub_status, trial_days_left = is_subscription_valid(config)
+    daily_tokens_used = get_tenant_daily_tokens(db, tenant_id=tenant_id)
+    daily_token_cap = int(
+        getattr(config, "daily_token_cap", None)
+        or getattr(ps, "default_daily_token_cap", None)
+        or 50000
+    )
 
     cooldown_rem = state.get_cooldown_remaining()
     pending_items = get_pending_tweets(db, tenant_id=tenant_id)
@@ -110,6 +124,8 @@ async def get_status(
         polling_interval_minutes=config.polling_interval_minutes,
         daily_action_cap=effective_daily_cap,
         daily_actions_used=daily_used,
+        daily_tokens_used=daily_tokens_used,
+        daily_token_cap=daily_token_cap,
         hourly_action_cap=effective_hourly_cap,
         hourly_actions_used=hourly_used,
         smart_query_enabled=bool(getattr(config, "smart_query_enabled", True)),
@@ -128,6 +144,10 @@ async def get_status(
         pending_approvals_count=len(pending_items),
         total_processed_count=total_processed,
         selected_model=config.selected_model or "auto",
+        plan_tier=getattr(config, "plan_tier", "trial") or "trial",
+        subscription_status=sub_status,
+        trial_days_remaining=trial_days_left,
+        daily_original_post_cap=int(getattr(config, "daily_original_post_cap", 3) or 3),
         recent_logs=[
             SystemLogEntry(
                 timestamp=entry["timestamp"],
@@ -402,7 +422,8 @@ async def get_analytics_endpoint(
                 learning_memory=learning_memory,
                 niche=state.active_search_query_state or cfg.search_query or "AI & Tech",
                 model_name=cfg.selected_model or "auto",
-                force_refresh=refresh_brief
+                force_refresh=refresh_brief,
+                tenant_id=tenant_id,
             ),
             timeout=2.5
         )

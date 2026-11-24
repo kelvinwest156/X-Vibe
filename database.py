@@ -13,12 +13,15 @@ import json
 import secrets
 import time
 import uuid
+import logging
 from datetime import datetime, date, timedelta
+
+logger = logging.getLogger("x_vibebot.database")
 from typing import Optional, List, Dict, Any
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, Session
 
-from models import Base, ProcessedTweet, AgentConfig, User
+from models import Base, ProcessedTweet, AgentConfig, User, TokenUsageLog, PlatformSettings
 
 AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY")
 if not AUTH_SECRET_KEY:
@@ -92,6 +95,15 @@ def init_db():
             ("warmup_mode", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
             ("cookies_json", "TEXT"),
             ("api_key", "VARCHAR(512)"),
+            ("daily_token_cap", "INTEGER DEFAULT 50000"),
+            ("max_pending_queue", "INTEGER DEFAULT 8"),
+            ("auto_sleep_browser", "BOOLEAN DEFAULT 1" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT true"),
+            ("is_suspended", "BOOLEAN DEFAULT 0" if "sqlite" in DB_FILE else "BOOLEAN DEFAULT false"),
+            ("plan_tier", "VARCHAR(32) DEFAULT 'trial'"),
+            ("subscription_status", "VARCHAR(32) DEFAULT 'trialing'"),
+            ("trial_ends_at", "TIMESTAMP" if "postgres" in DB_FILE else "DATETIME"),
+            ("daily_original_post_cap", "INTEGER DEFAULT 3"),
+            ("payment_customer_id", "VARCHAR(128)"),
         ]
         with engine.connect() as conn:
             for col_name, col_def in migrations_cfg:
@@ -153,7 +165,10 @@ def init_db():
                 smart_query_enabled=True,
                 warmup_mode=False,
                 persona_prompt="Casual, sharp, dry humor, short sentences, no corporate buzzwords",
-                selected_model="auto"
+                selected_model="auto",
+                plan_tier="pro",
+                subscription_status="active",
+                daily_original_post_cap=6,
             )
             db.add(config)
             db.commit()
@@ -161,6 +176,15 @@ def init_db():
             changed = False
             if not getattr(config, "tenant_id", None):
                 config.tenant_id = "default"
+                changed = True
+            if not getattr(config, "plan_tier", None):
+                config.plan_tier = "pro"
+                changed = True
+            if not getattr(config, "subscription_status", None):
+                config.subscription_status = "active"
+                changed = True
+            if getattr(config, "daily_original_post_cap", None) is None:
+                config.daily_original_post_cap = 6
                 changed = True
             if not config.selected_model or config.selected_model != "auto":
                 config.selected_model = "auto"
@@ -186,8 +210,34 @@ def init_db():
             if not config.persona_prompt:
                 config.persona_prompt = "Casual, sharp, dry humor, short sentences, no corporate buzzwords"
                 changed = True
+            if getattr(config, "daily_token_cap", None) is None:
+                config.daily_token_cap = 50000
+                changed = True
+            if getattr(config, "max_pending_queue", None) is None:
+                config.max_pending_queue = 8
+                changed = True
+            if getattr(config, "auto_sleep_browser", None) is None:
+                config.auto_sleep_browser = True
+                changed = True
+            if getattr(config, "is_suspended", None) is None:
+                config.is_suspended = False
+                changed = True
             if changed:
                 db.commit()
+
+        # Seed singleton PlatformSettings row (id=1)
+        ps = db.query(PlatformSettings).filter(PlatformSettings.id == 1).first()
+        if not ps:
+            ps = PlatformSettings(
+                id=1,
+                default_daily_token_cap=50000,
+                web_radar_cache_seconds=7200,
+                browser_idle_sleep_minutes=15,
+                auto_sleep_browsers_enabled=True,
+                global_pause_bots=False,
+            )
+            db.add(ps)
+            db.commit()
     finally:
         db.close()
 
@@ -538,11 +588,42 @@ def get_recent_tweets(db: Session, limit: int = 50, tenant_id: Optional[str] = N
     return q.order_by(ProcessedTweet.timestamp.desc()).limit(limit).all()
 
 
+def expire_stale_drafts(db: Session, tenant_id: Optional[str] = None, max_age_hours: int = 24) -> int:
+    """
+    Auto-expires unapproved drafts older than max_age_hours (default 24h).
+    Transitions status from 'pending_approval' to 'skipped' with an explanatory note.
+    Prevents historical review queues from permanently locking automated bot scans.
+    """
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    query = db.query(ProcessedTweet).filter(
+        ProcessedTweet.status == "pending_approval",
+        ProcessedTweet.timestamp <= cutoff
+    )
+    if tenant_id:
+        query = query.filter(ProcessedTweet.tenant_id == tenant_id)
+
+    stale_items = query.all()
+    count = len(stale_items)
+    for item in stale_items:
+        item.status = "skipped"
+        item.error_message = f"Auto-expired stale draft (unreviewed >{max_age_hours}h)"
+
+    if count > 0:
+        db.commit()
+        logger.info(f"Auto-expired {count} stale draft(s) older than {max_age_hours}h (tenant='{tenant_id or 'all'}').")
+    return count
+
+
 def get_agent_config(db: Session, tenant_id: str = "default") -> AgentConfig:
     """Retrieves the configuration row for a specific tenant (defaults to 'default')."""
     config = db.query(AgentConfig).filter(AgentConfig.tenant_id == tenant_id).first()
     if not config:
+        from services.plans import apply_plan_to_config
         config = AgentConfig(tenant_id=tenant_id)
+        if tenant_id == "default":
+            apply_plan_to_config(config, "pro", status="active")
+        else:
+            apply_plan_to_config(config, "trial", status="trialing", trial_days=7)
         db.add(config)
         db.commit()
         db.refresh(config)
@@ -702,5 +783,333 @@ def update_user_password(db: Session, email: str, new_password_plain: str) -> Op
     db.commit()
     db.refresh(user)
     return user
+
+
+# ==============================================================================
+# Super Admin Auth, Token Telemetry & Platform Settings Helpers
+# ==============================================================================
+
+def create_super_admin_token(email: str, expires_hours: int = 12) -> str:
+    """Generates an HMAC-SHA256 signed Super Admin session token."""
+    payload = {
+        "role": "super_admin",
+        "email": (email or "").strip().lower(),
+        "exp": int(time.time()) + (expires_hours * 3600),
+    }
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    b64_payload = base64.urlsafe_b64encode(payload_json.encode("utf-8")).decode("utf-8").rstrip("=")
+    sig = hmac.new(AUTH_SECRET_KEY.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{b64_payload}.{sig}"
+
+
+def verify_super_admin_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verifies an HMAC-SHA256 signed Super Admin token and ensures role == 'super_admin'."""
+    try:
+        if not token or "." not in token:
+            return None
+        b64_payload, sig = token.split(".", 1)
+        expected_sig = hmac.new(AUTH_SECRET_KEY.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        padded = b64_payload + "=" * ((4 - len(b64_payload) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+        if payload.get("role") != "super_admin":
+            return None
+        exp = payload.get("exp")
+        if exp and exp < time.time():
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def record_token_usage(
+    db: Session,
+    tenant_id: str,
+    provider: str,
+    model: str,
+    task_type: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cache_hit_tokens: int = 0,
+    cache_miss_tokens: int = 0,
+) -> TokenUsageLog:
+    """
+    Records AI token usage and calculates estimated USD cost using DeepSeek V3 pricing:
+    - cache_hit_tokens: $0.07 / 1M
+    - cache_miss_tokens: $0.27 / 1M
+    - completion_tokens: $1.10 / 1M
+    """
+    p_tok = max(0, int(prompt_tokens or 0))
+    c_tok = max(0, int(completion_tokens or 0))
+    hit_tok = max(0, int(cache_hit_tokens or 0))
+    miss_tok = max(0, int(cache_miss_tokens or 0))
+
+    if miss_tok == 0 and hit_tok == 0 and p_tok > 0:
+        miss_tok = p_tok
+
+    cost_usd = (
+        (hit_tok * 0.07)
+        + (miss_tok * 0.27)
+        + (c_tok * 1.10)
+    ) / 1_000_000.0
+
+    entry = TokenUsageLog(
+        tenant_id=tenant_id or "default",
+        provider=provider or "deepseek",
+        model=model or "deepseek-chat",
+        task_type=task_type or "general",
+        prompt_tokens=p_tok,
+        completion_tokens=c_tok,
+        cache_hit_tokens=hit_tok,
+        cache_miss_tokens=miss_tok,
+        estimated_cost_usd=round(cost_usd, 8),
+        timestamp=datetime.utcnow(),
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def get_tenant_daily_tokens(db: Session, tenant_id: str = "default") -> int:
+    """Returns total tokens (prompt + completion) consumed by a tenant since UTC midnight today."""
+    today_utc_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    total = (
+        db.query(func.coalesce(func.sum(TokenUsageLog.prompt_tokens + TokenUsageLog.completion_tokens), 0))
+        .filter(
+            TokenUsageLog.tenant_id == (tenant_id or "default"),
+            TokenUsageLog.timestamp >= today_utc_start,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def get_tenant_daily_cost_usd(db: Session, tenant_id: str = "default") -> float:
+    """Returns total estimated USD spend for a tenant since UTC midnight today."""
+    today_utc_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    total = (
+        db.query(func.coalesce(func.sum(TokenUsageLog.estimated_cost_usd), 0.0))
+        .filter(
+            TokenUsageLog.tenant_id == (tenant_id or "default"),
+            TokenUsageLog.timestamp >= today_utc_start,
+        )
+        .scalar()
+    )
+    return round(float(total or 0.0), 6)
+
+
+def get_daily_original_posts_count(db: Session, tenant_id: str = "default") -> int:
+    """Counts original posts or threads created for a tenant today UTC."""
+    today_utc_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    count = (
+        db.query(func.count(ProcessedTweet.tweet_id))
+        .filter(
+            ProcessedTweet.tenant_id == (tenant_id or "default"),
+            ProcessedTweet.action_type.in_(["post", "thread"]),
+            ProcessedTweet.timestamp >= today_utc_start,
+        )
+        .scalar()
+    )
+    return int(count or 0)
+
+
+def get_pending_approval_count(db: Session, tenant_id: str = "default") -> int:
+    """Counts drafts currently waiting in 'pending_approval' for a tenant."""
+    count = (
+        db.query(func.count(ProcessedTweet.tweet_id))
+        .filter(
+            ProcessedTweet.tenant_id == (tenant_id or "default"),
+            ProcessedTweet.status == "pending_approval",
+        )
+        .scalar()
+    )
+    return int(count or 0)
+
+
+def get_platform_settings(db: Session) -> PlatformSettings:
+    """Retrieves or creates the singleton PlatformSettings row (id=1)."""
+    ps = db.query(PlatformSettings).filter(PlatformSettings.id == 1).first()
+    if not ps:
+        ps = PlatformSettings(
+            id=1,
+            default_daily_token_cap=50000,
+            web_radar_cache_seconds=7200,
+            browser_idle_sleep_minutes=15,
+            auto_sleep_browsers_enabled=True,
+            global_pause_bots=False,
+        )
+        db.add(ps)
+        db.commit()
+        db.refresh(ps)
+    return ps
+
+
+def update_platform_settings(db: Session, updates: Dict[str, Any]) -> PlatformSettings:
+    """Updates fields on the singleton PlatformSettings row (id=1)."""
+    ps = get_platform_settings(db)
+    allowed_fields = {
+        "default_daily_token_cap",
+        "web_radar_cache_seconds",
+        "browser_idle_sleep_minutes",
+        "auto_sleep_browsers_enabled",
+        "global_pause_bots",
+    }
+    for key, value in updates.items():
+        if key in allowed_fields and value is not None:
+            setattr(ps, key, value)
+    ps.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(ps)
+    return ps
+
+
+def get_admin_platform_metrics(db: Session, days: int = 7) -> Dict[str, Any]:
+    """
+    Aggregates platform-wide AI token spend, prefix cache hit efficiency,
+    daily time series, task breakdown, user counts, and publishing telemetry.
+    """
+    days = max(1, min(90, int(days or 7)))
+    now_utc = datetime.utcnow()
+    since_24h = now_utc - timedelta(hours=24)
+    since_period = (now_utc - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    logs_period = (
+        db.query(TokenUsageLog)
+        .filter(TokenUsageLog.timestamp >= since_period)
+        .all()
+    )
+
+    spend_24h = 0.0
+    tokens_24h = 0
+    calls_24h = 0
+
+    spend_period = 0.0
+    tokens_period = 0
+    calls_period = 0
+    cache_hit_tokens = 0
+    cache_miss_tokens = 0
+
+    # Initialize daily series buckets
+    daily_map: Dict[str, Dict[str, Any]] = {}
+    for offset in range(days - 1, -1, -1):
+        day_str = (now_utc - timedelta(days=offset)).strftime("%Y-%m-%d")
+        daily_map[day_str] = {
+            "date": day_str,
+            "tokens": 0,
+            "cost_usd": 0.0,
+            "cache_hit_tokens": 0,
+            "calls": 0,
+        }
+
+    task_map: Dict[str, Dict[str, Any]] = {}
+
+    for row in logs_period:
+        row_tokens = int((row.prompt_tokens or 0) + (row.completion_tokens or 0))
+        row_cost = float(row.estimated_cost_usd or 0.0)
+        row_hit = int(row.cache_hit_tokens or 0)
+        row_miss = int(row.cache_miss_tokens or 0)
+
+        spend_period += row_cost
+        tokens_period += row_tokens
+        calls_period += 1
+        cache_hit_tokens += row_hit
+        cache_miss_tokens += row_miss
+
+        if row.timestamp and row.timestamp >= since_24h:
+            spend_24h += row_cost
+            tokens_24h += row_tokens
+            calls_24h += 1
+
+        if row.timestamp:
+            d_key = row.timestamp.strftime("%Y-%m-%d")
+            if d_key in daily_map:
+                daily_map[d_key]["tokens"] += row_tokens
+                daily_map[d_key]["cost_usd"] += row_cost
+                daily_map[d_key]["cache_hit_tokens"] += row_hit
+                daily_map[d_key]["calls"] += 1
+
+        t_key = row.task_type or "general"
+        if t_key not in task_map:
+            task_map[t_key] = {
+                "task_type": t_key,
+                "calls": 0,
+                "tokens": 0,
+                "cost_usd": 0.0,
+            }
+        task_map[t_key]["calls"] += 1
+        task_map[t_key]["tokens"] += row_tokens
+        task_map[t_key]["cost_usd"] += row_cost
+
+    total_prompt = cache_hit_tokens + cache_miss_tokens
+    cache_hit_rate_pct = round((cache_hit_tokens / total_prompt) * 100.0, 1) if total_prompt > 0 else 0.0
+    # DeepSeek V3 savings: cache hit ($0.07/1M) vs cache miss ($0.27/1M) = $0.20/1M saved
+    estimated_cache_savings_usd = round((cache_hit_tokens * 0.20) / 1_000_000.0, 6)
+
+    daily_series = [
+        {
+            "date": v["date"],
+            "tokens": v["tokens"],
+            "cost_usd": round(v["cost_usd"], 6),
+            "cache_hit_tokens": v["cache_hit_tokens"],
+            "calls": v["calls"],
+        }
+        for v in daily_map.values()
+    ]
+
+    task_breakdown = sorted(
+        [
+            {
+                "task_type": v["task_type"],
+                "calls": v["calls"],
+                "tokens": v["tokens"],
+                "cost_usd": round(v["cost_usd"], 6),
+            }
+            for v in task_map.values()
+        ],
+        key=lambda x: x["tokens"],
+        reverse=True,
+    )
+
+    total_users = int(db.query(func.count(User.id)).scalar() or 0)
+    active_bots = int(
+        db.query(func.count(AgentConfig.id))
+        .filter(AgentConfig.is_active == True, AgentConfig.is_suspended == False)
+        .scalar()
+        or 0
+    )
+    total_published_24h = int(
+        db.query(func.count(ProcessedTweet.tweet_id))
+        .filter(ProcessedTweet.status == "posted", ProcessedTweet.timestamp >= since_24h)
+        .scalar()
+        or 0
+    )
+    total_published_all = int(
+        db.query(func.count(ProcessedTweet.tweet_id))
+        .filter(ProcessedTweet.status == "posted")
+        .scalar()
+        or 0
+    )
+
+    return {
+        "days": days,
+        "spend_24h_usd": round(spend_24h, 6),
+        "tokens_24h": tokens_24h,
+        "calls_24h": calls_24h,
+        "spend_period_usd": round(spend_period, 6),
+        "tokens_period": tokens_period,
+        "calls_period": calls_period,
+        "cache_hit_tokens": cache_hit_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+        "cache_hit_rate_pct": cache_hit_rate_pct,
+        "estimated_cache_savings_usd": estimated_cache_savings_usd,
+        "daily_series": daily_series,
+        "task_breakdown": task_breakdown,
+        "total_users": total_users,
+        "active_bots": active_bots,
+        "total_published_24h": total_published_24h,
+        "total_published_all": total_published_all,
+    }
 
 

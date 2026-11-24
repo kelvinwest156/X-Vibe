@@ -326,6 +326,12 @@ export default function LandingView({
               How It Works
             </a>
             <a
+              href="#pricing"
+              className="hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors font-medium text-[#EA580C]"
+            >
+              Pricing
+            </a>
+            <a
               href="#faq"
               className="hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
             >
@@ -418,6 +424,13 @@ export default function LandingView({
                 className="block text-[14px] font-medium text-[#52525B] dark:text-[#A1A1AA] hover:text-[#EA580C] py-1"
               >
                 How It Works
+              </a>
+              <a
+                href="#pricing"
+                onClick={() => setMobileMenuOpen(false)}
+                className="block text-[14px] font-medium text-[#EA580C] py-1"
+              >
+                Pricing
               </a>
               <a
                 href="#faq"
@@ -1361,6 +1374,207 @@ export default function LandingView({
       </section>
 
       {/* ─────────────────────────────────────────────────────────────
+          6.5 PRICING & SUBSCRIPTION PACKAGES
+      ─────────────────────────────────────────────────────────────── */}
+      <section id="pricing" className="py-24 bg-white dark:bg-[#0E0E0E] border-t border-[#E4E4E7] dark:border-[#222225] transition-colors">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-12">
+          <div className="text-center max-w-2xl mx-auto space-y-3">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#EA580C]/10 dark:bg-[#EA580C]/15 border border-[#EA580C]/30 text-[#EA580C] text-[12px] font-semibold">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Transparent & Fair Pricing</span>
+            </div>
+            <h2 className="font-display text-[28px] sm:text-[36px] font-bold tracking-tight text-[#111111] dark:text-[#F5F5F5] text-balance">
+              Simple plans for creators at every scale
+            </h2>
+            <p className="text-[14.5px] text-[#52525B] dark:text-[#A1A1AA] text-pretty">
+              Every plan includes Full Autopilot and safe human-mimicking jitter. Start free with 15,000 daily tokens.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {/* Free Trial */}
+            <div className="rounded-2xl border border-[#E4E4E7] dark:border-[#262626] bg-[#FAFAFA] dark:bg-[#141416] p-6 flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-bold text-[#111111] dark:text-[#F5F5F5]">Free 7-Day Trial</h3>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                    7 Days
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-extrabold text-[#111111] dark:text-[#F5F5F5]">$0</span>
+                  <span className="text-xs text-[#71717A] dark:text-[#8E8E8E]">/ 7 days</span>
+                </div>
+                <p className="text-xs text-[#52525B] dark:text-[#A1A1AA] leading-relaxed">
+                  Test-drive the full studio with zero commitment. No credit card required.
+                </p>
+                <div className="pt-2 border-t border-[#E4E4E7] dark:border-[#222225] space-y-2.5 text-xs text-[#52525B] dark:text-[#D4D4D8]">
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span><strong>15,000</strong> tokens / day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>Up to 10 daily interactions</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>2 auto original posts/day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>Full Autopilot + Review Queue</span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onLaunchStudio("signup")}
+                className="w-full h-10 rounded-xl border border-[#E4E4E7] dark:border-[#2D2D35] bg-white dark:bg-[#1E1E22] hover:bg-[#F4F4F5] dark:hover:bg-[#28282E] text-[#111111] dark:text-[#F5F5F5] font-semibold text-xs transition-colors"
+              >
+                Start Free Trial
+              </button>
+            </div>
+
+            {/* Starter */}
+            <div className="rounded-2xl border border-[#E4E4E7] dark:border-[#262626] bg-[#FAFAFA] dark:bg-[#141416] p-6 flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-bold text-[#111111] dark:text-[#F5F5F5]">Starter</h3>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                    Solo Builders
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-extrabold text-[#111111] dark:text-[#F5F5F5]">$9</span>
+                  <span className="text-xs text-[#71717A] dark:text-[#8E8E8E]">/ month</span>
+                </div>
+                <p className="text-xs text-[#52525B] dark:text-[#A1A1AA] leading-relaxed">
+                  For creators building momentum with steady, consistent daily presence.
+                </p>
+                <div className="pt-2 border-t border-[#E4E4E7] dark:border-[#222225] space-y-2.5 text-xs text-[#52525B] dark:text-[#D4D4D8]">
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span><strong>50,000</strong> tokens / day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>Up to 15 daily interactions</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>3 auto original posts/day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>Full Autopilot + Review Queue</span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onLaunchStudio("signup")}
+                className="w-full h-10 rounded-xl border border-[#E4E4E7] dark:border-[#2D2D35] bg-white dark:bg-[#1E1E22] hover:bg-[#F4F4F5] dark:hover:bg-[#28282E] text-[#111111] dark:text-[#F5F5F5] font-semibold text-xs transition-colors"
+              >
+                Choose Starter
+              </button>
+            </div>
+
+            {/* Creator Pro */}
+            <div className="rounded-2xl border-2 border-[#EA580C] bg-white dark:bg-[#18181B] p-6 flex flex-col justify-between space-y-6 shadow-lg shadow-[#EA580C]/10 relative">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-[#EA580C] text-white text-[10.5px] font-bold tracking-wide uppercase shadow-xs">
+                Most Popular
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-bold text-[#111111] dark:text-[#F5F5F5]">Creator Pro</h3>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#EA580C]/15 text-[#EA580C] border border-[#EA580C]/30">
+                    Power Creators
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-extrabold text-[#111111] dark:text-[#F5F5F5]">$24</span>
+                  <span className="text-xs text-[#71717A] dark:text-[#8E8E8E]">/ month</span>
+                </div>
+                <p className="text-xs text-[#52525B] dark:text-[#A1A1AA] leading-relaxed">
+                  For active founders scaling niche authority, high reply reach, and daily threads.
+                </p>
+                <div className="pt-2 border-t border-[#E4E4E7] dark:border-[#222225] space-y-2.5 text-xs text-[#52525B] dark:text-[#D4D4D8]">
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-[#EA580C] shrink-0" />
+                    <span><strong>150,000</strong> tokens / day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-[#EA580C] shrink-0" />
+                    <span>Up to 35 daily interactions</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-[#EA580C] shrink-0" />
+                    <span>6 auto original posts/day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-[#EA580C] shrink-0" />
+                    <span>Full Autopilot + 12-Draft Queue</span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onLaunchStudio("signup")}
+                className="w-full h-10 rounded-xl bg-[#EA580C] hover:bg-[#D94F06] text-white font-semibold text-xs shadow-md shadow-[#EA580C]/25 transition-all"
+              >
+                Choose Creator Pro
+              </button>
+            </div>
+
+            {/* Growth */}
+            <div className="rounded-2xl border border-[#E4E4E7] dark:border-[#262626] bg-[#FAFAFA] dark:bg-[#141416] p-6 flex flex-col justify-between space-y-6">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-bold text-[#111111] dark:text-[#F5F5F5]">Growth</h3>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
+                    High Velocity
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-extrabold text-[#111111] dark:text-[#F5F5F5]">$59</span>
+                  <span className="text-xs text-[#71717A] dark:text-[#8E8E8E]">/ month</span>
+                </div>
+                <p className="text-xs text-[#52525B] dark:text-[#A1A1AA] leading-relaxed">
+                  Maximum throughput, priority feed radar scans, and unlimited manual drafting.
+                </p>
+                <div className="pt-2 border-t border-[#E4E4E7] dark:border-[#222225] space-y-2.5 text-xs text-[#52525B] dark:text-[#D4D4D8]">
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                    <span><strong>400,000</strong> tokens / day</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                    <span>Up to 50 daily interactions</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                    <span>6 auto posts + unlimited manual</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Check className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                    <span>Priority radar + 20-Draft Queue</span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onLaunchStudio("signup")}
+                className="w-full h-10 rounded-xl border border-[#E4E4E7] dark:border-[#2D2D35] bg-white dark:bg-[#1E1E22] hover:bg-[#F4F4F5] dark:hover:bg-[#28282E] text-[#111111] dark:text-[#F5F5F5] font-semibold text-xs transition-colors"
+              >
+                Choose Growth
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─────────────────────────────────────────────────────────────
           7. BOTTOM CALL TO ACTION BANNER
       ─────────────────────────────────────────────────────────────── */}
       <section className="py-20 bg-gradient-to-b from-white to-[#F4F4F5] dark:from-[#111113] dark:to-[#09090A] border-t border-[#E4E4E7] dark:border-[#222225] relative overflow-hidden">
@@ -1435,6 +1649,12 @@ export default function LandingView({
               className="hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
             >
               Architecture
+            </a>
+            <a
+              href="#pricing"
+              className="hover:text-[#111111] dark:hover:text-[#F5F5F5] transition-colors"
+            >
+              Pricing
             </a>
             <button
               type="button"

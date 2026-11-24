@@ -10,6 +10,9 @@ screenshot_*.png
 # Next.js build & dependencies
 frontend/node_modules/
 frontend/.next/
+admin-portal/node_modules/
+admin-portal/.next/
+admin-portal/out/
 # frontend/out/ is tracked for production static hosting on Render
 
 # SQLite Database
@@ -22,9 +25,11 @@ vibebot.db
 .env.*
 *.env.local
 frontend/.env.local
+admin-portal/.env.local
 *.tsbuildinfo
 !.env.example
 !.env.supabase.example
+!admin-portal/.env.local.example
 
 # Python artifacts
 __pycache__/

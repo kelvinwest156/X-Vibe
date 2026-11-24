@@ -48,6 +48,10 @@ async def get_config(
         selected_model=cfg.selected_model or "auto",
         linked_username=worker.logged_in_username or cfg.linked_username,
         masked_api_key=masked_key,
+        plan_tier=getattr(cfg, "plan_tier", "trial") or "trial",
+        subscription_status=getattr(cfg, "subscription_status", "trialing") or "trialing",
+        trial_ends_at=getattr(cfg, "trial_ends_at", None),
+        daily_original_post_cap=int(getattr(cfg, "daily_original_post_cap", 3) or 3),
         updated_at=cfg.updated_at
     )
 

@@ -7,7 +7,7 @@ for API request validation and response serialization.
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, Float
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -102,6 +102,16 @@ class AgentConfig(Base):
     linked_username = Column(String(128), nullable=True)       # Detected @handle of logged-in X account
     cookies_json = Column(Text, nullable=True)                 # Persisted session cookies for surviving cloud container restarts
     api_key = Column(String(512), nullable=True)              # Persisted Gemini or DeepSeek API key
+    daily_token_cap = Column(Integer, default=50000)          # Hard daily AI token budget ceiling per user
+    max_pending_queue = Column(Integer, default=8)            # Auto-pause scanning when pending queue reaches this cap
+    auto_sleep_browser = Column(Boolean, default=True)        # Automatically close idle/sleeping Chromium to save RAM
+    is_suspended = Column(Boolean, default=False)             # Super Admin kill-switch suspending tenant bot
+    # Subscription & Plan Management
+    plan_tier = Column(String(32), default="trial")            # 'trial' | 'starter' | 'pro' | 'growth'
+    subscription_status = Column(String(32), default="trialing") # 'trialing' | 'active' | 'expired' | 'canceled'
+    trial_ends_at = Column(DateTime, nullable=True)            # Free trial expiration timestamp
+    daily_original_post_cap = Column(Integer, default=3)       # Max autonomous original posts/threads per day
+    payment_customer_id = Column(String(128), nullable=True)   # External payment provider customer ID
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def effective_daily_cap(self) -> int:
@@ -140,6 +150,42 @@ class User(Base):
             tenant_id=self.tenant_id,
             created_at=self.created_at
         )
+
+
+class TokenUsageLog(Base):
+    """
+    Logs exact AI token consumption, prompt cache hits/misses, and estimated USD cost
+    per tenant and task type for cost telemetry and daily token cap enforcement.
+    """
+    __tablename__ = "token_usage_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(128), default="default", index=True, nullable=False)
+    provider = Column(String(64), default="deepseek", nullable=False)
+    model = Column(String(64), default="deepseek-chat", nullable=False)
+    task_type = Column(String(64), default="general", index=True, nullable=False)
+    prompt_tokens = Column(Integer, default=0, nullable=False)
+    completion_tokens = Column(Integer, default=0, nullable=False)
+    cache_hit_tokens = Column(Integer, default=0, nullable=False)
+    cache_miss_tokens = Column(Integer, default=0, nullable=False)
+    estimated_cost_usd = Column(Float, default=0.0, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+
+
+class PlatformSettings(Base):
+    """
+    Singleton global configuration table (id=1) controlled by the Super Admin Portal.
+    Governs default token budgets, Web Radar cache TTL, browser auto-sleep, and global bot pause.
+    """
+    __tablename__ = "platform_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    default_daily_token_cap = Column(Integer, default=50000, nullable=False)
+    web_radar_cache_seconds = Column(Integer, default=7200, nullable=False)
+    browser_idle_sleep_minutes = Column(Integer, default=15, nullable=False)
+    auto_sleep_browsers_enabled = Column(Boolean, default=True, nullable=False)
+    global_pause_bots = Column(Boolean, default=False, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ==============================================================================
@@ -285,6 +331,10 @@ class AgentConfigResponse(BaseModel):
     selected_model: str
     linked_username: Optional[str] = None
     masked_api_key: Optional[str] = None
+    plan_tier: str = "trial"
+    subscription_status: str = "trialing"
+    trial_ends_at: Optional[datetime] = None
+    daily_original_post_cap: int = 3
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -303,6 +353,8 @@ class AgentStatusResponse(BaseModel):
     polling_interval_minutes: int
     daily_action_cap: int
     daily_actions_used: int
+    daily_tokens_used: int = 0
+    daily_token_cap: int = 50000
     hourly_action_cap: int = 6
     hourly_actions_used: int = 0
     smart_query_enabled: bool = True
@@ -321,6 +373,10 @@ class AgentStatusResponse(BaseModel):
     pending_approvals_count: int
     total_processed_count: int
     selected_model: str
+    plan_tier: str = "trial"
+    subscription_status: str = "trialing"
+    trial_days_remaining: Optional[int] = None
+    daily_original_post_cap: int = 3
     recent_logs: List[SystemLogEntry]
 
 

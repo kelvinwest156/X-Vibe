@@ -36,7 +36,9 @@ from routers import (
     browser_router,
     analytics_router,
     system_router,
-    radar_router
+    radar_router,
+    admin_router,
+    billing_router
 )
 
 # Re-export common handles for backwards compatibility
@@ -142,6 +144,8 @@ app.include_router(browser_router)
 app.include_router(analytics_router)
 app.include_router(system_router)
 app.include_router(radar_router)
+app.include_router(admin_router)
+app.include_router(billing_router)
 
 if __name__ == "__main__":
     import uvicorn
