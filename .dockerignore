@@ -11,3 +11,6 @@ x_browser_profile/
 x_browser_profile*/
 tmp_test_profile/
 .agents/
+node_modules/
+frontend/.next/
+admin-portal/.next/

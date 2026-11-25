@@ -82,7 +82,13 @@ def is_subscription_valid(config: Any) -> Tuple[bool, str, Optional[int]]:
     status = getattr(config, "subscription_status", "trialing") or "trialing"
     trial_ends = getattr(config, "trial_ends_at", None)
 
-    # 1. Paid active subscriptions are always valid
+    if bool(getattr(config, "is_suspended", False)):
+        return False, "suspended", 0
+
+    if status in ("expired", "canceled", "suspended"):
+        return False, status, 0
+
+    # 1. Paid active subscriptions are valid
     if tier in ("starter", "pro", "growth") and status == "active":
         return True, "active", None
 
@@ -92,21 +98,28 @@ def is_subscription_valid(config: Any) -> Tuple[bool, str, Optional[int]]:
 
     # 3. Check Free Trial validity
     if tier == "trial" or status == "trialing":
+        now_utc = datetime.utcnow()
         if trial_ends:
-            now_utc = datetime.utcnow()
+            if getattr(trial_ends, "tzinfo", None) is not None:
+                from datetime import timezone
+                trial_ends = trial_ends.astimezone(timezone.utc).replace(tzinfo=None)
             if now_utc <= trial_ends:
                 diff = trial_ends - now_utc
                 days_left = max(0, diff.days + (1 if diff.seconds > 0 else 0))
                 return True, "trialing", days_left
-            else:
-                return False, "expired", 0
-        else:
-            # No trial_ends_at set: default to 7 days from now
-            return True, "trialing", 7
+            return False, "expired", 0
 
-    # 4. Explicitly expired, canceled, or suspended
-    if status in ("expired", "canceled", "suspended"):
-        return False, status, 0
+        # If legacy row has no explicit trial_ends_at, bound grace window from updated_at (7 days max)
+        updated_at = getattr(config, "updated_at", None)
+        if updated_at:
+            if getattr(updated_at, "tzinfo", None) is not None:
+                from datetime import timezone
+                updated_at = updated_at.astimezone(timezone.utc).replace(tzinfo=None)
+            grace_end = updated_at + timedelta(days=7)
+            if now_utc <= grace_end:
+                diff = grace_end - now_utc
+                return True, "trialing", max(0, diff.days + (1 if diff.seconds > 0 else 0))
+        return False, "expired", 0
 
     return False, "expired", 0
 

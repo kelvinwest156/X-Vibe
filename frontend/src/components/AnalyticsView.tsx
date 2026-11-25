@@ -19,6 +19,7 @@ import {
   BarChart3,
   Layers,
   CheckCircle2,
+  AlertCircle,
   Share2,
   MessageCircle,
   Heart,
@@ -167,12 +168,14 @@ function getSmoothCurvePath(points: Array<[number, number]>): string {
 
 export default function AnalyticsView({
   data,
+  apiFetch,
   onRefreshBrief,
   refreshingBrief,
   onApplySuggestedQuery,
   onNavigateToQueue,
 }: {
   data: AnalyticsData;
+  apiFetch?: (url: string, opts?: RequestInit) => Promise<Response>;
   onRefreshBrief?: () => void;
   refreshingBrief?: boolean;
   onApplySuggestedQuery?: (q: string) => void;
@@ -183,7 +186,41 @@ export default function AnalyticsView({
   const [scanningWeb, setScanningWeb] = useState(false);
   const [draftingId, setDraftingId] = useState<string | null>(null);
   const [draftSuccessToast, setDraftSuccessToast] = useState<string | null>(null);
+  const [radarErrorToast, setRadarErrorToast] = useState<string | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  const doFetch = useCallback(
+    (url: string, opts?: RequestInit) => (apiFetch ? apiFetch(url, opts) : fetch(url, opts)),
+    [apiFetch]
+  );
+
+  const showRadarError = useCallback((msg: string) => {
+    setRadarErrorToast(msg);
+    setTimeout(() => setRadarErrorToast((cur) => (cur === msg ? null : cur)), 5500);
+  }, []);
+
+  const extractRadarError = useCallback(async (res: Response, fallback: string) => {
+    let detail: string | undefined;
+    try {
+      const json = await res.json();
+      if (json && typeof json === "object") {
+        const raw = json.detail || json.message || json.error;
+        if (typeof raw === "string" && raw.trim()) detail = raw.trim();
+      }
+    } catch {
+      // Ignore JSON parse errors
+    }
+    if (res.status === 401) {
+      return detail || "Authentication required. Please sign in again.";
+    }
+    if (res.status === 402) {
+      return detail || "Active subscription required. Please upgrade your plan in Billing.";
+    }
+    if (res.status === 403) {
+      return detail || "Workspace access restricted or suspended.";
+    }
+    return detail || fallback;
+  }, []);
 
   const {
     kpis,
@@ -209,7 +246,10 @@ export default function AnalyticsView({
   // Fetch real-time Web Topics from /api/radar/topics
   const fetchWebTopics = useCallback(async () => {
     try {
-      const res = await fetch("/api/radar/topics");
+      const res = await doFetch("/api/radar/topics");
+      if (res.status === 401 || res.status === 402 || res.status === 403) {
+        return;
+      }
       if (res.ok) {
         const json = await res.json();
         setWebTopics(json.topics || []);
@@ -217,7 +257,7 @@ export default function AnalyticsView({
     } catch {
       // Non-blocking fallback
     }
-  }, []);
+  }, [doFetch]);
 
   useEffect(() => {
     fetchWebTopics();
@@ -227,13 +267,15 @@ export default function AnalyticsView({
   const handleScanWebNow = async () => {
     setScanningWeb(true);
     try {
-      const res = await fetch("/api/radar/scan-now", { method: "POST" });
+      const res = await doFetch("/api/radar/scan-now", { method: "POST" });
       if (res.ok) {
         const json = await res.json();
         setWebTopics(json.topics || []);
+      } else {
+        showRadarError(await extractRadarError(res, "Could not scan web radar."));
       }
     } catch {
-      // Non-blocking
+      showRadarError("Network error while scanning web radar.");
     } finally {
       setScanningWeb(false);
     }
@@ -243,7 +285,7 @@ export default function AnalyticsView({
   const handleDraftFromTopic = async (topic: WebTopicItem, draftType: "tweet" | "thread") => {
     setDraftingId(`${topic.title}_${draftType}`);
     try {
-      const res = await fetch("/api/radar/draft-from-topic", {
+      const res = await doFetch("/api/radar/draft-from-topic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -258,9 +300,11 @@ export default function AnalyticsView({
       if (res.ok) {
         setDraftSuccessToast(`Created ${draftType === "thread" ? "3-Tweet Thread" : "Post"} in Review Queue!`);
         setTimeout(() => setDraftSuccessToast(null), 4000);
+      } else {
+        showRadarError(await extractRadarError(res, "Could not create draft from topic."));
       }
     } catch {
-      // Non-blocking
+      showRadarError("Network error while drafting from topic.");
     } finally {
       setDraftingId(null);
     }
@@ -314,6 +358,17 @@ export default function AnalyticsView({
                 View in Queue →
               </button>
             )}
+          </motion.div>
+        )}
+        {radarErrorToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="fixed top-5 right-5 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 text-white shadow-lg text-[13px] font-medium max-w-md"
+          >
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{radarErrorToast}</span>
           </motion.div>
         )}
       </AnimatePresence>

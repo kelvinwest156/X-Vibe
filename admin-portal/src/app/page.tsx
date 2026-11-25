@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   LogOut,
@@ -69,8 +69,10 @@ export default function SuperAdminPortalPage() {
   const [browsers, setBrowsers] = useState<AdminBrowsersResponse | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [overviewLoading, setOverviewLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const initialLoadedRef = useRef(false);
 
   // Guardrails state
   const [guardrails, setGuardrails] = useState<GuardrailDraft>({
@@ -131,6 +133,24 @@ export default function SuperAdminPortalPage() {
     []
   );
 
+  const loadOverviewOnly = useCallback(async (selectedDays: number) => {
+    setOverviewLoading(true);
+    setLoadError(null);
+    try {
+      const ovRes = await adminFetch<AdminOverviewResponse>(
+        `/api/admin/overview?days=${selectedDays}`
+      );
+      setOverview(ovRes);
+      setGuardrails(toGuardrailDraft(ovRes.settings));
+    } catch (err) {
+      setLoadError(
+        err instanceof AdminApiError ? err.message : "Failed to load overview telemetry."
+      );
+    } finally {
+      setOverviewLoading(false);
+    }
+  }, []);
+
   // Verify session on mount
   useEffect(() => {
     const token = getAdminToken();
@@ -156,8 +176,13 @@ export default function SuperAdminPortalPage() {
 
   useEffect(() => {
     if (!authReady) return;
-    void loadPortalData(days, false);
-  }, [authReady, days, loadPortalData]);
+    if (!initialLoadedRef.current) {
+      initialLoadedRef.current = true;
+      void loadPortalData(days, false);
+      return;
+    }
+    void loadOverviewOnly(days);
+  }, [authReady, days, loadPortalData, loadOverviewOnly]);
 
   function handleSignOut() {
     clearAdminSession();
@@ -456,7 +481,7 @@ export default function SuperAdminPortalPage() {
             </div>
 
             {/* Unified 4-Column Hairline Ledger Strip */}
-            {loading ? (
+            {loading || overviewLoading ? (
               <div className="grid grid-cols-1 divide-y divide-line rounded-lg border border-line bg-surface sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4 lg:divide-x">
                 {[0, 1, 2, 3].map((idx) => (
                   <div key={idx} className="space-y-2 p-5">
@@ -529,7 +554,7 @@ export default function SuperAdminPortalPage() {
                 <AdminSpendChart
                   series={overview?.daily_series || []}
                   days={days}
-                  loading={loading}
+                  loading={loading || overviewLoading}
                 />
 
                 {/* Feature Breakdown Ledger */}
@@ -544,7 +569,7 @@ export default function SuperAdminPortalPage() {
                     </span>
                   </div>
 
-                  {loading ? (
+                  {loading || overviewLoading ? (
                     <div className="space-y-2 p-5">
                       <div className="h-6 w-full rounded bg-line/50" />
                       <div className="h-6 w-full rounded bg-line/40" />

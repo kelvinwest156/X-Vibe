@@ -8,24 +8,28 @@ import os
 import re
 import hmac
 import time
+import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 import core.state as state
 from core.dependencies import require_super_admin
-from models import User, AgentConfig, ProcessedTweet, TokenUsageLog, PlatformSettings
+from core.security import is_production_env, scrub_secrets, rate_limiter, get_client_ip
+from models import User, AgentConfig, PlatformSettings
+from services.plans import PLAN_CATALOG, is_subscription_valid, apply_plan_to_config
 from database import (
     get_db,
     create_super_admin_token,
-    verify_super_admin_token,
     get_platform_settings,
     update_platform_settings,
     get_admin_platform_metrics,
+    get_admin_user_aggregates,
+    get_agent_config,
     get_tenant_daily_tokens,
     get_tenant_daily_cost_usd,
     get_daily_actions_count,
@@ -38,9 +42,10 @@ logger = logging.getLogger("x_vibebot.admin")
 
 router = APIRouter(prefix="/api/admin", tags=["Super Admin"])
 
-# Default Super Admin credentials (override in production via environment variables)
+# Development-only Super Admin credentials (never accepted in production)
 DEFAULT_SUPER_ADMIN_EMAIL = "admin@xbot.org"
 DEFAULT_SUPER_ADMIN_PASSWORD = "Password123"
+ALLOWED_SUBSCRIPTION_STATUSES = frozenset({"trialing", "active", "expired", "canceled", "suspended"})
 
 # DeepSeek V3 reference pricing (USD per 1M tokens) for cache savings calculation
 DEEPSEEK_CACHE_HIT_RATE_PER_1M = 0.07
@@ -256,45 +261,73 @@ def _serialize_platform_settings(settings_row: PlatformSettings) -> Dict[str, An
     }
 
 
+def _get_super_admin_credentials() -> Tuple[str, str]:
+    """Resolves Super Admin credentials, failing closed in production if unset."""
+    env_email = (os.getenv("SUPER_ADMIN_EMAIL") or "").strip().lower()
+    env_password = os.getenv("SUPER_ADMIN_PASSWORD") or ""
+    if is_production_env():
+        if not env_email or not env_password:
+            raise HTTPException(
+                status_code=503,
+                detail="Super Admin credentials are not configured on this server.",
+            )
+        return env_email, env_password
+    return (
+        env_email or DEFAULT_SUPER_ADMIN_EMAIL,
+        env_password or DEFAULT_SUPER_ADMIN_PASSWORD,
+    )
+
+
 def _build_user_summary(
-    db: Session,
+    db: Optional[Session],
     tenant_id: str,
-    user: Optional[User],
-    cfg: Optional[AgentConfig],
+    user: Optional[Any],
+    cfg: Optional[Any],
     default_token_cap: int = 50000,
+    daily_actions_used: Optional[int] = None,
+    pending_count: Optional[int] = None,
+    daily_tokens_used: Optional[int] = None,
+    daily_cost_usd: Optional[float] = None,
 ) -> Dict[str, Any]:
     worker = _get_worker_for_tenant(tenant_id)
     w_stats = _get_worker_memory_stats(worker)
 
-    daily_actions_used = 0
-    try:
-        daily_actions_used = int(get_daily_actions_count(db, tenant_id=tenant_id) or 0)
-    except Exception:
-        pass
+    if daily_actions_used is None and db is not None:
+        try:
+            daily_actions_used = int(get_daily_actions_count(db, tenant_id=tenant_id) or 0)
+        except Exception:
+            daily_actions_used = 0
+    else:
+        daily_actions_used = int(daily_actions_used or 0)
 
-    daily_tokens_used = 0
-    try:
-        daily_tokens_used = int(get_tenant_daily_tokens(db, tenant_id=tenant_id) or 0)
-    except Exception:
-        pass
+    if daily_tokens_used is None and db is not None:
+        try:
+            daily_tokens_used = int(get_tenant_daily_tokens(db, tenant_id=tenant_id) or 0)
+        except Exception:
+            daily_tokens_used = 0
+    else:
+        daily_tokens_used = int(daily_tokens_used or 0)
 
-    daily_cost_usd = 0.0
-    try:
-        daily_cost_usd = round(float(get_tenant_daily_cost_usd(db, tenant_id=tenant_id) or 0.0), 6)
-    except Exception:
-        pass
+    if daily_cost_usd is None and db is not None:
+        try:
+            daily_cost_usd = round(float(get_tenant_daily_cost_usd(db, tenant_id=tenant_id) or 0.0), 6)
+        except Exception:
+            daily_cost_usd = 0.0
+    else:
+        daily_cost_usd = round(float(daily_cost_usd or 0.0), 6)
 
-    pending_count = 0
-    try:
-        pending_count = int(get_pending_approval_count(db, tenant_id=tenant_id) or 0)
-    except Exception:
-        pass
+    if pending_count is None and db is not None:
+        try:
+            pending_count = int(get_pending_approval_count(db, tenant_id=tenant_id) or 0)
+        except Exception:
+            pending_count = 0
+    else:
+        pending_count = int(pending_count or 0)
 
     linked_username = (getattr(cfg, "linked_username", None) if cfg else None) or w_stats.get("logged_in_username")
     created_at = getattr(user, "created_at", None) if user else getattr(cfg, "updated_at", None)
 
-    from services.plans import is_subscription_valid
-    sub_ok, eff_status, days_left = is_subscription_valid(cfg) if cfg else (False, "trialing", 7)
+    _sub_ok, eff_status, days_left = is_subscription_valid(cfg) if cfg else (False, "trialing", 7)
 
     return {
         "tenant_id": tenant_id,
@@ -327,187 +360,25 @@ def _build_user_summary(
     }
 
 
-def _build_normalized_overview(db: Session, raw_metrics: Dict[str, Any], days: int) -> Dict[str, Any]:
-    """
-    Combines database.get_admin_platform_metrics(db, days=days) with direct ORM
-    aggregation so the portal receives consistent, exact ledger figures.
-    """
-    now_utc = datetime.utcnow()
-    since_24h = now_utc - timedelta(hours=24)
-    start_day = (now_utc - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-    logs_period = (
-        db.query(TokenUsageLog)
-        .filter(TokenUsageLog.timestamp >= start_day)
-        .all()
-    )
-
-    spend_24h = 0.0
-    spend_period = 0.0
-    prompt_24h = 0
-    completion_24h = 0
-    cache_hit_24h = 0
-    cache_miss_24h = 0
-    calls_24h = 0
-    active_users_24h = set()
-
-    tokens_period = 0
-    calls_period = 0
-    cache_hit_period = 0
-    cache_miss_period = 0
-
-    daily_map: Dict[str, Dict[str, Any]] = {}
-    for offset in range(days):
-        d = (start_day + timedelta(days=offset)).date()
-        key = d.isoformat()
-        daily_map[key] = {
-            "date": key,
-            "label": d.strftime("%b %d"),
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "cache_hit_tokens": 0,
-            "cache_miss_tokens": 0,
-            "total_tokens": 0,
-            "cost_usd": 0.0,
-            "calls": 0,
-        }
-
-    task_map: Dict[str, Dict[str, Any]] = {}
-
-    for row in logs_period:
-        p_tok = int(getattr(row, "prompt_tokens", 0) or 0)
-        c_tok = int(getattr(row, "completion_tokens", 0) or 0)
-        ch_tok = int(getattr(row, "cache_hit_tokens", 0) or 0)
-        cm_tok = int(getattr(row, "cache_miss_tokens", 0) or 0)
-        if ch_tok == 0 and cm_tok == 0 and p_tok > 0:
-            cm_tok = p_tok
-        cost = float(getattr(row, "estimated_cost_usd", 0.0) or 0.0)
-        ts = getattr(row, "timestamp", None)
-        task_type = str(getattr(row, "task_type", None) or "other")
-        tid = str(getattr(row, "tenant_id", None) or "default")
-
-        tot_tok = p_tok + c_tok
-        spend_period += cost
-        tokens_period += tot_tok
-        calls_period += 1
-        cache_hit_period += ch_tok
-        cache_miss_period += cm_tok
-
-        if ts and ts >= since_24h:
-            spend_24h += cost
-            prompt_24h += p_tok
-            completion_24h += c_tok
-            cache_hit_24h += ch_tok
-            cache_miss_24h += cm_tok
-            calls_24h += 1
-            active_users_24h.add(tid)
-
-        if ts:
-            day_key = ts.date().isoformat()
-            if day_key in daily_map:
-                bucket = daily_map[day_key]
-                bucket["prompt_tokens"] += p_tok
-                bucket["completion_tokens"] += c_tok
-                bucket["cache_hit_tokens"] += ch_tok
-                bucket["cache_miss_tokens"] += cm_tok
-                bucket["total_tokens"] += tot_tok
-                bucket["cost_usd"] += cost
-                bucket["calls"] += 1
-
-        if task_type not in task_map:
-            task_map[task_type] = {
-                "task_type": task_type,
-                "calls": 0,
-                "total_tokens": 0,
-                "cost_usd": 0.0,
-            }
-        task_map[task_type]["calls"] += 1
-        task_map[task_type]["total_tokens"] += tot_tok
-        task_map[task_type]["cost_usd"] += cost
-
-    savings_rate = (DEEPSEEK_CACHE_MISS_RATE_PER_1M - DEEPSEEK_CACHE_HIT_RATE_PER_1M) / 1_000_000.0
-    cache_savings_24h = cache_hit_24h * savings_rate
-    cache_savings_period = cache_hit_period * savings_rate
-
-    denom_24h = cache_hit_24h + cache_miss_24h
-    denom_period = cache_hit_period + cache_miss_period
-    if denom_24h > 0:
-        cache_hit_rate_pct = round((cache_hit_24h / denom_24h) * 100.0, 1)
-    elif denom_period > 0:
-        cache_hit_rate_pct = round((cache_hit_period / denom_period) * 100.0, 1)
-    else:
-        cache_hit_rate_pct = 0.0
-
-    # User & queue stats
-    users = db.query(User).all()
-    configs = db.query(AgentConfig).all()
-    tenant_ids = {u.tenant_id for u in users} | {c.tenant_id for c in configs}
-    active_bots = sum(1 for c in configs if getattr(c, "is_active", False) and not getattr(c, "is_suspended", False))
-    suspended_users = sum(1 for c in configs if getattr(c, "is_suspended", False))
-
-    published_24h = (
-        db.query(ProcessedTweet)
-        .filter(ProcessedTweet.status == "posted", ProcessedTweet.timestamp >= since_24h)
-        .count()
-    )
-    pending_queue_total = (
-        db.query(ProcessedTweet)
-        .filter(ProcessedTweet.status == "pending_approval")
-        .count()
-    )
-
-    daily_series = []
-    for key in sorted(daily_map.keys()):
-        item = daily_map[key]
-        item["cost_usd"] = round(item["cost_usd"], 6)
-        daily_series.append(item)
-
-    task_breakdown = []
-    for item in sorted(task_map.values(), key=lambda x: (x["cost_usd"], x["total_tokens"]), reverse=True):
-        share = (item["total_tokens"] / tokens_period * 100.0) if tokens_period > 0 else 0.0
-        task_breakdown.append({
-            "task_type": item["task_type"],
-            "calls": item["calls"],
-            "total_tokens": item["total_tokens"],
-            "cost_usd": round(item["cost_usd"], 6),
-            "share_pct": round(share, 1),
-        })
-
-    return {
-        "summary": {
-            "spend_24h_usd": round(spend_24h, 6),
-            "spend_period_usd": round(spend_period, 6),
-            "tokens_24h": prompt_24h + completion_24h,
-            "prompt_tokens_24h": prompt_24h,
-            "completion_tokens_24h": completion_24h,
-            "tokens_period": tokens_period,
-            "calls_24h": calls_24h,
-            "calls_period": calls_period,
-            "active_users_24h": len(active_users_24h),
-            "cache_hit_rate_pct": cache_hit_rate_pct,
-            "cache_savings_24h_usd": round(cache_savings_24h, 6),
-            "cache_savings_period_usd": round(cache_savings_period, 6),
-            "total_users": len(tenant_ids),
-            "active_bots": active_bots,
-            "suspended_users": suspended_users,
-            "published_24h": published_24h,
-            "pending_queue_total": pending_queue_total,
-        },
-        "daily_series": daily_series,
-        "task_breakdown": task_breakdown,
-        "raw_metrics": raw_metrics if isinstance(raw_metrics, dict) else {},
-    }
-
-
 # ==============================================================================
 # Authentication Endpoints
 # ==============================================================================
 
 @router.post("/auth/login", response_model=AdminLoginResponse)
-async def admin_login(payload: AdminLoginRequest):
+async def admin_login(payload: AdminLoginRequest, request: Request):
     """Authenticates the platform owner using constant-time credential verification."""
-    expected_email = os.getenv("SUPER_ADMIN_EMAIL", DEFAULT_SUPER_ADMIN_EMAIL).strip().lower()
-    expected_password = os.getenv("SUPER_ADMIN_PASSWORD", DEFAULT_SUPER_ADMIN_PASSWORD)
+    client_ip = get_client_ip(request)
+    allowed, retry_after = rate_limiter.check_and_hit(
+        "admin_login", client_ip, limit=5, window_seconds=300
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    expected_email, expected_password = _get_super_admin_credentials()
 
     provided_email = payload.email.strip().lower()
     provided_password = payload.password
@@ -525,9 +396,16 @@ async def admin_login(payload: AdminLoginRequest):
 @router.get("/auth/me", response_model=AdminMeResponse)
 async def admin_me(admin: Dict[str, Any] = Depends(require_super_admin)):
     """Verifies the active Super Admin session."""
+    fallback_email = "" if is_production_env() else DEFAULT_SUPER_ADMIN_EMAIL
+    resolved_email = str(admin.get("email") or os.getenv("SUPER_ADMIN_EMAIL") or fallback_email).strip().lower()
+    if is_production_env() and not resolved_email:
+        raise HTTPException(
+            status_code=503,
+            detail="Super Admin credentials are not configured on this server.",
+        )
     return AdminMeResponse(
         authenticated=True,
-        email=str(admin.get("email") or os.getenv("SUPER_ADMIN_EMAIL", DEFAULT_SUPER_ADMIN_EMAIL)),
+        email=resolved_email,
         role="super_admin",
     )
 
@@ -543,19 +421,17 @@ async def get_admin_overview(
     _admin: Dict[str, Any] = Depends(require_super_admin),
 ):
     """Returns platform-wide AI spend, token usage, cache savings, live RAM, and global settings."""
-    raw_metrics = get_admin_platform_metrics(db, days=days)
-    normalized = _build_normalized_overview(db, raw_metrics, days=days)
+    metrics = get_admin_platform_metrics(db, days=days)
     settings_row = get_platform_settings(db)
-    ram_stats = _collect_server_ram_stats()
+    ram_stats = await asyncio.to_thread(_collect_server_ram_stats)
 
     return {
-        "days": days,
-        "summary": normalized["summary"],
-        "daily_series": normalized["daily_series"],
-        "task_breakdown": normalized["task_breakdown"],
+        "days": metrics.get("days", days),
+        "summary": metrics.get("summary", {}),
+        "daily_series": metrics.get("daily_series", []),
+        "task_breakdown": metrics.get("task_breakdown", []),
         "ram": ram_stats,
         "settings": _serialize_platform_settings(settings_row),
-        "raw_metrics": normalized["raw_metrics"],
     }
 
 
@@ -583,30 +459,65 @@ async def patch_admin_settings(
 @router.get("/users")
 async def list_admin_users(
     search: Optional[str] = Query(None, max_length=128),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     _admin: Dict[str, Any] = Depends(require_super_admin),
 ):
-    """Lists all creator tenants with usage metrics, caps, and live browser status."""
+    """Lists creator tenants with SQL-aggregated usage metrics, caps, and live browser status."""
     settings_row = get_platform_settings(db)
     default_token_cap = int(getattr(settings_row, "default_daily_token_cap", 50000) or 50000)
 
-    users = db.query(User).all()
-    configs = db.query(AgentConfig).all()
+    tweet_stats, token_stats = get_admin_user_aggregates(db)
 
-    user_by_tenant: Dict[str, User] = {u.tenant_id: u for u in users}
-    cfg_by_tenant: Dict[str, AgentConfig] = {c.tenant_id: c for c in configs}
+    users = db.query(
+        User.tenant_id,
+        User.email,
+        User.name,
+        User.created_at,
+    ).all()
+    configs = db.query(
+        AgentConfig.tenant_id,
+        AgentConfig.linked_username,
+        AgentConfig.plan_tier,
+        AgentConfig.subscription_status,
+        AgentConfig.trial_ends_at,
+        AgentConfig.daily_original_post_cap,
+        AgentConfig.is_active,
+        AgentConfig.is_suspended,
+        AgentConfig.auto_pilot_mode,
+        AgentConfig.warmup_mode,
+        AgentConfig.daily_action_cap,
+        AgentConfig.hourly_action_cap,
+        AgentConfig.daily_token_cap,
+        AgentConfig.max_pending_queue,
+        AgentConfig.polling_interval_minutes,
+        AgentConfig.active_hours_start,
+        AgentConfig.active_hours_end,
+        AgentConfig.auto_sleep_browser,
+        AgentConfig.updated_at,
+    ).all()
+
+    user_by_tenant: Dict[str, Any] = {u.tenant_id: u for u in users}
+    cfg_by_tenant: Dict[str, Any] = {c.tenant_id: c for c in configs}
     all_tenants = sorted(set(user_by_tenant.keys()) | set(cfg_by_tenant.keys()))
 
     q = (search or "").strip().lower()
     summaries: List[Dict[str, Any]] = []
 
     for tid in all_tenants:
+        d_actions, pend = tweet_stats.get(tid, (0, 0))
+        d_tokens, d_cost = token_stats.get(tid, (0, 0.0))
         summary = _build_user_summary(
-            db,
+            None,
             tenant_id=tid,
             user=user_by_tenant.get(tid),
             cfg=cfg_by_tenant.get(tid),
             default_token_cap=default_token_cap,
+            daily_actions_used=d_actions,
+            pending_count=pend,
+            daily_tokens_used=d_tokens,
+            daily_cost_usd=d_cost,
         )
         if q:
             haystack = " ".join(
@@ -631,7 +542,9 @@ async def list_admin_users(
         )
     )
 
-    return {"total": len(summaries), "users": summaries}
+    total = len(summaries)
+    paginated = summaries[offset : offset + limit]
+    return {"total": total, "users": paginated}
 
 
 @router.patch("/users/{tenant_id}")
@@ -646,19 +559,48 @@ async def update_admin_user(
     if updates.get("is_suspended") is True:
         updates["is_active"] = False
 
-    # Apply plan preset if plan_tier was changed
-    if payload.plan_tier:
-        from services.plans import apply_plan_to_config
-        cfg_pre = get_agent_config(db, tenant_id=tenant_id)
-        apply_plan_to_config(cfg_pre, payload.plan_tier, status=payload.subscription_status or "active")
-        db.commit()
+    normalized_plan: Optional[str] = None
+    if payload.plan_tier is not None:
+        normalized_plan = payload.plan_tier.strip().lower()
+        if normalized_plan not in PLAN_CATALOG:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid plan_tier '{payload.plan_tier}'. Must be one of: {', '.join(PLAN_CATALOG.keys())}.",
+            )
+
+    normalized_status: Optional[str] = None
+    if payload.subscription_status is not None:
+        normalized_status = payload.subscription_status.strip().lower()
+        if normalized_status not in ALLOWED_SUBSCRIPTION_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid subscription_status '{payload.subscription_status}'.",
+            )
+
+    cfg_pre = get_agent_config(db, tenant_id=tenant_id)
+
+    # Apply plan preset before explicit cap overrides so custom limits in the same PATCH are preserved
+    if normalized_plan is not None:
+        current_plan = (getattr(cfg_pre, "plan_tier", None) or "").strip().lower()
+        if normalized_plan != current_plan:
+            target_status = normalized_status or ("trialing" if normalized_plan == "trial" else "active")
+            apply_plan_to_config(cfg_pre, normalized_plan, status=target_status)
+        elif normalized_status is not None:
+            cfg_pre.subscription_status = normalized_status
+            if normalized_status == "trialing" and not getattr(cfg_pre, "trial_ends_at", None):
+                cfg_pre.trial_ends_at = datetime.utcnow() + timedelta(days=7)
+        updates.pop("plan_tier", None)
+        updates.pop("subscription_status", None)
+    elif normalized_status is not None:
+        cfg_pre.subscription_status = normalized_status
+        if normalized_status == "trialing" and not getattr(cfg_pre, "trial_ends_at", None):
+            cfg_pre.trial_ends_at = datetime.utcnow() + timedelta(days=7)
+        updates.pop("subscription_status", None)
 
     if payload.extend_trial_days:
-        cfg_pre = get_agent_config(db, tenant_id=tenant_id)
         current_end = getattr(cfg_pre, "trial_ends_at", None) or datetime.utcnow()
         cfg_pre.trial_ends_at = max(current_end, datetime.utcnow()) + timedelta(days=payload.extend_trial_days)
         cfg_pre.subscription_status = "trialing"
-        db.commit()
 
     # Remove non-column helper keys from updates dictionary before direct ORM update
     updates.pop("extend_trial_days", None)
@@ -674,11 +616,15 @@ async def update_admin_user(
                 try:
                     await worker.stop()
                 except Exception as exc:
-                    logger.warning(f"Failed stopping browser for suspended tenant '{tenant_id}': {exc}")
+                    logger.warning(f"Failed stopping browser for suspended tenant '{tenant_id}': {scrub_secrets(exc)}")
 
     settings_row = get_platform_settings(db)
     default_token_cap = int(getattr(settings_row, "default_daily_token_cap", 50000) or 50000)
-    user = db.query(User).filter(User.tenant_id == tenant_id).first()
+    user = (
+        db.query(User.tenant_id, User.email, User.name, User.created_at)
+        .filter(User.tenant_id == tenant_id)
+        .first()
+    )
 
     logger.info(f"Super Admin updated tenant '{tenant_id}': {list(updates.keys())}")
     return {
@@ -703,8 +649,16 @@ async def list_browser_workers(
     _admin: Dict[str, Any] = Depends(require_super_admin),
 ):
     """Lists all registered Playwright browser workers, idle duration, and live RAM."""
-    users = db.query(User).all()
-    configs = db.query(AgentConfig).all()
+    users = db.query(User.tenant_id, User.email).all()
+    configs = db.query(
+        AgentConfig.tenant_id,
+        AgentConfig.linked_username,
+        AgentConfig.is_active,
+        AgentConfig.is_suspended,
+        AgentConfig.auto_sleep_browser,
+        AgentConfig.active_hours_start,
+        AgentConfig.active_hours_end,
+    ).all()
     user_by_key = {_sanitize_tenant_key(u.tenant_id): u for u in users}
     cfg_by_key = {_sanitize_tenant_key(c.tenant_id): c for c in configs}
 
@@ -737,10 +691,11 @@ async def list_browser_workers(
 
     workers_payload.sort(key=lambda item: (0 if item["is_running"] else 1, -item["estimated_ram_mb"], item["tenant_id"]))
     settings_row = get_platform_settings(db)
+    ram_stats = await asyncio.to_thread(_collect_server_ram_stats)
 
     return {
         "workers": workers_payload,
-        "ram": _collect_server_ram_stats(),
+        "ram": ram_stats,
         "settings": _serialize_platform_settings(settings_row),
     }
 
@@ -755,7 +710,13 @@ async def sleep_idle_browsers(
     settings_row = get_platform_settings(db)
     idle_limit_sec = int(getattr(settings_row, "browser_idle_sleep_minutes", 15) or 15) * 60
 
-    configs = db.query(AgentConfig).all()
+    configs = db.query(
+        AgentConfig.tenant_id,
+        AgentConfig.is_active,
+        AgentConfig.is_suspended,
+        AgentConfig.active_hours_start,
+        AgentConfig.active_hours_end,
+    ).all()
     cfg_by_key = {_sanitize_tenant_key(c.tenant_id): c for c in configs}
 
     stopped_tenants: List[str] = []
@@ -781,7 +742,7 @@ async def sleep_idle_browsers(
                 stopped_tenants.append(cfg.tenant_id if cfg else worker_key)
                 freed_mb += float(w_stats["estimated_ram_mb"])
             except Exception as exc:
-                logger.warning(f"Error sleeping browser worker '{worker_key}': {exc}")
+                logger.warning(f"Error sleeping browser worker '{worker_key}': {scrub_secrets(exc)}")
 
     logger.info(f"Super Admin sleep-idle (force={force}): stopped {len(stopped_tenants)} worker(s), ~{round(freed_mb, 1)} MB freed.")
     return {
@@ -819,7 +780,8 @@ async def stop_tenant_browser(
     try:
         await worker.stop()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to stop browser worker: {exc}")
+        logger.error(f"Failed to stop browser worker for tenant '{tenant_id}': {scrub_secrets(exc)}")
+        raise HTTPException(status_code=500, detail="Failed to stop browser worker.")
 
     freed = round(float(w_stats["estimated_ram_mb"]), 1)
     logger.info(f"Super Admin stopped browser worker for tenant '{tenant_id}' (~{freed} MB freed).")

@@ -5,10 +5,12 @@ services:
     plan: starter
     autoDeploy: true
     envVars:
+      - key: ENVIRONMENT
+        value: production
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
-        value: gemini-3.8-flash
+        value: gemini-2.0-flash
       - key: HEADLESS
         value: "true"
       - key: BROWSER_PROFILE_DIR
@@ -17,6 +19,14 @@ services:
         value: sqlite:////data/vibebot.db
       - key: AUTH_SECRET_KEY
         generateValue: true
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
       - key: PROXY_SERVER
         sync: false
       - key: PROXY_USERNAME

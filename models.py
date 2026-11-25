@@ -4,13 +4,22 @@ Defines SQLAlchemy ORM models for database persistence and Pydantic v2 schemas
 for API request validation and response serialization.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, Float
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any, Literal
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import Column, String, Integer, Boolean, DateTime, Text, Float, Index
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
+
+
+def _utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
+    """Converts timezone-aware datetimes to naive UTC for safe SQLite/PostgreSQL comparisons."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 # ==============================================================================
@@ -20,12 +29,20 @@ Base = declarative_base()
 class ProcessedTweet(Base):
     """
     Stores all scraped, evaluated, pending, scheduled, and published tweets.
-    Acts as a persistent audit log, multi-tenant state repository, and prevents duplicate interactions.
+    Scoped by composite primary key (tenant_id, tweet_id) to guarantee strict multi-tenant isolation.
     """
     __tablename__ = "processed_tweets"
+    __table_args__ = (
+        Index("ix_processed_tweets_tenant_status_ts", "tenant_id", "status", "timestamp"),
+        Index("ix_processed_tweets_status_sched", "status", "scheduled_for"),
+        Index("ix_processed_tweets_tenant_status_sched", "tenant_id", "status", "scheduled_for"),
+        Index("ix_processed_tweets_tenant_type_ts", "tenant_id", "action_type", "timestamp"),
+        Index("ix_processed_tweets_tenant_ts", "tenant_id", "timestamp"),
+        Index("ix_processed_tweets_tenant_url", "tenant_id", "tweet_url"),
+    )
 
     tweet_id = Column(String(64), primary_key=True, index=True)
-    tenant_id = Column(String(128), default="default", index=True, nullable=False)
+    tenant_id = Column(String(128), primary_key=True, default="default", index=True, nullable=False)
     action_type = Column(String(32), default="reply")  # "reply", "post", or "thread"
     tweet_text = Column(Text, nullable=True)           # Original scraped tweet or prompt topic
     tweet_author = Column(String(128), nullable=True)  # @handle of the original poster
@@ -37,7 +54,7 @@ class ProcessedTweet(Base):
     should_like = Column(Boolean, default=False)       # AI decision whether to naturally like before replying
     urgency_score = Column(Integer, default=5)         # 1-10 AI urgency score (9-10 = breaking viral wave)
     user_edited = Column(Boolean, default=False)       # True if human edited before approving (prioritized in few-shot memory)
-    status = Column(String(32), default="pending_approval", index=True)  # "pending_approval", "scheduled", "posted", "skipped", "failed"
+    status = Column(String(32), default="pending_approval", index=True)  # "pending_approval", "scheduled", "dispatching", "posted", "skipped", "failed"
     scheduled_for = Column(DateTime, nullable=True)    # Randomized future UTC time for organic posting
     error_message = Column(Text, nullable=True)        # AI reasoning or failure message
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
@@ -46,8 +63,9 @@ class ProcessedTweet(Base):
         """Checks if a scheduled tweet is due for immediate organic dispatch."""
         if self.status != "scheduled" or not self.scheduled_for:
             return False
-        current_time = now or datetime.utcnow()
-        return current_time >= self.scheduled_for
+        current_time = _utc_naive(now) or datetime.utcnow()
+        sched = _utc_naive(self.scheduled_for)
+        return bool(sched and current_time >= sched)
 
     def is_terminal(self) -> bool:
         """Returns True if the tweet interaction has reached a terminal state."""
@@ -78,10 +96,13 @@ class ProcessedTweet(Base):
 
 class AgentConfig(Base):
     """
-    Persists runtime configuration toggles for the bot in SQLite.
-    Maintains a configuration record per tenant_id (default='default').
+    Persists runtime configuration toggles for the bot in SQLite/PostgreSQL.
+    Maintains an isolated configuration record per tenant_id (default='default').
     """
     __tablename__ = "agent_config"
+    __table_args__ = (
+        Index("ix_agent_config_active_susp", "is_active", "is_suspended"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(String(128), default="default", unique=True, index=True, nullable=False)
@@ -100,8 +121,8 @@ class AgentConfig(Base):
     persona_prompt = Column(Text, default="Casual, sharp, dry humor, short sentences, no corporate buzzwords")
     selected_model = Column(String(64), default="auto")
     linked_username = Column(String(128), nullable=True)       # Detected @handle of logged-in X account
-    cookies_json = Column(Text, nullable=True)                 # Persisted session cookies for surviving cloud container restarts
-    api_key = Column(String(512), nullable=True)              # Persisted Gemini or DeepSeek API key
+    cookies_json = Column(Text, nullable=True)                 # Encrypted persisted session cookies
+    api_key = Column(String(512), nullable=True)              # Encrypted persisted Gemini or DeepSeek API key
     daily_token_cap = Column(Integer, default=50000)          # Hard daily AI token budget ceiling per user
     max_pending_queue = Column(Integer, default=8)            # Auto-pause scanning when pending queue reaches this cap
     auto_sleep_browser = Column(Boolean, default=True)        # Automatically close idle/sleeping Chromium to save RAM
@@ -138,7 +159,8 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     name = Column(String(128), nullable=True)
-    tenant_id = Column(String(128), index=True, nullable=False)
+    tenant_id = Column(String(128), unique=True, index=True, nullable=False)
+    token_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     def to_response(self) -> "UserResponse":
@@ -158,6 +180,10 @@ class TokenUsageLog(Base):
     per tenant and task type for cost telemetry and daily token cap enforcement.
     """
     __tablename__ = "token_usage_logs"
+    __table_args__ = (
+        Index("ix_token_usage_tenant_ts", "tenant_id", "timestamp"),
+        Index("ix_token_usage_ts_task_tenant", "timestamp", "task_type", "tenant_id"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tenant_id = Column(String(128), default="default", index=True, nullable=False)
@@ -188,40 +214,49 @@ class PlatformSettings(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class WebhookEvent(Base):
+    """Stores processed Stripe/Paystack webhook event IDs to block replay attacks."""
+    __tablename__ = "webhook_events"
+
+    event_id = Column(String(128), primary_key=True)
+    provider = Column(String(32), nullable=False)
+    processed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 # ==============================================================================
 # Pydantic Schemas: Request Payloads (FastAPI validation)
 # ==============================================================================
 
 class SignUpRequest(BaseModel):
     """Payload for registering a new creator tenant account."""
-    email: str = Field(..., description="Creator email address")
-    password: str = Field(..., min_length=6, description="Account password (min 6 chars)")
-    name: Optional[str] = Field(None, description="Creator display name")
+    email: str = Field(..., max_length=254, description="Creator email address")
+    password: str = Field(..., min_length=6, max_length=256, description="Account password (min 6 chars)")
+    name: Optional[str] = Field(None, max_length=128, description="Creator display name")
 
 
 class SignInRequest(BaseModel):
     """Payload for authenticating an existing creator."""
-    email: str = Field(..., description="Creator email address")
-    password: str = Field(..., description="Account password")
+    email: str = Field(..., max_length=254, description="Creator email address")
+    password: str = Field(..., min_length=1, max_length=256, description="Account password")
 
 
 class ForgotPasswordRequest(BaseModel):
     """Payload for requesting a password reset token/link."""
-    email: str = Field(..., description="Creator email address")
-    app_url: Optional[str] = Field(None, description="Client origin URL for reset link construction")
+    email: str = Field(..., max_length=254, description="Creator email address")
+    app_url: Optional[str] = Field(None, max_length=512, description="Client origin URL for reset link construction")
 
 
 class ForgotPasswordResponse(BaseModel):
     """Result of requesting password reset."""
     success: bool
     message: str
-    reset_token: Optional[str] = None  # Returned for seamless local/self-hosted reset
+    reset_token: Optional[str] = None  # Never returned in production
 
 
 class ResetPasswordRequest(BaseModel):
     """Payload for updating password with a signed reset token."""
-    token: str = Field(..., description="Signed password reset token")
-    new_password: str = Field(..., min_length=6, description="New password (min 6 chars)")
+    token: str = Field(..., min_length=10, max_length=2048, description="Signed password reset token")
+    new_password: str = Field(..., min_length=6, max_length=256, description="New password (min 6 chars)")
 
 
 class AgentConfigUpdate(BaseModel):
@@ -238,50 +273,60 @@ class AgentConfigUpdate(BaseModel):
     search_query: Optional[str] = Field(None, max_length=256, description="Target niche topic or keywords")
     smart_query_enabled: Optional[bool] = Field(None, description="Enable autonomous Google Search trend discovery")
     warmup_mode: Optional[bool] = Field(None, description="Activate gentle anti-detection account warmup")
-    persona_prompt: Optional[str] = Field(None, description="Voice and tone instructions for the AI")
-    selected_model: Optional[str] = Field("auto", description="Model ID or 'auto' for autonomous best-model routing")
-    api_key: Optional[str] = Field(None, description="Optional custom Gemini or DeepSeek API key")
+    persona_prompt: Optional[str] = Field(None, max_length=2000, description="Voice and tone instructions for the AI")
+    selected_model: Optional[str] = Field("auto", max_length=64, description="Model ID or 'auto' for autonomous best-model routing")
+    api_key: Optional[str] = Field(None, max_length=256, description="Optional custom Gemini or DeepSeek API key")
+
+    @model_validator(mode="after")
+    def _validate_cooldown_bounds(self):
+        if (
+            self.min_cooldown_minutes is not None
+            and self.max_cooldown_minutes is not None
+            and self.min_cooldown_minutes > self.max_cooldown_minutes
+        ):
+            raise ValueError("min_cooldown_minutes cannot exceed max_cooldown_minutes.")
+        return self
 
 
 class ApproveDraftRequest(BaseModel):
     """Payload for approving, editing, or scheduling a draft in the queue."""
-    custom_text: Optional[str] = Field(None, description="Human-edited replacement text for the draft")
+    custom_text: Optional[str] = Field(None, max_length=4000, description="Human-edited replacement text for the draft")
     schedule_random: bool = Field(False, description="Schedule for randomized future organic delivery")
     should_like: Optional[bool] = Field(None, description="Override AI like decision (True/False)")
 
 
 class ConnectSessionPayload(BaseModel):
     """Payload for importing an X browser session via cookies or tokens."""
-    auth_token: Optional[str] = Field(None, description="X auth_token cookie value")
-    ct0: Optional[str] = Field(None, description="X ct0 CSRF cookie value")
-    raw_cookies: Optional[str] = Field(None, description="Raw Netscape or JSON cookie string")
-    cookies: Optional[List[Dict[str, Any]]] = Field(None, description="Structured cookie dictionary list")
+    auth_token: Optional[str] = Field(None, max_length=512, description="X auth_token cookie value")
+    ct0: Optional[str] = Field(None, max_length=512, description="X ct0 CSRF cookie value")
+    raw_cookies: Optional[str] = Field(None, max_length=32768, description="Raw Netscape or JSON cookie string")
+    cookies: Optional[List[Dict[str, Any]]] = Field(None, max_length=50, description="Structured cookie dictionary list")
 
 
 class CookiesImportPayload(BaseModel):
     """Payload for restoring cookies directly into the browser profile."""
-    cookies: List[Dict[str, Any]] = Field(..., description="List of cookie dictionaries")
+    cookies: List[Dict[str, Any]] = Field(..., max_length=50, description="List of cookie dictionaries")
 
 
 class TestKeyPayload(BaseModel):
     """Payload for testing Gemini or DeepSeek credentials."""
-    api_key: Optional[str] = Field(None, description="API key to validate")
+    api_key: Optional[str] = Field(None, max_length=256, description="API key to validate")
 
 
 class GenerateOriginalPayload(BaseModel):
     """Payload for generating an on-demand original post or thread."""
-    mode: str = Field("auto", description="Generation mode: 'auto', 'post', or 'thread'")
-    custom_topic: Optional[str] = Field(None, description="Optional custom topic or pulse to write about")
+    mode: Literal["auto", "post", "thread"] = Field("auto", description="Generation mode: 'auto', 'post', or 'thread'")
+    custom_topic: Optional[str] = Field(None, max_length=200, description="Optional custom topic or pulse to write about")
 
 
 class TopicDraftPayload(BaseModel):
     """Payload for turning a Google News radar trend into a draft."""
-    title: str = Field(..., description="News story headline")
-    source: str = Field(..., description="Publisher name")
-    url: str = Field(..., description="Article URL")
-    hook_summary: Optional[str] = Field("", description="Story summary hook")
-    suggested_query: Optional[str] = Field("", description="Suggested X search query")
-    draft_type: Optional[str] = Field("tweet", description="'tweet' or 'thread'")
+    title: str = Field(..., min_length=1, max_length=300, description="News story headline")
+    source: str = Field(..., min_length=1, max_length=128, description="Publisher name")
+    url: str = Field(..., min_length=1, max_length=1024, description="Article URL")
+    hook_summary: Optional[str] = Field("", max_length=1000, description="Story summary hook")
+    suggested_query: Optional[str] = Field("", max_length=128, description="Suggested X search query")
+    draft_type: Literal["tweet", "thread", "both"] = Field("tweet", description="'tweet' or 'thread'")
 
 
 # ==============================================================================

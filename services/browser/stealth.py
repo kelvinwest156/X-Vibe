@@ -13,30 +13,46 @@ logger = logging.getLogger("x_vibebot.services.browser.stealth")
 
 
 async def apply_stealth(page: Page):
-    """Applies stealth overrides to mask automation signatures."""
+    """Applies playwright-stealth v2 overrides cleanly to mask automation signatures."""
+    stealth_applied = False
     try:
-        from playwright_stealth import stealth_async
-        await stealth_async(page)
-    except Exception:
-        pass
+        from playwright_stealth import Stealth
+        await Stealth().apply_stealth_async(page)
+        stealth_applied = True
+    except Exception as exc:
+        logger.debug(f"playwright-stealth apply notice: {exc}")
 
     try:
-        await page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            window.chrome = {
-                runtime: {}
-            };
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['en-US', 'en']
-            });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-        """)
-    except Exception:
-        pass
+        if stealth_applied:
+            await page.add_init_script("""
+                if (navigator.webdriver) {
+                    try {
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined,
+                            configurable: true
+                        });
+                    } catch (_) {}
+                }
+            """)
+        else:
+            await page.add_init_script("""
+                if (navigator.webdriver) {
+                    try {
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined,
+                            configurable: true
+                        });
+                    } catch (_) {}
+                }
+                try {
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en'],
+                        configurable: true
+                    });
+                } catch (_) {}
+            """)
+    except Exception as exc:
+        logger.debug(f"Stealth init_script fallback notice: {exc}")
 
 
 async def human_delay(min_sec: float = 0.5, max_sec: float = 1.4):
@@ -135,26 +151,62 @@ async def simulate_reading_dwell(
     return new_pos
 
 
+async def _ensure_element_focus(element) -> None:
+    """Verifies that `element` (or a child inside it) holds focus, focusing it if not."""
+    try:
+        is_focused = await element.evaluate(
+            "el => el === document.activeElement || el.contains(document.activeElement)"
+        )
+        if is_focused is False:
+            await element.focus()
+            await asyncio.sleep(0.05)
+    except Exception:
+        try:
+            await element.focus()
+        except Exception:
+            pass
+
+
 async def human_type(
     page: Page,
     selector: str,
     text: str,
     current_mouse_pos: tuple[float, float]
 ) -> tuple[float, float]:
-    """Types text character-by-character with natural fast bursts and curved mouse focus."""
+    """
+    Types text character-by-character with natural fast bursts and curved mouse focus.
+    Uses Shift+Enter for newlines so X inputs never accidentally submit mid-draft.
+    """
     element = await page.wait_for_selector(selector, state="visible", timeout=15000)
+    if not element:
+        raise RuntimeError(f"Input element not visible for selector: {selector}")
+
     new_pos = await human_click(page, element, current_mouse_pos)
+    await _ensure_element_focus(element)
     await human_delay(0.15, 0.35)
 
-    for i, char in enumerate(text):
-        # Micro typo-slip simulation (0.6% chance on lowercase)
-        if char.isalpha() and char.islower() and random.random() < 0.006:
+    clean_text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+    for i, char in enumerate(clean_text):
+        if char == "\n":
+            await page.keyboard.press("Shift+Enter")
+            await asyncio.sleep(random.uniform(0.05, 0.12))
+            continue
+
+        # Micro typo-slip simulation (0.6% chance, strictly mid-word so Backspace never crosses line boundaries)
+        if (
+            i > 0
+            and clean_text[i - 1].isalpha()
+            and char.isalpha()
+            and char.islower()
+            and random.random() < 0.006
+        ):
             wrong_char = random.choice("aeiourstln")
             if wrong_char != char:
                 await page.keyboard.type(wrong_char)
-                await asyncio.sleep(random.uniform(0.02, 0.04))
+                await asyncio.sleep(random.uniform(0.025, 0.05))
                 await page.keyboard.press("Backspace")
-                await asyncio.sleep(random.uniform(0.015, 0.035))
+                await asyncio.sleep(random.uniform(0.02, 0.04))
 
         await page.keyboard.type(char)
         # Fast natural human cadence (10-25ms per character)

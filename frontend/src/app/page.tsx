@@ -115,6 +115,7 @@ const NAV: Array<{ id: NavTab; label: string; icon: React.ElementType }> = [
 
 const STATUS_STYLE: Record<string, string> = {
   posted: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+  dispatching: "bg-sky-50 text-sky-700 border border-sky-200",
   scheduled: "bg-blue-50 text-blue-700 border border-blue-200",
   pending_approval: "bg-amber-50 text-amber-700 border border-amber-200",
   skipped: "bg-slate-100 text-slate-600 border border-slate-200",
@@ -302,6 +303,7 @@ export default function HomePage() {
         setAnalytics(null);
         setConfig(null);
         setStatus(null);
+        syncEtagRef.current = null;
         setReady(false);
         setHistReady(false);
         setTenantId(u.id);
@@ -369,6 +371,7 @@ export default function HomePage() {
     setTenantId("default");
     setStatus(null);
     setConfig(null);
+    syncEtagRef.current = null;
     setPending([]);
     setDrafts({});
     setHistory([]);
@@ -433,65 +436,108 @@ export default function HomePage() {
   ]);
 
   const isRefreshingRef = useRef(false);
+  const syncEtagRef = useRef<string | null>(null);
 
-  const refresh = useCallback(async (includeAnalytics = false) => {
+  const applyConfigToForm = useCallback((c: Record<string, any>) => {
+    setConfig(c as AgentConfig);
+    setModel((c.selected_model as string) || "auto");
+    setQuery((c.search_query as string) || "");
+    setPersona((c.persona_prompt as string) || "");
+    setCap(Number(c.daily_action_cap) || 15);
+    setHourlyCap(Number(c.hourly_action_cap) || 6);
+    setSmartQuery(Boolean(c.smart_query_enabled ?? true));
+    setWarmupMode(Boolean(c.warmup_mode));
+    setIntervalMin(Number(c.polling_interval_minutes) || 20);
+    setMinDelay(Number(c.min_cooldown_minutes) || 10);
+    setMaxDelay(Number(c.max_cooldown_minutes) || 45);
+    setWake(c.active_hours_start ?? 8);
+    setSleep(c.active_hours_end ?? 23);
+    setAutopilot(Boolean(c.auto_pilot_mode));
+  }, []);
+
+  const applyPendingList = useCallback((list: TweetItem[]) => {
+    setPending(list);
+    setDrafts((prev) => {
+      const next = { ...prev };
+      list.forEach((i) => {
+        if (next[i.tweet_id] === undefined) next[i.tweet_id] = i.generated_text || "";
+      });
+      return next;
+    });
+  }, []);
+
+  const refresh = useCallback(async (includeAnalytics = false, forceSync = false) => {
     if (isRefreshingRef.current) return;
     if (Date.now() < rateLimitedUntilRef.current) return;
     isRefreshingRef.current = true;
     try {
+      const syncHeaders: Record<string, string> = {};
+      if (!forceSync && syncEtagRef.current) {
+        syncHeaders["If-None-Match"] = syncEtagRef.current;
+      }
       const calls: Promise<Response>[] = [
-        apiFetch("/api/status"),
-        apiFetch("/api/pending"),
+        apiFetch("/api/dashboard/sync", { headers: syncHeaders }),
       ];
       if (includeAnalytics) {
         calls.push(apiFetch("/api/analytics"));
       }
       const results = await Promise.all(calls);
-      const s = results[0];
-      const p = results[1];
-      const a = includeAnalytics ? results[2] : null;
+      const syncRes = results[0];
+      const a = includeAnalytics ? results[1] : null;
 
-      if (s && s.ok) setStatus(await s.json());
-      if (a && a.ok) setAnalytics(await a.json());
-      if (p && p.ok) {
-        const list: TweetItem[] = await p.json();
-        setPending(list);
-        setDrafts((prev) => {
-          const next = { ...prev };
-          list.forEach((i) => {
-            if (next[i.tweet_id] === undefined) next[i.tweet_id] = i.generated_text || "";
-          });
-          return next;
-        });
+      if (syncRes && syncRes.status === 304) {
+        const etag304 = syncRes.headers.get("ETag");
+        if (etag304) syncEtagRef.current = etag304;
+      } else if (syncRes && syncRes.ok) {
+        const nextEtag = syncRes.headers.get("ETag");
+        if (nextEtag) syncEtagRef.current = nextEtag;
+        const payload = await syncRes.json();
+        if (payload.status) setStatus(payload.status);
+        if (Array.isArray(payload.pending)) {
+          applyPendingList(payload.pending);
+        }
       }
+      if (a && a.ok) setAnalytics(await a.json());
     } catch {
     } finally {
       isRefreshingRef.current = false;
       setReady(true);
     }
-  }, [apiFetch]);
+  }, [apiFetch, applyPendingList]);
 
   const loadConfig = useCallback(async () => {
     try {
       const res = await apiFetch("/api/config");
       if (!res.ok) return;
       const c = await res.json();
-      setConfig(c);
-      setModel(c.selected_model || "auto");
-      setQuery(c.search_query || "");
-      setPersona(c.persona_prompt || "");
-      setCap(c.daily_action_cap || 15);
-      setHourlyCap(c.hourly_action_cap || 6);
-      setSmartQuery(c.smart_query_enabled ?? true);
-      setWarmupMode(Boolean(c.warmup_mode));
-      setIntervalMin(c.polling_interval_minutes || 20);
-      setMinDelay(c.min_cooldown_minutes || 10);
-      setMaxDelay(c.max_cooldown_minutes || 45);
-      setWake(c.active_hours_start ?? 8);
-      setSleep(c.active_hours_end ?? 23);
-      setAutopilot(Boolean(c.auto_pilot_mode));
+      applyConfigToForm(c);
     } catch {}
-  }, [apiFetch]);
+  }, [apiFetch, applyConfigToForm]);
+
+  const bootstrapDashboard = useCallback(async () => {
+    if (Date.now() < rateLimitedUntilRef.current) {
+      setReady(true);
+      return;
+    }
+    try {
+      const res = await apiFetch("/api/dashboard/bootstrap");
+      if (res.ok) {
+        const nextEtag = res.headers.get("ETag");
+        if (nextEtag) syncEtagRef.current = nextEtag;
+        const data = await res.json();
+        if (data.user && data.user.email) {
+          setUserProfile({ email: data.user.email, name: data.user.name, uid: data.user.uid });
+          if (data.user.tenant_id) setTenantId(data.user.tenant_id);
+        }
+        if (data.config) applyConfigToForm(data.config);
+        if (data.status) setStatus(data.status);
+        if (Array.isArray(data.pending)) applyPendingList(data.pending);
+      }
+    } catch {
+    } finally {
+      setReady(true);
+    }
+  }, [apiFetch, applyConfigToForm, applyPendingList]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -507,15 +553,19 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!isUserAuthenticated) return;
-    loadConfig();
-    refresh(true);
-    loadHistory();
+    void bootstrapDashboard();
+    apiFetch("/api/analytics")
+      .then(async (res) => {
+        if (res.ok) setAnalytics(await res.json());
+      })
+      .catch(() => {});
+    void loadHistory();
 
-    // Relaxed background interval: poll status & queue every 30s (skips heavy analytics)
+    // Conditional ETag sync every 30s (returns 304 Not Modified with zero JSON body when unchanged)
     const t = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
       if (Date.now() < rateLimitedUntilRef.current) return;
-      refresh(false);
+      void refresh(false);
     }, 30000);
 
     // Refresh analytics every 180s (3 minutes) if tab is active
@@ -532,7 +582,7 @@ export default function HomePage() {
     // Refresh when tab becomes visible after being backgrounded
     const handleVisibility = () => {
       if (!document.hidden) {
-        refresh(false);
+        void refresh(false);
       }
     };
     document.addEventListener("visibilitychange", handleVisibility);
@@ -542,7 +592,7 @@ export default function HomePage() {
       clearInterval(tAnalytics);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [isUserAuthenticated, loadConfig, refresh, loadHistory, apiFetch]);
+  }, [isUserAuthenticated, bootstrapDashboard, refresh, loadHistory, apiFetch]);
 
   const toggleAgent = async () => {
     if (!status) return;
@@ -556,7 +606,7 @@ export default function HomePage() {
       });
       if (res.ok) {
         notify(next ? "Studio agent active" : "Studio agent paused");
-        await refresh();
+        await refresh(false, true);
       } else {
         const err = await extractApiError(res, "Could not toggle agent");
         notify(err, true);
@@ -596,7 +646,7 @@ export default function HomePage() {
         setConfig(await res.json());
         setApiKey("");
         if (!silent) notify("Studio settings saved");
-        refresh();
+        refresh(false, true);
       } else if (!silent) {
         const err = await extractApiError(res, "Could not save settings");
         notify(err, true);
@@ -704,7 +754,7 @@ export default function HomePage() {
       if (res.ok) {
         setConfig(await res.json());
         notify(`Applied search pulse: "${suggested}"`);
-        refresh();
+        refresh(false, true);
       } else {
         const err = await extractApiError(res, "Could not apply query");
         notify(err, true);
@@ -728,7 +778,7 @@ export default function HomePage() {
         setCustomTopic("");
         notify(`New ${c.action_type || mode} added to the drafting queue`);
         setTab("queue");
-        await refresh();
+        await refresh(false, true);
       } else {
         const errMsg = await extractApiError(res, `Could not create ${mode}`);
         notify(errMsg, true);
@@ -748,7 +798,7 @@ export default function HomePage() {
         const d = await res.json();
         setDrafts((p) => ({ ...p, [id]: d.generated_text || "" }));
         notify("Fresh draft generated");
-        refresh();
+        refresh(false, true);
       } else {
         const errMsg = await extractApiError(res, "Could not rewrite draft");
         notify(errMsg, true);
@@ -780,7 +830,7 @@ export default function HomePage() {
           }
         }
         notify("Generated 3 alternative angles");
-        refresh();
+        refresh(false, true);
       } else {
         const errMsg = await extractApiError(res, "Could not generate 3 angles");
         notify(errMsg, true);
@@ -811,8 +861,14 @@ export default function HomePage() {
       });
       if (res.ok) {
         const d = await res.json();
-        notify(random ? `Scheduled in about ${d.minutes_from_now} min` : "Posted to X");
-        refresh();
+        notify(
+          random
+            ? `Scheduled in about ${d.minutes_from_now} min`
+            : d.status === "dispatching"
+            ? "Queued for immediate publishing to X"
+            : "Posted to X"
+        );
+        refresh(false, true);
         loadHistory();
       } else {
         const errMsg = await extractApiError(res, "Action failed");
@@ -834,7 +890,7 @@ export default function HomePage() {
       } else {
         setPending((p) => p.filter((i) => i.tweet_id !== id));
         notify("Post skipped & added to anti-pattern memory");
-        refresh();
+        refresh(false, true);
         loadHistory();
       }
     } catch (err: any) {
@@ -849,7 +905,7 @@ export default function HomePage() {
       if (res.ok) {
         const d = await res.json();
         notify(d.message || "Expired stale unreviewed drafts");
-        refresh();
+        refresh(false, true);
       } else {
         const err = await extractApiError(res, "Could not clear stale drafts");
         notify(err, true);
@@ -869,7 +925,7 @@ export default function HomePage() {
       if (res.ok) {
         const d = await res.json();
         notify(d.message || "Cleared pending queue");
-        refresh();
+        refresh(false, true);
       } else {
         const err = await extractApiError(res, "Could not clear queue");
         notify(err, true);
@@ -893,7 +949,7 @@ export default function HomePage() {
         const d = await res.json();
         if (d.is_logged_in) notify(`Connected as ${d.linked_username || "your account"}`);
         else notify("Not logged in to X", true);
-        refresh();
+        refresh(false, true);
       } else {
         const errMsg = await extractApiError(res, "Failed to check session");
         notify(errMsg, true);
@@ -968,7 +1024,7 @@ export default function HomePage() {
         apiFetch={apiFetch}
         onSessionConnected={async () => {
           setAwaitingOnboardingConfirm(true);
-          await refresh();
+          await refresh(false, true);
           await loadHistory();
         }}
         onContinueToStudio={() => {
@@ -1383,13 +1439,21 @@ export default function HomePage() {
           >
             {/* Dashboard View */}
             {tab === "dashboard" && (
-              <AnalyticsView
-                data={analytics}
-                onApplySuggestedQuery={applySuggestedQuery}
-                onRefreshBrief={refreshBrief}
-                refreshingBrief={refreshingBrief}
-                onNavigateToQueue={() => setTab("queue")}
-              />
+              analytics ? (
+                <AnalyticsView
+                  data={analytics}
+                  apiFetch={apiFetch}
+                  onApplySuggestedQuery={applySuggestedQuery}
+                  onRefreshBrief={refreshBrief}
+                  refreshingBrief={refreshingBrief}
+                  onNavigateToQueue={() => setTab("queue")}
+                />
+              ) : (
+                <div className="bg-white dark:bg-[#181818] border border-slate-200 dark:border-[#262626] rounded-xl py-20 flex flex-col items-center justify-center gap-3 text-slate-400">
+                  <Spin className="w-6 h-6 text-slate-600 dark:text-[#A3A3A3]" />
+                  <span className="text-xs font-medium">Loading analytics...</span>
+                </div>
+              )
             )}
 
             {/* Queue View - Focus on Drafting Craft */}
@@ -1789,7 +1853,7 @@ export default function HomePage() {
                     <p className="text-xs text-slate-500 dark:text-[#A3A3A3]">Every evaluated tweet, published reply, and schedule event</p>
                   </div>
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
-                    {["all", "posted", "scheduled", "pending_approval", "skipped", "failed"].map((f) => (
+                    {["all", "posted", "dispatching", "scheduled", "pending_approval", "skipped", "failed"].map((f) => (
                       <button
                         key={f}
                         onClick={() => setHistFilter(f)}
@@ -1799,7 +1863,7 @@ export default function HomePage() {
                             : "bg-slate-100 dark:bg-[#222222] hover:bg-slate-200 dark:hover:bg-[#2C2C2C] text-slate-600 dark:text-[#D4D4D4]"
                         }`}
                       >
-                        {f === "pending_approval" ? "Pending" : f}
+                        {f === "pending_approval" ? "Pending" : f === "dispatching" ? "Posting" : f}
                       </button>
                     ))}
                   </div>
@@ -1842,7 +1906,11 @@ export default function HomePage() {
                                 STATUS_STYLE[h.status] || STATUS_STYLE.skipped
                               }`}
                             >
-                              {h.status === "pending_approval" ? "pending" : h.status}
+                              {h.status === "pending_approval"
+                                ? "pending"
+                                : h.status === "dispatching"
+                                ? "posting"
+                                : h.status}
                             </span>
                           </td>
                           <td className="py-3 px-4 hidden md:table-cell">
@@ -2306,7 +2374,7 @@ export default function HomePage() {
         isLoggedIn={Boolean(status?.is_logged_in)}
         linkedUsername={status?.linked_username}
         onSessionUpdated={() => {
-          refresh();
+          refresh(false, true);
           loadHistory();
         }}
         apiFetch={apiFetch}

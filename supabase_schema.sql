@@ -1,35 +1,27 @@
 -- ==============================================================================
 -- Supabase Schema & Row-Level Security (RLS) for X-VibeBot Creator Studio
--- Run this in your Supabase Project: SQL Editor -> New Query -> Run
+-- Mirrors models.py 1:1 (Composite Multi-Tenant PKs, Users, Token Telemetry, Settings)
+-- Run in Supabase SQL Editor -> New Query -> Run
 -- ==============================================================================
 
--- 1. Create Profiles table linked to Supabase auth.users
-CREATE TABLE IF NOT EXISTS public.profiles (
-    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    email TEXT UNIQUE NOT NULL,
-    name TEXT,
-    tenant_id TEXT NOT NULL,
-    avatar_url TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+-- 1. Creator Accounts Table (matches models.User)
+CREATE TABLE IF NOT EXISTS public.users (
+    id BIGSERIAL PRIMARY KEY,
+    user_id VARCHAR(64) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    name VARCHAR(128),
+    tenant_id VARCHAR(128) UNIQUE NOT NULL,
+    token_version INTEGER DEFAULT 1 NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Enable RLS on profiles
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users can view their own profile"
-    ON public.profiles FOR SELECT
-    USING (auth.uid() = id);
-
-CREATE POLICY "Users can update their own profile"
-    ON public.profiles FOR UPDATE
-    USING (auth.uid() = id);
-
--- 2. Create Agent Configuration Table
+-- 2. Agent Configuration Table (matches models.AgentConfig)
 CREATE TABLE IF NOT EXISTS public.agent_config (
     id BIGSERIAL PRIMARY KEY,
-    tenant_id TEXT UNIQUE NOT NULL,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    tenant_id VARCHAR(128) UNIQUE NOT NULL DEFAULT 'default',
     is_active BOOLEAN DEFAULT false,
     auto_pilot_mode BOOLEAN DEFAULT false,
     polling_interval_minutes INTEGER DEFAULT 20,
@@ -39,85 +31,138 @@ CREATE TABLE IF NOT EXISTS public.agent_config (
     max_cooldown_minutes INTEGER DEFAULT 45,
     active_hours_start INTEGER DEFAULT 8,
     active_hours_end INTEGER DEFAULT 23,
-    search_query TEXT DEFAULT 'buildinpublic OR #ai',
+    search_query VARCHAR(256) DEFAULT 'buildinpublic OR #ai',
     smart_query_enabled BOOLEAN DEFAULT true,
     warmup_mode BOOLEAN DEFAULT false,
     persona_prompt TEXT DEFAULT 'Casual, sharp, dry humor, short sentences, no corporate buzzwords',
-    selected_model TEXT DEFAULT 'gemini-2.0-flash',
-    linked_username TEXT,
+    selected_model VARCHAR(64) DEFAULT 'auto',
+    linked_username VARCHAR(128),
+    cookies_json TEXT,
+    api_key VARCHAR(512),
+    daily_token_cap INTEGER DEFAULT 50000,
+    max_pending_queue INTEGER DEFAULT 8,
+    auto_sleep_browser BOOLEAN DEFAULT true,
+    is_suspended BOOLEAN DEFAULT false,
+    plan_tier VARCHAR(32) DEFAULT 'trial',
+    subscription_status VARCHAR(32) DEFAULT 'trialing',
+    trial_ends_at TIMESTAMP WITH TIME ZONE,
+    daily_original_post_cap INTEGER DEFAULT 3,
+    payment_customer_id VARCHAR(128),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Enable RLS on agent_config
+CREATE INDEX IF NOT EXISTS ix_agent_config_active_susp ON public.agent_config (is_active, is_suspended);
+
 ALTER TABLE public.agent_config ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view their own agent config"
     ON public.agent_config FOR SELECT
-    USING (auth.uid() = user_id OR tenant_id = auth.uid()::text);
+    USING (tenant_id = auth.uid()::text);
 
 CREATE POLICY "Users can update their own agent config"
     ON public.agent_config FOR UPDATE
-    USING (auth.uid() = user_id OR tenant_id = auth.uid()::text);
+    USING (tenant_id = auth.uid()::text);
 
 CREATE POLICY "Users can insert their own agent config"
     ON public.agent_config FOR INSERT
-    WITH CHECK (auth.uid() = user_id OR tenant_id = auth.uid()::text);
+    WITH CHECK (tenant_id = auth.uid()::text);
 
--- 3. Create Processed Tweets Table (Queue, History, Scheduled)
+-- 3. Processed Tweets Table (Composite PK (tenant_id, tweet_id) matches models.ProcessedTweet)
 CREATE TABLE IF NOT EXISTS public.processed_tweets (
-    tweet_id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-    action_type TEXT DEFAULT 'reply',
+    tweet_id VARCHAR(64) NOT NULL,
+    tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+    action_type VARCHAR(32) DEFAULT 'reply',
     tweet_text TEXT,
-    tweet_author TEXT,
-    tweet_url TEXT,
+    tweet_author VARCHAR(128),
+    tweet_url VARCHAR(512),
     generated_text TEXT,
     variants_json TEXT,
-    tweet_metrics TEXT,
-    media_url TEXT,
+    tweet_metrics VARCHAR(128),
+    media_url VARCHAR(512),
     should_like BOOLEAN DEFAULT false,
     urgency_score INTEGER DEFAULT 5,
     user_edited BOOLEAN DEFAULT false,
-    status TEXT DEFAULT 'pending_approval',
+    status VARCHAR(32) DEFAULT 'pending_approval',
     scheduled_for TIMESTAMP WITH TIME ZONE,
     error_message TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    PRIMARY KEY (tenant_id, tweet_id)
 );
 
--- Enable RLS on processed_tweets
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_tweet_id ON public.processed_tweets (tweet_id);
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_tenant_status_ts ON public.processed_tweets (tenant_id, status, timestamp DESC);
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_status_sched ON public.processed_tweets (status, scheduled_for);
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_tenant_status_sched ON public.processed_tweets (tenant_id, status, scheduled_for);
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_tenant_type_ts ON public.processed_tweets (tenant_id, action_type, timestamp);
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_tenant_ts ON public.processed_tweets (tenant_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS ix_processed_tweets_tenant_url ON public.processed_tweets (tenant_id, tweet_url);
+
 ALTER TABLE public.processed_tweets ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view their own tweets"
     ON public.processed_tweets FOR SELECT
-    USING (auth.uid() = user_id OR tenant_id = auth.uid()::text);
+    USING (tenant_id = auth.uid()::text);
 
 CREATE POLICY "Users can update their own tweets"
     ON public.processed_tweets FOR UPDATE
-    USING (auth.uid() = user_id OR tenant_id = auth.uid()::text);
+    USING (tenant_id = auth.uid()::text);
 
 CREATE POLICY "Users can insert their own tweets"
     ON public.processed_tweets FOR INSERT
-    WITH CHECK (auth.uid() = user_id OR tenant_id = auth.uid()::text);
+    WITH CHECK (tenant_id = auth.uid()::text);
 
--- 4. Automatic Trigger: Creates profile & agent_config on user signup
+-- 4. AI Token Usage Logs Table (matches models.TokenUsageLog)
+CREATE TABLE IF NOT EXISTS public.token_usage_logs (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+    provider VARCHAR(64) NOT NULL DEFAULT 'deepseek',
+    model VARCHAR(64) NOT NULL DEFAULT 'deepseek-chat',
+    task_type VARCHAR(64) NOT NULL DEFAULT 'general',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_token_usage_tenant_ts ON public.token_usage_logs (tenant_id, timestamp);
+CREATE INDEX IF NOT EXISTS ix_token_usage_ts_task_tenant ON public.token_usage_logs (timestamp, task_type, tenant_id);
+
+ALTER TABLE public.token_usage_logs ENABLE ROW LEVEL SECURITY;
+
+-- 5. Platform Settings & Webhook Idempotency Tables
+CREATE TABLE IF NOT EXISTS public.platform_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    default_daily_token_cap INTEGER NOT NULL DEFAULT 50000,
+    web_radar_cache_seconds INTEGER NOT NULL DEFAULT 7200,
+    browser_idle_sleep_minutes INTEGER NOT NULL DEFAULT 15,
+    auto_sleep_browsers_enabled BOOLEAN NOT NULL DEFAULT true,
+    global_pause_bots BOOLEAN NOT NULL DEFAULT false,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.webhook_events (
+    event_id VARCHAR(128) PRIMARY KEY,
+    provider VARCHAR(32) NOT NULL,
+    processed_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+ALTER TABLE public.platform_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.webhook_events ENABLE ROW LEVEL SECURITY;
+
+-- 6. Automatic Trigger: Provisions agent_config row on Supabase auth signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO public.profiles (id, email, name, tenant_id)
-    VALUES (
-        new.id,
-        new.email,
-        coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
-        new.id::text
-    );
-
-    INSERT INTO public.agent_config (tenant_id, user_id, is_active, selected_model)
+    INSERT INTO public.agent_config (tenant_id, is_active, selected_model, plan_tier, subscription_status, trial_ends_at)
     VALUES (
         new.id::text,
-        new.id,
         false,
-        'gemini-2.0-flash'
+        'auto',
+        'trial',
+        'trialing',
+        timezone('utc'::text, now()) + interval '7 days'
     )
     ON CONFLICT (tenant_id) DO NOTHING;
 
@@ -125,7 +170,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Trigger definition
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users

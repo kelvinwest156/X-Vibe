@@ -4,15 +4,19 @@ Provides health monitoring, live diagnostic log streaming, and web dashboard hos
 """
 
 import os
-from typing import List
-from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+import logging
+from typing import List, Dict, Any
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import HTMLResponse, FileResponse
 from sqlalchemy.orm import Session
 
 from models import SystemLogEntry
-from database import get_db
+from core.dependencies import require_super_admin
+from core.security import scrub_secrets
 import core.state as state
+from database import get_db
 
+logger = logging.getLogger("x_vibebot.system")
 router = APIRouter(tags=["system"])
 
 NEXT_OUT_DIR = os.path.join(state.BASE_DIR, "frontend", "out")
@@ -20,15 +24,18 @@ STATIC_DIR = os.path.join(state.BASE_DIR, "static")
 
 
 @router.get("/api/logs", response_model=List[SystemLogEntry])
-async def get_system_logs(limit: int = 50):
-    """Returns recent runtime diagnostic logs from the in-memory buffer."""
+async def get_system_logs(
+    limit: int = Query(50, ge=1, le=200),
+    _admin: Dict[str, Any] = Depends(require_super_admin),
+):
+    """Returns recent runtime diagnostic logs from the in-memory buffer (Super Admin only)."""
     entries = list(state.log_buffer)
-    selected = entries[-limit:] if limit > 0 else entries
+    selected = entries[-limit:]
     return [
         SystemLogEntry(
             timestamp=entry["timestamp"],
             level=entry["level"],
-            message=entry["message"]
+            message=scrub_secrets(entry["message"])
         )
         for entry in selected
     ]
@@ -36,7 +43,7 @@ async def get_system_logs(limit: int = 50):
 
 @router.get("/api/health")
 @router.get("/health")
-async def health_check(db: Session = Depends(get_db)):
+def health_check(db: Session = Depends(get_db)):
     """Health check endpoint to verify database and runtime operational readiness."""
     try:
         # Simple DB ping
@@ -44,10 +51,11 @@ async def health_check(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
         db_status = "connected"
     except Exception as e:
-        db_status = f"error: {str(e)}"
+        logger.warning(f"Health check database ping failed: {scrub_secrets(e)}")
+        db_status = "unavailable"
 
     return {
-        "status": "ok",
+        "status": "ok" if db_status == "connected" else "error",
         "app": "X-VibeBot",
         "version": "2.0.0",
         "database": db_status,

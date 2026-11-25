@@ -16,6 +16,7 @@ if sys.platform == "win32":
         pass
 
 import os
+import json
 import logging
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -25,8 +26,9 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
-from database import init_db
+from core.security import is_production_env, scrub_secrets
 import core.state as state
+from database import init_db
 from core.background import scheduled_queue_dispatcher_loop, background_automation_loop, async_action_dispatcher_loop
 from core.dependencies import get_current_tenant, get_current_user
 from routers import (
@@ -60,35 +62,44 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Database verification warning during lifespan: {e}")
 
-    # Cloud Persistence: Hydrate API keys and browser session cookies from DB on startup
+    # Cloud Persistence: Recover interrupted dispatches and hydrate encrypted browser session cookies from DB
     try:
-        from database import SessionLocal, AgentConfig
+        from database import (
+            SessionLocal,
+            AgentConfig,
+            get_decrypted_cookies_json,
+            recover_stale_dispatching_tweets,
+        )
         db_init = SessionLocal()
         try:
-            cfgs = db_init.query(AgentConfig).all()
+            recovered = recover_stale_dispatching_tweets(db_init)
+            if recovered:
+                logger.info(f"Recovered {recovered} stale dispatching tweet(s) on startup.")
+
+            cfgs = db_init.query(AgentConfig.tenant_id, AgentConfig.cookies_json).all()
             for c in cfgs:
-                if c.api_key and not os.getenv("DEEPSEEK_API_KEY") and not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
-                    if c.api_key.startswith("sk-"):
-                        os.environ["DEEPSEEK_API_KEY"] = c.api_key
-                    else:
-                        os.environ["GEMINI_API_KEY"] = c.api_key
-                    logger.info(f"Hydrated AI API key from database for tenant '{c.tenant_id}'.")
                 if c.cookies_json:
                     worker = state.get_tenant_browser_worker(c.tenant_id or "default")
                     if not os.path.isfile(worker.cookies_backup_path):
                         try:
-                            saved_cookies = json.loads(c.cookies_json)
-                            if isinstance(saved_cookies, list) and saved_cookies:
-                                os.makedirs(worker.profile_dir, exist_ok=True)
-                                with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
-                                    json.dump(saved_cookies, f, indent=2)
-                                logger.info(f"Hydrated persistent session cookies for tenant '{c.tenant_id}'.")
+                            decrypted_cookies = get_decrypted_cookies_json(c)
+                            if decrypted_cookies:
+                                saved_cookies = json.loads(decrypted_cookies)
+                                if isinstance(saved_cookies, list) and saved_cookies:
+                                    os.makedirs(worker.profile_dir, exist_ok=True)
+                                    with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
+                                        json.dump(saved_cookies, f, indent=2)
+                                    try:
+                                        os.chmod(worker.cookies_backup_path, 0o600)
+                                    except OSError:
+                                        pass
+                                    logger.info(f"Hydrated persistent session cookies for tenant '{c.tenant_id}'.")
                         except Exception as ce:
-                            logger.debug(f"Cookie hydration note for {c.tenant_id}: {ce}")
+                            logger.debug(f"Cookie hydration note for {c.tenant_id}: {scrub_secrets(ce)}")
         finally:
             db_init.close()
     except Exception as e:
-        logger.warning(f"Startup DB hydration note: {e}")
+        logger.warning(f"Startup DB hydration note: {scrub_secrets(e)}")
 
     state.action_dispatcher_task = asyncio.create_task(async_action_dispatcher_loop())
     state.bg_worker_task = asyncio.create_task(background_automation_loop())
@@ -103,6 +114,42 @@ async def lifespan(app: FastAPI):
             await w.stop()
         except Exception:
             pass
+    try:
+        from services.ai_client import close_ai_clients
+        res = close_ai_clients()
+        if asyncio.iscoroutine(res):
+            await res
+    except Exception:
+        pass
+
+
+class SecurityHeadersMiddleware:
+    """Adds baseline HTTP security headers to all HTTP responses."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                existing = {k.lower() for k, _ in headers}
+                defaults = [
+                    (b"referrer-policy", b"no-referrer"),
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                ]
+                for k, v in defaults:
+                    if k not in existing:
+                        headers.append((k, v))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
 
 
 app = FastAPI(
@@ -112,28 +159,50 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+_dev_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+_env_cors_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip() and origin.strip() != "*"
+]
+_allowed_origins = list(
+    dict.fromkeys(
+        _env_cors_origins + ([] if is_production_env() else _dev_origins)
+    )
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Auth-Token",
+        "X-Admin-Token",
+        "X-Tenant-Id",
+        "Accept",
+    ],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 class CachedStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
         if response.status_code == 200:
-            req_path = scope.get("path", "")
-            if "/_next/static/" in req_path or "static/" in path or "/logos/" in req_path:
+            req_path = scope.get("path", "") or ""
+            req_path_lower = req_path.lower()
+            if req_path_lower.endswith(".html") or req_path_lower.endswith(".txt"):
+                response.headers["Cache-Control"] = "no-cache"
+            elif req_path.startswith("/_next/static/") or req_path.startswith("/logos/"):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             else:
                 response.headers["Cache-Control"] = "public, max-age=86400"

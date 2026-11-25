@@ -8,7 +8,7 @@ and Gemini fallback.
 import json
 import asyncio
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 
 from services.ai_client import (
     get_best_available_model,
@@ -17,12 +17,15 @@ from services.ai_client import (
     get_deepseek_client,
     format_ai_error,
     log_deepseek_usage,
+    log_gemini_usage,
     _fetch_image_bytes,
     _sanitize_ai_tells,
     _clean_json_markdown,
+    _scrub,
 )
 from services.ai_prompts import (
     build_system_prompt,
+    build_single_evaluation_user_prompt,
     build_batch_evaluation_prompt,
     build_variants_prompt,
 )
@@ -32,26 +35,53 @@ logger = logging.getLogger("x_vibebot.services.ai_evaluator")
 # Track the last working Gemini model across evaluations
 _last_working_gemini_model: Optional[str] = None
 
+_MAX_TWEET_CHARS = 280
+
+
+def _enforce_tweet_limit(text: str, max_len: int = _MAX_TWEET_CHARS) -> str:
+    """Safely trims generated replies to X's 280-character ceiling without mid-word breaks."""
+    clean = (text or "").strip()
+    if len(clean) <= max_len:
+        return clean
+    cut = clean[:max_len]
+    if " " in cut:
+        word_cut = cut.rsplit(" ", 1)[0].rstrip(" ,.;:-")
+        if len(word_cut) >= max_len // 2:
+            return word_cut
+    return cut.rstrip()
+
 
 def _normalize_eval_dict(
-    data: Dict[str, Any],
+    data: Any,
     raw_output: str = "",
     include_variants: bool = False,
 ) -> Dict[str, Any]:
     """Normalizes a single evaluation JSON object into the standard response shape."""
+    if not isinstance(data, dict):
+        return {
+            "should_reply": False,
+            "reply_text": None,
+            "variants": {},
+            "variants_json": None,
+            "should_like": False,
+            "urgency_score": 1,
+            "reasoning": "Invalid AI evaluation format",
+            "raw_response": raw_output,
+        }
+
     action = str(data.get("action", "")).strip().lower()
     raw_variants = data.get("variants") if isinstance(data.get("variants"), dict) else {}
 
     variants: Dict[str, str] = {}
     for k, v in list(raw_variants.items())[:4]:
-        clean_key = str(k).strip()
-        clean_val = _sanitize_ai_tells(str(v or ""))
+        clean_key = str(k).strip()[:64]
+        clean_val = _enforce_tweet_limit(_sanitize_ai_tells(str(v or "")))
         if clean_key and clean_val:
             variants[clean_key] = clean_val
 
     first_variant = next(iter(variants.values()), "")
-    primary = _sanitize_ai_tells(str(data.get("text", "") or "")) or first_variant
-    reasoning = str(data.get("reasoning", "")).strip()
+    primary = _enforce_tweet_limit(_sanitize_ai_tells(str(data.get("text", "") or ""))) or first_variant
+    reasoning = str(data.get("reasoning", "")).strip()[:160]
     should_like = bool(data.get("should_like", False))
     try:
         urgency_score = max(1, min(10, int(data.get("urgency_score", 5))))
@@ -61,7 +91,7 @@ def _normalize_eval_dict(
     if include_variants and primary and not variants:
         variants["Primary Angle"] = primary
 
-    if action == "reply" and primary and "skip" not in primary.lower():
+    if action == "reply" and primary:
         return {
             "should_reply": True,
             "reply_text": primary,
@@ -88,6 +118,10 @@ def _parse_ai_json_payload(raw_output: str, include_variants: bool = False) -> D
     """Parses the JSON response and preserves optional reply angles, should_like, and urgency_score."""
     cleaned = _clean_json_markdown(raw_output)
     data = json.loads(cleaned)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+    if not isinstance(data, dict):
+        raise ValueError("AI evaluation response is not a JSON object")
     return _normalize_eval_dict(data, raw_output=raw_output, include_variants=include_variants)
 
 
@@ -103,9 +137,10 @@ async def _evaluate_with_gemini(
     media_url: Optional[str] = None,
     learning_memory: Optional[Dict[str, Any]] = None,
     include_variants: bool = False,
+    tenant_id: str = "default",
 ) -> Dict[str, Any]:
     """Generates evaluation, optional reply angles, like decision, and urgency score using Google Gemini + Vision."""
-    client = get_gemini_client(custom_key=custom_key)
+    client = get_gemini_client(custom_key=custom_key, tenant_id=tenant_id)
     if not client:
         logger.warning("GEMINI_API_KEY not configured. Skipping AI evaluation.")
         return {
@@ -121,18 +156,24 @@ async def _evaluate_with_gemini(
 
     chosen_model = sanitize_model_for_provider("gemini", model_name)
     clean_model = chosen_model.replace("models/", "")
-    user_content_text = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
-    if extra_context:
-        user_content_text += f"\nContext / Quoted / Media Info: {extra_context}"
+    user_content_text = build_single_evaluation_user_prompt(
+        tweet_text=tweet_text,
+        tweet_author=tweet_author,
+        extra_context=extra_context,
+        has_media=bool(media_url),
+        learning_memory=learning_memory,
+    )
 
     try:
         from google.genai import types
 
         contents_payload: Any = user_content_text
+        has_vision = False
         if media_url:
             img_fetched = await _fetch_image_bytes(media_url)
             if img_fetched:
                 img_bytes, mime_type = img_fetched
+                has_vision = True
                 contents_payload = [
                     user_content_text + "\n[An image is attached to this tweet. Inspect the visual details to make your reply hyper-relevant.]",
                     types.Part.from_bytes(data=img_bytes, mime_type=mime_type),
@@ -142,7 +183,6 @@ async def _evaluate_with_gemini(
             system_instruction=build_system_prompt(
                 search_query,
                 persona_prompt,
-                learning_memory=learning_memory,
                 include_variants=include_variants,
             ),
             response_mime_type="application/json",
@@ -152,17 +192,15 @@ async def _evaluate_with_gemini(
 
         global _last_working_gemini_model
         fallback_candidates = []
-        if _last_working_gemini_model:
+        if _last_working_gemini_model and _last_working_gemini_model != "gemini-3.8-flash":
             fallback_candidates.append(_last_working_gemini_model)
         fallback_candidates.extend([
             clean_model,
             "gemini-2.0-flash",
             "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
             "gemini-2.5-flash",
-            "gemini-3.8-flash",
         ])
-        models_to_try = list(dict.fromkeys(fallback_candidates))
+        models_to_try = list(dict.fromkeys(m for m in fallback_candidates if m))[:3]
 
         response = None
         last_err = None
@@ -187,21 +225,28 @@ async def _evaluate_with_gemini(
                 last_err = try_err
                 err_str = str(try_err)
                 if any(code in err_str for code in ["404", "NOT_FOUND", "503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"]):
-                    logger.info(f"Model {candidate_model} busy ({err_str[:65]}); failing over to next model...")
+                    logger.info(f"Model {candidate_model} busy ({_scrub(err_str)[:65]}); failing over to next model...")
                     continue
                 raise try_err
 
         if response is None and last_err is not None:
             raise last_err
 
+        await asyncio.to_thread(
+            log_gemini_usage,
+            response,
+            tenant_id=tenant_id,
+            task_type="evaluate_single",
+            model_name=clean_model,
+        )
         raw_output = response.text or "" if response else ""
-        logger.info(f"Gemini ({clean_model}) evaluated @{tweet_author} (vision={bool(media_url)})")
+        logger.info(f"Gemini ({clean_model}) evaluated @{str(tweet_author or 'unknown')[:64]} (vision={has_vision})")
         return _parse_ai_json_payload(raw_output, include_variants=include_variants)
 
     except Exception as e:
-        err_msg = str(e)
+        err_msg = _scrub(str(e))
         logger.error(f"Error calling Google Gemini API ({clean_model}): {err_msg}")
-        clean_err = format_ai_error(e)
+        clean_err = format_ai_error(e, provider="gemini")
         return {
             "should_reply": False,
             "reply_text": None,
@@ -229,7 +274,7 @@ async def _evaluate_with_deepseek(
     tenant_id: str = "default",
 ) -> Dict[str, Any]:
     """Single-tweet evaluation with DeepSeek API, prefix-cached prompt, and token telemetry."""
-    client = get_deepseek_client(custom_key=custom_key)
+    client = get_deepseek_client(custom_key=custom_key, tenant_id=tenant_id)
     if not client:
         return {
             "should_reply": False,
@@ -243,11 +288,13 @@ async def _evaluate_with_deepseek(
         }
 
     chosen_model = sanitize_model_for_provider("deepseek", model_name)
-    user_content = f"Author: @{tweet_author or 'unknown'}\nTweet Text: {tweet_text}"
-    if extra_context:
-        user_content += f"\nContext: {extra_context}"
-    if media_url:
-        user_content += f"\n[Note: An image is attached to this tweet: {media_url}]"
+    user_content = build_single_evaluation_user_prompt(
+        tweet_text=tweet_text,
+        tweet_author=tweet_author,
+        extra_context=extra_context,
+        has_media=bool(media_url),
+        learning_memory=learning_memory,
+    )
 
     try:
         kwargs: Dict[str, Any] = {
@@ -258,32 +305,35 @@ async def _evaluate_with_deepseek(
                     "content": build_system_prompt(
                         search_query,
                         persona_prompt,
-                        learning_memory=learning_memory,
                         include_variants=include_variants,
                     ),
                 },
                 {"role": "user", "content": user_content},
             ],
-            "max_tokens": 900 if include_variants else 260,
+            "max_tokens": (800 if "reasoner" in chosen_model.lower() else (900 if include_variants else 260)),
         }
         if "reasoner" not in chosen_model.lower():
             kwargs["response_format"] = {"type": "json_object"}
             kwargs["temperature"] = temperature
 
         response = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=15.0)
-        log_deepseek_usage(
+        await asyncio.to_thread(
+            log_deepseek_usage,
             response,
             tenant_id=tenant_id,
             task_type="evaluate_single",
             model_name=chosen_model,
         )
-        raw_output = response.choices[0].message.content or ""
-        logger.info(f"DeepSeek ({chosen_model}) evaluated @{tweet_author}")
+        choices = getattr(response, "choices", None) or []
+        if not choices or not getattr(choices[0], "message", None):
+            raise RuntimeError("DeepSeek returned an empty response")
+        raw_output = choices[0].message.content or ""
+        logger.info(f"DeepSeek ({chosen_model}) evaluated @{str(tweet_author or 'unknown')[:64]}")
         return _parse_ai_json_payload(raw_output, include_variants=include_variants)
     except Exception as e:
-        err_msg = str(e)
+        err_msg = _scrub(str(e))
         logger.error(f"Error calling DeepSeek API ({chosen_model}): {err_msg}")
-        clean_err = format_ai_error(e)
+        clean_err = format_ai_error(e, provider="deepseek")
         return {
             "should_reply": False,
             "reply_text": None,
@@ -309,56 +359,39 @@ async def evaluate_tweet(
     learning_memory: Optional[Dict[str, Any]] = None,
     include_variants: bool = False,
     tenant_id: str = "default",
+    tried_providers: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Evaluates a single scraped tweet using DeepSeek API (with prefix-cached prompt & few-shot memory).
-    Returns should_reply, reply_text, optional variants, should_like, urgency_score, and reasoning.
+    Evaluates a single scraped tweet using the best available AI provider with one-way failover
+    (preventing DeepSeek<->Gemini ping-pong loops).
     """
-    provider, resolved_model = get_best_available_model(task_type="evaluate", custom_key=custom_key)
-    if model_name and model_name != "auto":
-        resolved_model = sanitize_model_for_provider(provider, model_name)
+    tried: Set[str] = set(tried_providers) if tried_providers else set()
+    primary_provider, resolved_model = get_best_available_model(
+        task_type="evaluate",
+        custom_key=custom_key,
+        tenant_id=tenant_id,
+    )
 
-    if provider == "gemini":
-        return await _evaluate_with_gemini(
-            tweet_text=tweet_text,
-            tweet_author=tweet_author,
-            model_name=resolved_model,
-            custom_key=custom_key,
-            search_query=search_query,
-            persona_prompt=persona_prompt,
-            extra_context=extra_context,
-            temperature=temperature,
-            media_url=media_url,
-            learning_memory=learning_memory,
-            include_variants=include_variants,
-        )
-    else:
-        res = await _evaluate_with_deepseek(
-            tweet_text=tweet_text,
-            tweet_author=tweet_author,
-            model_name=resolved_model,
-            custom_key=custom_key,
-            search_query=search_query,
-            persona_prompt=persona_prompt,
-            extra_context=extra_context,
-            temperature=temperature,
-            media_url=media_url,
-            learning_memory=learning_memory,
-            include_variants=include_variants,
-            tenant_id=tenant_id,
-        )
-        if res.get("reply_text") or (
-            res.get("should_reply") is False
-            and res.get("raw_response") != "NO_API_KEY"
-            and "ERROR:" not in res.get("raw_response", "")
-        ):
-            return res
-        if get_gemini_client(custom_key=custom_key):
-            logger.info("DeepSeek call did not complete; falling back to Gemini...")
-            return await _evaluate_with_gemini(
+    provider_order = [primary_provider, "gemini" if primary_provider == "deepseek" else "deepseek"]
+    last_res: Optional[Dict[str, Any]] = None
+
+    for idx, prov in enumerate(provider_order):
+        if prov in tried:
+            continue
+
+        if idx == 0 and model_name and model_name != "auto":
+            cand_model = sanitize_model_for_provider(prov, model_name)
+        else:
+            cand_model = resolved_model if idx == 0 else sanitize_model_for_provider(prov)
+
+        if prov == "gemini":
+            if idx > 0 and not get_gemini_client(custom_key=custom_key, tenant_id=tenant_id):
+                continue
+            tried.add("gemini")
+            res = await _evaluate_with_gemini(
                 tweet_text=tweet_text,
                 tweet_author=tweet_author,
-                model_name=sanitize_model_for_provider("gemini"),
+                model_name=cand_model,
                 custom_key=custom_key,
                 search_query=search_query,
                 persona_prompt=persona_prompt,
@@ -367,8 +400,49 @@ async def evaluate_tweet(
                 media_url=media_url,
                 learning_memory=learning_memory,
                 include_variants=include_variants,
+                tenant_id=tenant_id,
             )
-        return res
+        else:
+            if idx > 0 and not get_deepseek_client(custom_key=custom_key, tenant_id=tenant_id):
+                continue
+            tried.add("deepseek")
+            res = await _evaluate_with_deepseek(
+                tweet_text=tweet_text,
+                tweet_author=tweet_author,
+                model_name=cand_model,
+                custom_key=custom_key,
+                search_query=search_query,
+                persona_prompt=persona_prompt,
+                extra_context=extra_context,
+                temperature=temperature,
+                media_url=media_url,
+                learning_memory=learning_memory,
+                include_variants=include_variants,
+                tenant_id=tenant_id,
+            )
+
+        last_res = res
+        raw_resp = res.get("raw_response", "")
+        succeeded = bool(res.get("reply_text")) or (
+            res.get("should_reply") is False
+            and raw_resp != "NO_API_KEY"
+            and not str(raw_resp).startswith("ERROR:")
+        )
+        if succeeded:
+            return res
+
+        logger.info(f"{prov.capitalize()} single evaluation did not complete; checking next provider if available...")
+
+    return last_res or {
+        "should_reply": False,
+        "reply_text": None,
+        "variants": {},
+        "variants_json": None,
+        "should_like": False,
+        "urgency_score": 1,
+        "reasoning": "No AI API key configured",
+        "raw_response": "NO_API_KEY",
+    }
 
 
 async def evaluate_tweets_batch(
@@ -384,19 +458,27 @@ async def evaluate_tweets_batch(
 ) -> Dict[str, Dict[str, Any]]:
     """
     Evaluates a batch of candidate tweets (up to 8 per request) in ONE single DeepSeek API call.
-    Dramatically cuts repeated system-prompt tokens and hits DeepSeek's 90% prefix cache discount.
-    Maps results back by tweet_id; safely falls back to individual evaluation if batch parsing fails.
+    Maps results back by tweet_id; requires at least 1 matched ID before marking batch_parsed_ok,
+    and falls back ONLY for unmatched IDs.
     """
     if not tweets:
         return {}
 
     results_by_id: Dict[str, Dict[str, Any]] = {}
-    client = get_deepseek_client(custom_key=custom_key)
+    provider, _ = get_best_available_model(
+        task_type="evaluate",
+        custom_key=custom_key,
+        tenant_id=tenant_id,
+    )
+    client = (
+        get_deepseek_client(custom_key=custom_key, tenant_id=tenant_id)
+        if provider == "deepseek"
+        else None
+    )
 
     if not client:
-        # No DeepSeek key configured; fall back to evaluate_tweet (which handles Gemini or returns NO_API_KEY)
         for t in tweets:
-            tid = str(t.get("tweet_id") or t.get("id") or "")
+            tid = str(t.get("tweet_id") or t.get("id") or "").strip()
             if not tid:
                 continue
             res = await evaluate_tweet(
@@ -419,8 +501,8 @@ async def evaluate_tweets_batch(
         return results_by_id
 
     chosen_model = sanitize_model_for_provider("deepseek", None if model_name == "auto" else model_name)
+    is_reasoner = "reasoner" in chosen_model.lower()
 
-    # Chunk into batches of at most 8 tweets
     chunk_size = 8
     for start_idx in range(0, len(tweets), chunk_size):
         chunk = tweets[start_idx : start_idx + chunk_size]
@@ -432,59 +514,90 @@ async def evaluate_tweets_batch(
             include_variants=include_variants,
         )
 
+        chunk_ids = {
+            str(t.get("tweet_id") or t.get("id") or "").strip()
+            for t in chunk
+            if str(t.get("tweet_id") or t.get("id") or "").strip()
+        }
         batch_parsed_ok = False
+        batch_tried_providers: Optional[Set[str]] = None
+
         try:
             max_tok = (len(chunk) * 320 + 200) if include_variants else (len(chunk) * 140 + 150)
+            if is_reasoner:
+                max_tok = max(800, max_tok)
             kwargs: Dict[str, Any] = {
                 "model": chosen_model,
                 "messages": [
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": usr_prompt},
                 ],
-                "max_tokens": min(2800, max(400, max_tok)),
+                "max_tokens": min(4000, max(800 if is_reasoner else 400, max_tok)),
             }
-            if "reasoner" not in chosen_model.lower():
+            if not is_reasoner:
                 kwargs["response_format"] = {"type": "json_object"}
                 kwargs["temperature"] = temperature
 
             response = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=25.0)
-            log_deepseek_usage(
+            await asyncio.to_thread(
+                log_deepseek_usage,
                 response,
                 tenant_id=tenant_id,
                 task_type="evaluate_batch",
                 model_name=chosen_model,
             )
-            raw_output = response.choices[0].message.content or ""
+            choices = getattr(response, "choices", None) or []
+            if not choices or not getattr(choices[0], "message", None):
+                raise RuntimeError("DeepSeek returned empty choices for batch evaluation")
+
+            raw_output = choices[0].message.content or ""
             cleaned = _clean_json_markdown(raw_output)
             parsed = json.loads(cleaned)
 
-            items_list = parsed.get("results") if isinstance(parsed, dict) else parsed
+            if isinstance(parsed, dict):
+                items_list = parsed.get("results")
+            elif isinstance(parsed, list):
+                items_list = parsed
+            else:
+                items_list = None
+
+            matched_count = 0
             if isinstance(items_list, list):
                 for entry in items_list:
                     if not isinstance(entry, dict):
                         continue
                     eid = str(entry.get("id") or entry.get("tweet_id") or "").strip()
-                    if eid:
+                    if eid and eid in chunk_ids:
                         results_by_id[eid] = _normalize_eval_dict(
                             entry,
                             raw_output=raw_output,
                             include_variants=include_variants,
                         )
+                        matched_count += 1
+
+            if matched_count > 0:
                 batch_parsed_ok = True
                 logger.info(
                     f"DeepSeek ({chosen_model}) batch-evaluated {len(chunk)} tweets in 1 API call "
-                    f"(matched {sum(1 for t in chunk if str(t.get('tweet_id') or t.get('id') or '') in results_by_id)}/{len(chunk)})."
+                    f"(matched {matched_count}/{len(chunk)})."
+                )
+            else:
+                logger.warning(
+                    f"DeepSeek ({chosen_model}) batch response matched 0/{len(chunk)} tweet IDs; falling back."
                 )
         except Exception as e:
-            logger.warning(f"Batch evaluation error ({chosen_model}); falling back to per-tweet evaluation: {e}")
+            err_lower = str(e).lower()
+            if any(k in err_lower for k in ("401", "authentication", "balance", "insufficient", "429", "rate_limit")):
+                batch_tried_providers = {"deepseek"}
+            logger.warning(f"Batch evaluation error ({chosen_model}); falling back to per-tweet evaluation: {_scrub(e)}")
 
-        # Fallback for any tweets not matched in the batch response
-        if not batch_parsed_ok:
+        # Fallback ONLY for any tweets in this chunk not matched in the batch response
+        if not batch_parsed_ok or any(tid not in results_by_id for tid in chunk_ids):
             for t in chunk:
-                tid = str(t.get("tweet_id") or t.get("id") or "")
+                tid = str(t.get("tweet_id") or t.get("id") or "").strip()
                 if not tid or tid in results_by_id:
                     continue
-                results_by_id[tid] = await evaluate_tweet(
+                res = await evaluate_tweet(
                     tweet_text=str(t.get("text") or t.get("tweet_text") or ""),
                     tweet_author=t.get("author") or t.get("tweet_author"),
                     model_name=model_name,
@@ -497,7 +610,11 @@ async def evaluate_tweets_batch(
                     learning_memory=learning_memory,
                     include_variants=include_variants,
                     tenant_id=tenant_id,
+                    tried_providers=batch_tried_providers,
                 )
+                results_by_id[tid] = res
+                if res.get("raw_response") == "NO_API_KEY":
+                    break
 
     return results_by_id
 
@@ -525,84 +642,121 @@ async def generate_reply_variants(
     def _extract_variants(raw_str: str) -> Dict[str, str]:
         cleaned = _clean_json_markdown(raw_str)
         data = json.loads(cleaned)
-        raw_vars = data.get("variants") if isinstance(data, dict) and isinstance(data.get("variants"), dict) else data
+        if not isinstance(data, dict):
+            return {}
+        raw_vars = data.get("variants") if isinstance(data.get("variants"), dict) else data
         out: Dict[str, str] = {}
         if isinstance(raw_vars, dict):
             for k, v in list(raw_vars.items())[:3]:
-                ck = str(k).strip()
-                cv = _sanitize_ai_tells(str(v or ""))
+                ck = str(k).strip()[:64]
+                cv = _enforce_tweet_limit(_sanitize_ai_tells(str(v or "")))
                 if ck and cv:
                     out[ck] = cv
         return out
 
-    ds_client = get_deepseek_client(custom_key=custom_key)
-    if ds_client:
-        chosen_model = sanitize_model_for_provider("deepseek", None if model_name == "auto" else model_name)
-        try:
-            kwargs: Dict[str, Any] = {
-                "model": chosen_model,
-                "messages": [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": usr_prompt},
-                ],
-                "max_tokens": 450,
-            }
-            if "reasoner" not in chosen_model.lower():
-                kwargs["response_format"] = {"type": "json_object"}
-                kwargs["temperature"] = 0.85
+    primary_provider, _ = get_best_available_model(
+        task_type="variants",
+        custom_key=custom_key,
+        tenant_id=tenant_id,
+    )
+    provider_order = [primary_provider, "gemini" if primary_provider == "deepseek" else "deepseek"]
+    tried_providers: Set[str] = set()
+    last_error: Optional[str] = None
+    had_any_client = False
 
-            resp = await asyncio.wait_for(ds_client.chat.completions.create(**kwargs), timeout=15.0)
-            log_deepseek_usage(
-                resp,
-                tenant_id=tenant_id,
-                task_type="variants",
-                model_name=chosen_model,
-            )
-            raw_out = resp.choices[0].message.content or ""
-            variants = _extract_variants(raw_out)
-            if variants:
-                return {
-                    "success": True,
-                    "variants": variants,
-                    "variants_json": json.dumps(variants, ensure_ascii=False),
+    for prov in provider_order:
+        if prov in tried_providers:
+            continue
+        tried_providers.add(prov)
+
+        if prov == "deepseek":
+            ds_client = get_deepseek_client(custom_key=custom_key, tenant_id=tenant_id)
+            if not ds_client:
+                continue
+            had_any_client = True
+            chosen_model = sanitize_model_for_provider("deepseek", None if model_name == "auto" else model_name)
+            try:
+                is_reasoner = "reasoner" in chosen_model.lower()
+                kwargs: Dict[str, Any] = {
+                    "model": chosen_model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": usr_prompt},
+                    ],
+                    "max_tokens": 800 if is_reasoner else 450,
                 }
-        except Exception as e:
-            logger.error(f"DeepSeek generate_reply_variants error: {e}")
-            if not get_gemini_client(custom_key=custom_key):
-                return {"success": False, "variants": {}, "variants_json": None, "error": format_ai_error(e)}
+                if not is_reasoner:
+                    kwargs["response_format"] = {"type": "json_object"}
+                    kwargs["temperature"] = 0.85
 
-    gem_client = get_gemini_client(custom_key=custom_key)
-    if gem_client:
-        try:
-            from google.genai import types
-            resp = await asyncio.wait_for(
-                gem_client.aio.models.generate_content(
-                    model=sanitize_model_for_provider("gemini"),
-                    contents=usr_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=sys_prompt,
-                        response_mime_type="application/json",
-                        temperature=0.85,
-                        max_output_tokens=500,
-                    ),
-                ),
-                timeout=10.0,
-            )
-            if resp and resp.text:
-                variants = _extract_variants(resp.text)
+                resp = await asyncio.wait_for(ds_client.chat.completions.create(**kwargs), timeout=15.0)
+                await asyncio.to_thread(
+                    log_deepseek_usage,
+                    resp,
+                    tenant_id=tenant_id,
+                    task_type="variants",
+                    model_name=chosen_model,
+                )
+                choices = getattr(resp, "choices", None) or []
+                if not choices or not getattr(choices[0], "message", None):
+                    last_error = "DeepSeek returned an empty response."
+                    continue
+                raw_out = choices[0].message.content or ""
+                variants = _extract_variants(raw_out)
                 if variants:
                     return {
                         "success": True,
                         "variants": variants,
                         "variants_json": json.dumps(variants, ensure_ascii=False),
                     }
-        except Exception as e:
-            logger.error(f"Gemini generate_reply_variants error: {e}")
-            return {"success": False, "variants": {}, "variants_json": None, "error": format_ai_error(e)}
+                last_error = "DeepSeek returned empty or invalid reply variants."
+            except Exception as e:
+                logger.error(f"DeepSeek generate_reply_variants error: {_scrub(e)}")
+                last_error = format_ai_error(e, provider="deepseek")
+        else:
+            gem_client = get_gemini_client(custom_key=custom_key, tenant_id=tenant_id)
+            if not gem_client:
+                continue
+            had_any_client = True
+            gem_model = sanitize_model_for_provider("gemini", None if model_name == "auto" else model_name)
+            try:
+                from google.genai import types
+                resp = await asyncio.wait_for(
+                    gem_client.aio.models.generate_content(
+                        model=gem_model,
+                        contents=usr_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=sys_prompt,
+                            response_mime_type="application/json",
+                            temperature=0.85,
+                            max_output_tokens=500,
+                        ),
+                    ),
+                    timeout=10.0,
+                )
+                await asyncio.to_thread(
+                    log_gemini_usage,
+                    resp,
+                    tenant_id=tenant_id,
+                    task_type="variants",
+                    model_name=gem_model,
+                )
+                if resp and resp.text:
+                    variants = _extract_variants(resp.text)
+                    if variants:
+                        return {
+                            "success": True,
+                            "variants": variants,
+                            "variants_json": json.dumps(variants, ensure_ascii=False),
+                        }
+                last_error = "Google Gemini returned empty or invalid reply variants."
+            except Exception as e:
+                logger.error(f"Gemini generate_reply_variants error: {_scrub(e)}")
+                last_error = format_ai_error(e, provider="gemini")
 
     return {
         "success": False,
         "variants": {},
         "variants_json": None,
-        "error": "DeepSeek API key not configured",
+        "error": last_error or ("No AI API key configured." if not had_any_client else "Failed to generate reply variants."),
     }

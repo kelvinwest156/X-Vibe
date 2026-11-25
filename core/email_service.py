@@ -5,12 +5,21 @@ Uses Python's built-in smtplib and email packages with non-blocking async execut
 """
 
 import os
+import html
 import smtplib
 import asyncio
 import logging
+import urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import parseaddr
 from typing import Optional
+
+from core.security import (
+    validate_email_address,
+    resolve_safe_app_base_url,
+    scrub_secrets,
+)
 
 logger = logging.getLogger("x_vibebot.email")
 
@@ -25,21 +34,29 @@ def is_smtp_configured() -> bool:
 
 def _send_smtp_sync(to_email: str, subject: str, html_content: str, text_content: str) -> bool:
     """Synchronous worker that connects to the SMTP server, authenticates, and dispatches an email."""
+    clean_to = (to_email or "").strip()
+    if not validate_email_address(clean_to):
+        logger.warning("Refused to send email to invalid recipient address.")
+        return False
+
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
     user = os.getenv("SMTP_USER")
     password = os.getenv("SMTP_PASSWORD")
-    sender = os.getenv("SMTP_FROM") or f"X-VibeBot <{user}>"
+    raw_sender = (os.getenv("SMTP_FROM") or f"X-VibeBot <{user}>").replace("\r", "").replace("\n", "").strip()
+    envelope_sender = parseaddr(raw_sender)[1] or user
     use_tls = os.getenv("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes")
 
     if not host or not user or not password:
-        logger.warning(f"Outbound SMTP not configured. Cannot send email to '{to_email}'.")
+        logger.warning("Outbound SMTP not configured. Cannot send email.")
         return False
 
+    clean_subject = str(subject or "").replace("\r", " ").replace("\n", " ").strip()
+
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = to_email
+    msg["Subject"] = clean_subject
+    msg["From"] = raw_sender
+    msg["To"] = clean_to
 
     # Plain text version for accessibility & spam filters
     part1 = MIMEText(text_content, "plain", "utf-8")
@@ -48,6 +65,7 @@ def _send_smtp_sync(to_email: str, subject: str, html_content: str, text_content
     msg.attach(part1)
     msg.attach(part2)
 
+    server = None
     try:
         if port == 465:
             # SSL context
@@ -61,16 +79,21 @@ def _send_smtp_sync(to_email: str, subject: str, html_content: str, text_content
                 server.ehlo()
 
         server.login(user, password)
-        server.sendmail(user, [to_email], msg.as_string())
-        server.quit()
-        logger.info(f"Successfully sent email '{subject}' to '{to_email}'.")
+        server.sendmail(envelope_sender, [clean_to], msg.as_string())
+        logger.info(f"Successfully sent email '{clean_subject}' to '{clean_to}'.")
         return True
     except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP Authentication failed for user '{user}': {e}")
+        logger.error(f"SMTP authentication failed for configured account: {scrub_secrets(e)}")
         return False
     except Exception as e:
-        logger.error(f"Failed to dispatch email to '{to_email}' via {host}:{port}: {e}")
+        logger.error(f"Failed to dispatch email to '{clean_to}' via {host}:{port}: {scrub_secrets(e)}")
         return False
+    finally:
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                pass
 
 
 async def send_email(to_email: str, subject: str, html_content: str, text_content: str) -> bool:
@@ -87,14 +110,23 @@ async def send_password_reset_email(
     Constructs a branded password reset email and dispatches it via SMTP.
     Returns True if sent, False if SMTP is unconfigured or failed.
     """
-    base_url = (app_url or os.getenv("APP_BASE_URL") or "http://localhost:8000").rstrip("/")
-    reset_link = f"{base_url}/reset-password?token={reset_token}"
+    clean_to = (to_email or "").strip()
+    if not validate_email_address(clean_to):
+        logger.warning("Refused password reset email for invalid recipient address.")
+        return False
+
+    base_url = resolve_safe_app_base_url(app_url).rstrip("/")
+    safe_token = urllib.parse.quote(str(reset_token or ""), safe=".-_~")
+    reset_link = f"{base_url}/reset-password?token={safe_token}"
+
+    escaped_email = html.escape(clean_to, quote=True)
+    escaped_link = html.escape(reset_link, quote=True)
 
     subject = "Reset your X-VibeBot password"
 
     text_content = f"""Hello,
 
-We received a request to reset your password for your X-VibeBot account ({to_email}).
+We received a request to reset your password for your X-VibeBot account ({clean_to}).
 
 To set a new password, visit the following link (valid for 60 minutes):
 {reset_link}
@@ -188,15 +220,15 @@ If you did not request a password reset, you can safely ignore this email. Your 
     <div class="logo">𝕏</div>
     <h1>Reset your password</h1>
     <p>Hello,</p>
-    <p>We received a request to reset the password for your X-VibeBot account (<strong>{to_email}</strong>).</p>
+    <p>We received a request to reset the password for your X-VibeBot account (<strong>{escaped_email}</strong>).</p>
     <p>Click the button below to choose a new password. This link is valid for the next <strong>60 minutes</strong>:</p>
     
     <div style="text-align: center;">
-      <a href="{reset_link}" class="btn" target="_blank">Reset Password</a>
+      <a href="{escaped_link}" class="btn" target="_blank" rel="noopener noreferrer">Reset Password</a>
     </div>
 
     <p style="font-size: 12px; color: #71717a;">If the button above does not work, copy and paste this URL into your browser:</p>
-    <div class="fallback">{reset_link}</div>
+    <div class="fallback">{escaped_link}</div>
 
     <div class="footer">
       If you did not request this password reset, you can safely ignore this email. Your account remains secure.<br>
@@ -207,4 +239,4 @@ If you did not request a password reset, you can safely ignore this email. Your 
 </html>
 """
 
-    return await send_email(to_email, subject, html_content, text_content)
+    return await send_email(clean_to, subject, html_content, text_content)
