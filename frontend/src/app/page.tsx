@@ -412,16 +412,27 @@ export default function HomePage() {
     "deepseek-reasoner",
   ]);
 
-  const refresh = useCallback(async () => {
+  const isRefreshingRef = useRef(false);
+
+  const refresh = useCallback(async (includeAnalytics = false) => {
+    if (isRefreshingRef.current) return;
+    isRefreshingRef.current = true;
     try {
-      const [s, a, p] = await Promise.all([
+      const calls: Promise<Response>[] = [
         apiFetch("/api/status"),
-        apiFetch("/api/analytics"),
         apiFetch("/api/pending"),
-      ]);
-      if (s.ok) setStatus(await s.json());
-      if (a.ok) setAnalytics(await a.json());
-      if (p.ok) {
+      ];
+      if (includeAnalytics) {
+        calls.push(apiFetch("/api/analytics"));
+      }
+      const results = await Promise.all(calls);
+      const s = results[0];
+      const p = results[1];
+      const a = includeAnalytics ? results[2] : null;
+
+      if (s && s.ok) setStatus(await s.json());
+      if (a && a.ok) setAnalytics(await a.json());
+      if (p && p.ok) {
         const list: TweetItem[] = await p.json();
         setPending(list);
         setDrafts((prev) => {
@@ -434,6 +445,7 @@ export default function HomePage() {
       }
     } catch {
     } finally {
+      isRefreshingRef.current = false;
       setReady(true);
     }
   }, [apiFetch]);
@@ -475,11 +487,39 @@ export default function HomePage() {
   useEffect(() => {
     if (!isUserAuthenticated) return;
     loadConfig();
-    refresh();
+    refresh(true);
     loadHistory();
-    const t = setInterval(refresh, 6000);
-    return () => clearInterval(t);
-  }, [isUserAuthenticated, loadConfig, refresh, loadHistory]);
+
+    // Relaxed background interval: poll status & queue every 20s (skips heavy analytics)
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      refresh(false);
+    }, 20000);
+
+    // Refresh analytics every 120s (2 minutes) if tab is active
+    const tAnalytics = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      apiFetch("/api/analytics")
+        .then(async (res) => {
+          if (res.ok) setAnalytics(await res.json());
+        })
+        .catch(() => {});
+    }, 120000);
+
+    // Refresh when tab becomes visible after being backgrounded
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        refresh(false);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      clearInterval(t);
+      clearInterval(tAnalytics);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isUserAuthenticated, loadConfig, refresh, loadHistory, apiFetch]);
 
   const toggleAgent = async () => {
     if (!status) return;
@@ -587,12 +627,19 @@ export default function HomePage() {
           let attempts = 0;
           const pollInterval = setInterval(async () => {
             attempts++;
-            await refresh();
-            if (attempts >= 10) {
+            try {
+              const res = await apiFetch("/api/pending");
+              if (res.ok) {
+                const list: TweetItem[] = await res.json();
+                setPending(list);
+              }
+            } catch {}
+            if (attempts >= 6) {
               clearInterval(pollInterval);
               setScanning(false);
+              refresh(false);
             }
-          }, 2000);
+          }, 3500);
         }
       } else {
         const err = await extractApiError(res, "Feed scan failed");
@@ -946,6 +993,7 @@ export default function HomePage() {
                   onClick={() => {
                     setTab(n.id);
                     if (n.id === "history") loadHistory();
+                    if (n.id === "dashboard") refresh(true);
                   }}
                   className={`relative px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all flex items-center gap-2 ${
                     active
@@ -2206,6 +2254,7 @@ export default function HomePage() {
               onClick={() => {
                 setTab(n.id);
                 if (n.id === "history") loadHistory();
+                if (n.id === "dashboard") refresh(true);
               }}
               className={`relative flex flex-col items-center justify-center py-1 px-3 rounded-lg text-[11px] font-medium transition-all ${
                 active
