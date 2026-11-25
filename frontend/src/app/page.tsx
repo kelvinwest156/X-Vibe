@@ -584,16 +584,24 @@ export default function HomePage() {
           notify(d.message || "Please check your X connection and API key", true);
         } else {
           notify("Scanning your feed for high-resonance posts");
-          [3000, 8000, 15000, 25000].forEach((ms) => setTimeout(refresh, ms));
+          let attempts = 0;
+          const pollInterval = setInterval(async () => {
+            attempts++;
+            await refresh();
+            if (attempts >= 10) {
+              clearInterval(pollInterval);
+              setScanning(false);
+            }
+          }, 2000);
         }
       } else {
         const err = await extractApiError(res, "Feed scan failed");
         notify(err, true);
+        setScanning(false);
       }
     } catch (err: any) {
       notify(err?.message || "Failed to trigger feed scan", true);
-    } finally {
-      setTimeout(() => setScanning(false), 1500);
+      setScanning(false);
     }
   };
 

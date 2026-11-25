@@ -87,15 +87,15 @@ async def scrape_feed_action(
             logger.info("Scanning home timeline...")
 
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        await stealth.human_delay(3.0, 4.8)
+        await stealth.human_delay(0.8, 1.6)
 
         if not detected_handle:
             detected_handle = await extract_logged_in_handle(page)
 
         # Human-like variable scrolling
-        for _ in range(random.randint(2, 4)):
+        for _ in range(random.randint(1, 2)):
             await page.mouse.wheel(0, random.randint(350, 750))
-            await stealth.human_delay(1.2, 2.4)
+            await stealth.human_delay(0.4, 0.9)
 
         articles = await page.query_selector_all('article[data-testid="tweet"]')
         logger.info(f"Visible posts on screen: {len(articles)}")
@@ -221,7 +221,7 @@ async def post_reply_action(
 
         curr_mouse = await stealth.simulate_reading_dwell(
             page,
-            text_length=max(120, len(reply_text) * 2),
+            text_length=max(100, len(reply_text)),
             current_mouse_pos=curr_mouse
         )
 
@@ -232,7 +232,7 @@ async def post_reply_action(
                 if like_btn:
                     curr_mouse = await stealth.human_click(page, like_btn, curr_mouse)
                     logger.info(f"AI-directed Like executed on post {tweet_id} before replying.")
-                    await stealth.human_delay(1.0, 2.2)
+                    await stealth.human_delay(0.3, 0.6)
             except Exception:
                 pass
 
@@ -252,7 +252,7 @@ async def post_reply_action(
             reply_btn = await page.query_selector('[data-testid="reply"]')
             if reply_btn:
                 curr_mouse = await stealth.human_click(page, reply_btn, curr_mouse)
-                await stealth.human_delay(1.2, 2.2)
+                await stealth.human_delay(0.3, 0.7)
                 input_box = await page.wait_for_selector('[data-testid="tweetTextarea_0"]', timeout=10000)
 
         if not input_box:
@@ -261,7 +261,7 @@ async def post_reply_action(
             return False, err, curr_mouse
 
         curr_mouse = await stealth.human_type(page, '[data-testid="tweetTextarea_0"]', reply_text, curr_mouse)
-        await stealth.human_delay(1.2, 2.8)
+        await stealth.human_delay(0.3, 0.7)
 
         submit_selectors = [
             '[data-testid="tweetButtonInline"]',
@@ -282,7 +282,7 @@ async def post_reply_action(
                         break
             if submit_btn:
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
         if not submit_btn:
             err = "Could not find active submit button (it may be disabled or missing)."
@@ -290,7 +290,7 @@ async def post_reply_action(
             return False, err, curr_mouse
 
         curr_mouse = await stealth.human_click(page, submit_btn, curr_mouse)
-        await stealth.human_delay(3.0, 5.0)
+        await stealth.human_delay(0.8, 1.5)
         logger.info(f"Posted reply to tweet {tweet_id}")
         return True, None, curr_mouse
 
@@ -319,17 +319,17 @@ async def post_original_action(
             logger.error(err)
             return False, err, curr_mouse
 
-        curr_mouse = await stealth.simulate_reading_dwell(page, text_length=120, current_mouse_pos=curr_mouse)
+        curr_mouse = await stealth.simulate_reading_dwell(page, text_length=80, current_mouse_pos=curr_mouse)
 
         box = await page.query_selector('[data-testid="tweetTextarea_0"]')
         if not box:
             compose_btn = await page.query_selector('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/post"]')
             if compose_btn:
                 curr_mouse = await stealth.human_click(page, compose_btn, curr_mouse)
-                await stealth.human_delay(1.2, 2.2)
+                await stealth.human_delay(0.3, 0.7)
 
         curr_mouse = await stealth.human_type(page, '[data-testid="tweetTextarea_0"]', post_text.strip(), curr_mouse)
-        await stealth.human_delay(1.2, 2.5)
+        await stealth.human_delay(0.3, 0.7)
 
         submit_selectors = [
             '[data-testid="tweetButtonInline"]',
@@ -349,7 +349,7 @@ async def post_original_action(
                         break
             if submit_btn:
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
         if not submit_btn:
             err = "Could not find active Post button (it may be disabled or missing)."
@@ -357,7 +357,7 @@ async def post_original_action(
             return False, err, curr_mouse
 
         curr_mouse = await stealth.human_click(page, submit_btn, curr_mouse)
-        await stealth.human_delay(3.0, 5.0)
+        await stealth.human_delay(0.8, 1.5)
         logger.info("Successfully published original post!")
         return True, None, curr_mouse
 
@@ -392,25 +392,25 @@ async def post_thread_action(
             logger.error(err)
             return False, err, curr_mouse
 
-        curr_mouse = await stealth.simulate_reading_dwell(page, text_length=140, current_mouse_pos=curr_mouse)
+        curr_mouse = await stealth.simulate_reading_dwell(page, text_length=90, current_mouse_pos=curr_mouse)
 
         compose_btn = await page.query_selector('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/post"]')
         if compose_btn:
             curr_mouse = await stealth.human_click(page, compose_btn, curr_mouse)
-            await stealth.human_delay(1.5, 2.5)
+            await stealth.human_delay(0.4, 0.8)
         else:
             await page.goto("https://x.com/compose/post", wait_until="domcontentloaded", timeout=30000)
-            await stealth.human_delay(2.0, 3.5)
+            await stealth.human_delay(0.6, 1.2)
 
         for idx, post_content in enumerate(posts):
             textarea_selector = f'[data-testid="tweetTextarea_{idx}"]'
             curr_mouse = await stealth.human_type(page, textarea_selector, post_content, curr_mouse)
-            await stealth.human_delay(1.0, 2.2)
+            await stealth.human_delay(0.3, 0.7)
 
             if idx < len(posts) - 1:
                 add_btn = await page.wait_for_selector('[data-testid="addButton"]', state="visible", timeout=10000)
                 curr_mouse = await stealth.human_click(page, add_btn, curr_mouse)
-                await stealth.human_delay(1.0, 1.8)
+                await stealth.human_delay(0.3, 0.6)
 
         submit_selectors = [
             '[data-testid="tweetButton"]',
@@ -429,7 +429,7 @@ async def post_thread_action(
                         break
             if submit_btn:
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
         if not submit_btn:
             err = "Could not find active submit button for thread."
@@ -437,7 +437,7 @@ async def post_thread_action(
             return False, err, curr_mouse
 
         curr_mouse = await stealth.human_click(page, submit_btn, curr_mouse)
-        await stealth.human_delay(3.5, 5.5)
+        await stealth.human_delay(1.0, 1.8)
         logger.info(f"Successfully published {len(posts)}-post thread!")
         return True, None, curr_mouse
 

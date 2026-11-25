@@ -121,6 +121,82 @@ async def _sleep_idle_or_inactive_browsers():
 
 
 # ==============================================================================
+# High-Speed Async Action Dispatcher Loop
+# ==============================================================================
+
+async def async_action_dispatcher_loop():
+    """
+    Dedicated high-speed Async Action Dispatcher.
+    Continuously listens on `state.action_dispatch_queue` for immediate user approvals
+    ('Post Now') and scheduled dispatches.
+    Executes actions via the Playwright browser worker asynchronously without blocking
+    HTTP endpoints or client UI requests.
+    """
+    logger.info("High-speed Async Action Dispatcher initialized.")
+    while True:
+        try:
+            job = await state.action_dispatch_queue.get()
+            tenant_id = job.get("tenant_id") or "default"
+            tweet_id = job["tweet_id"]
+            act_type = job.get("action_type") or "reply"
+            text_to_post = job["text"]
+            tweet_url = job.get("tweet_url")
+            should_like = job.get("should_like", False)
+            was_user_edited = job.get("was_user_edited", False)
+            min_cd = job.get("min_cooldown", 10)
+            max_cd = job.get("max_cooldown", 45)
+
+            logger.info(f"Async Action Dispatcher: Processing {act_type} ({tweet_id}) [tenant={tenant_id}]...")
+            worker = state.get_tenant_browser_worker(tenant_id)
+
+            success = await worker.execute_tweet_action(
+                act_type,
+                tweet_id,
+                text_to_post,
+                tweet_url,
+                should_like=should_like
+            )
+
+            def _update_db_after_action():
+                db = SessionLocal()
+                try:
+                    state.sync_detected_username(db, tenant_id=tenant_id, worker=worker)
+                    if success:
+                        state.set_new_random_cooldown(min_cd, max_cd)
+                        update_tweet_status(
+                            db,
+                            tweet_id,
+                            status="posted",
+                            generated_text=text_to_post,
+                            user_edited=was_user_edited,
+                            should_like=should_like,
+                            tenant_id=tenant_id
+                        )
+                        logger.info(f"Async Action Dispatcher: Successfully published {act_type} ({tweet_id})!")
+                    else:
+                        err_msg = getattr(worker, "last_error", None) or f"Browser failed during {act_type} submission"
+                        update_tweet_status(
+                            db,
+                            tweet_id,
+                            status="failed",
+                            generated_text=text_to_post,
+                            error_message=err_msg,
+                            tenant_id=tenant_id
+                        )
+                        logger.error(f"Async Action Dispatcher: Failed {act_type} ({tweet_id}): {err_msg}")
+                finally:
+                    db.close()
+
+            await asyncio.to_thread(_update_db_after_action)
+            state.action_dispatch_queue.task_done()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in async action dispatcher: {e}", exc_info=True)
+            await asyncio.sleep(1)
+
+
+# ==============================================================================
 # Randomized Scheduled Queue Dispatcher Loop
 # ==============================================================================
 
@@ -131,7 +207,7 @@ async def scheduled_queue_dispatcher_loop():
     global pause, suspension, active hours, and rolling 60-minute velocity caps.
     """
     logger.info("Random schedule dispatcher initialized.")
-    await asyncio.sleep(5)
+    await asyncio.sleep(3)
 
     while True:
         try:
@@ -139,93 +215,84 @@ async def scheduled_queue_dispatcher_loop():
                 await asyncio.sleep(10)
                 continue
 
-            db = SessionLocal()
-            try:
-                ps = get_platform_settings(db)
-                if bool(getattr(ps, "global_pause_bots", False)):
-                    due_items = []
-                else:
-                    due_items = get_due_scheduled_tweets(db)
-            finally:
-                db.close()
+            def _get_due():
+                db = SessionLocal()
+                try:
+                    ps = get_platform_settings(db)
+                    if bool(getattr(ps, "global_pause_bots", False)):
+                        return []
+                    return get_due_scheduled_tweets(db)
+                finally:
+                    db.close()
+
+            due_items = await asyncio.to_thread(_get_due)
 
             if due_items:
                 for target in due_items:
                     target_tenant = getattr(target, "tenant_id", None) or "default"
-                    db = SessionLocal()
-                    try:
-                        config = get_agent_config(db, tenant_id=target_tenant)
-                        if bool(getattr(config, "is_suspended", False)):
-                            continue
-                        within_hours = is_within_active_hours(
-                            config.active_hours_start if config.active_hours_start is not None else 8,
-                            config.active_hours_end if config.active_hours_end is not None else 23,
-                        )
-                        if not within_hours:
-                            resched = datetime.utcnow() + timedelta(minutes=30)
-                            update_tweet_status(db, target.tweet_id, status="scheduled", scheduled_for=resched, tenant_id=target_tenant)
-                            continue
-
-                        warmup = bool(getattr(config, "warmup_mode", False))
-                        daily_used = get_daily_actions_count(db, tenant_id=target_tenant)
-                        daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
-                        hourly_used = get_hourly_actions_count(db, tenant_id=target_tenant)
-                        hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
-                        min_cd = config.min_cooldown_minutes or 10
-                        max_cd = config.max_cooldown_minutes or 45
-
-                        if daily_used >= daily_cap or hourly_used >= hourly_cap:
-                            logger.info(f"Target tenant '{target_tenant}' cap reached ({daily_used}/{daily_cap} daily, {hourly_used}/{hourly_cap} hourly). Postponing scheduled item.")
-                            postpone_mins = 240 if daily_used >= daily_cap else 25
-                            resched = datetime.utcnow() + timedelta(minutes=postpone_mins)
-                            update_tweet_status(db, target.tweet_id, status="scheduled", scheduled_for=resched, tenant_id=target_tenant)
-                            continue
-                    finally:
-                        db.close()
-
-                    act_type = target.action_type or "reply"
-                    logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}) [tenant={target_tenant}]. Publishing now (hourly {hourly_used + 1}/{hourly_cap})...")
-                    worker = state.get_tenant_browser_worker(target_tenant)
-                    if not os.path.isfile(worker.cookies_backup_path) and getattr(config, "cookies_json", None):
+                    
+                    def _check_and_prep():
+                        db = SessionLocal()
                         try:
-                            saved_cookies = json.loads(config.cookies_json)
-                            if isinstance(saved_cookies, list) and saved_cookies:
-                                os.makedirs(worker.profile_dir, exist_ok=True)
-                                with open(worker.cookies_backup_path, "w", encoding="utf-8") as f:
-                                    json.dump(saved_cookies, f, indent=2)
-                        except Exception:
-                            pass
-                    success = await worker.execute_tweet_action(
-                        act_type,
-                        target.tweet_id,
-                        target.generated_text,
-                        target.tweet_url,
-                        should_like=bool(getattr(target, "should_like", False)),
-                    )
-                    db = SessionLocal()
-                    try:
-                        state.sync_detected_username(db, tenant_id=target_tenant, worker=worker)
-                        if success:
-                            state.set_new_random_cooldown(min_cd, max_cd)
-                            update_tweet_status(db, target.tweet_id, status="posted", tenant_id=target_tenant)
-                            logger.info(f"Successfully published scheduled {act_type} ({target.tweet_id}) for tenant '{target_tenant}'!")
-                        else:
-                            err_msg = getattr(worker, "last_error", None) or f"Browser failed while publishing scheduled {act_type}"
-                            update_tweet_status(
-                                db,
-                                target.tweet_id,
-                                status="failed",
-                                error_message=err_msg,
-                                tenant_id=target_tenant,
+                            config = get_agent_config(db, tenant_id=target_tenant)
+                            if bool(getattr(config, "is_suspended", False)):
+                                return False, None
+                            within_hours = is_within_active_hours(
+                                config.active_hours_start if config.active_hours_start is not None else 8,
+                                config.active_hours_end if config.active_hours_end is not None else 23,
                             )
-                    finally:
-                        db.close()
-                    break
+                            if not within_hours:
+                                resched = datetime.utcnow() + timedelta(minutes=30)
+                                update_tweet_status(db, target.tweet_id, status="scheduled", scheduled_for=resched, tenant_id=target_tenant)
+                                return False, None
 
-            await asyncio.sleep(10)
+                            warmup = bool(getattr(config, "warmup_mode", False))
+                            daily_used = get_daily_actions_count(db, tenant_id=target_tenant)
+                            daily_cap = min(8, config.daily_action_cap or 15) if warmup else (config.daily_action_cap or 15)
+                            hourly_used = get_hourly_actions_count(db, tenant_id=target_tenant)
+                            hourly_cap = 3 if warmup else (getattr(config, "hourly_action_cap", 6) or 6)
+                            min_cd = config.min_cooldown_minutes or 10
+                            max_cd = config.max_cooldown_minutes or 45
+
+                            if daily_used >= daily_cap or hourly_used >= hourly_cap:
+                                postpone_mins = 240 if daily_used >= daily_cap else 25
+                                resched = datetime.utcnow() + timedelta(minutes=postpone_mins)
+                                update_tweet_status(db, target.tweet_id, status="scheduled", scheduled_for=resched, tenant_id=target_tenant)
+                                return False, None
+
+                            # Mark as dispatching
+                            update_tweet_status(db, target.tweet_id, status="dispatching", tenant_id=target_tenant)
+                            return True, (min_cd, max_cd)
+                        finally:
+                            db.close()
+
+                    should_dispatch, cd_tuple = await asyncio.to_thread(_check_and_prep)
+                    if not should_dispatch or not cd_tuple:
+                        continue
+
+                    min_cd, max_cd = cd_tuple
+                    act_type = target.action_type or "reply"
+                    logger.info(f"Scheduled time reached for {act_type} ({target.tweet_id}) [tenant={target_tenant}]. Enqueueing to async dispatcher...")
+
+                    worker = state.get_tenant_browser_worker(target_tenant)
+                    state.action_dispatch_queue.put_nowait({
+                        "tenant_id": target_tenant,
+                        "tweet_id": target.tweet_id,
+                        "action_type": act_type,
+                        "text": target.generated_text,
+                        "tweet_url": target.tweet_url,
+                        "should_like": bool(getattr(target, "should_like", False)),
+                        "was_user_edited": bool(getattr(target, "user_edited", False)),
+                        "min_cooldown": min_cd,
+                        "max_cooldown": max_cd,
+                    })
+
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logger.error(f"Error in scheduled dispatcher loop: {e}")
-            await asyncio.sleep(15)
+            await asyncio.sleep(10)
 
 
 # ==============================================================================

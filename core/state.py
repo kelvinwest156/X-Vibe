@@ -91,8 +91,10 @@ active_search_query_state: Optional[str] = None
 # Background asynchronous tasks and events
 bg_worker_task: Optional[asyncio.Task] = None
 scheduler_worker_task: Optional[asyncio.Task] = None
+action_dispatcher_task: Optional[asyncio.Task] = None
 scrape_now_flag = asyncio.Event()
 tenant_scrape_queue: asyncio.Queue = asyncio.Queue()
+action_dispatch_queue: asyncio.Queue = asyncio.Queue()
 
 
 def get_tenant_browser_worker(tenant_id: str = "default") -> XBrowserWorker:

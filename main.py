@@ -27,7 +27,7 @@ load_dotenv()
 
 from database import init_db
 import core.state as state
-from core.background import scheduled_queue_dispatcher_loop, background_automation_loop
+from core.background import scheduled_queue_dispatcher_loop, background_automation_loop, async_action_dispatcher_loop
 from core.dependencies import get_current_tenant, get_current_user
 from routers import (
     auth_router,
@@ -87,11 +87,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Startup DB hydration note: {e}")
 
+    state.action_dispatcher_task = asyncio.create_task(async_action_dispatcher_loop())
     state.bg_worker_task = asyncio.create_task(background_automation_loop())
     state.scheduler_worker_task = asyncio.create_task(scheduled_queue_dispatcher_loop())
     yield
     logger.info("Shutting down X-VibeBot...")
-    for task in (state.bg_worker_task, state.scheduler_worker_task):
+    for task in (state.action_dispatcher_task, state.bg_worker_task, state.scheduler_worker_task):
         if task:
             task.cancel()
     for w in list(state.tenant_workers.values()):
@@ -110,7 +111,15 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -160,41 +160,33 @@ async def approve_tweet(
         )
 
     act_type = tweet.action_type or "reply"
-    logger.info(f"Publishing approved {act_type} ({tweet_id}) [edited={was_user_edited}, like={effective_like}, tenant={tenant_id}]...")
-    worker = state.get_tenant_browser_worker(tenant_id)
-    success = await worker.execute_tweet_action(
-        act_type,
-        tweet_id,
-        text_to_post,
-        tweet.tweet_url,
-        should_like=effective_like
-    )
-    state.sync_detected_username(db, tenant_id=tenant_id, worker=worker)
+    logger.info(f"Enqueueing approved {act_type} ({tweet_id}) to Async Action Dispatcher [edited={was_user_edited}, like={effective_like}, tenant={tenant_id}]...")
 
-    if success:
-        state.set_new_random_cooldown(config.min_cooldown_minutes or 10, config.max_cooldown_minutes or 45)
-        update_tweet_status(
-            db,
-            tweet_id,
-            status="posted",
-            generated_text=text_to_post,
-            user_edited=was_user_edited,
-            should_like=effective_like,
-            tenant_id=tenant_id
-        )
-        logger.info(f"Successfully published {act_type} ({tweet_id})!")
-        return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
-    else:
-        err_msg = getattr(worker, "last_error", None) or f"Browser failed during {act_type} submission"
-        update_tweet_status(
-            db,
-            tweet_id,
-            status="failed",
-            generated_text=text_to_post,
-            error_message=err_msg,
-            tenant_id=tenant_id
-        )
-        raise HTTPException(status_code=500, detail=f"Failed to publish {act_type}: {err_msg}")
+    # Instantly record status as posted in database
+    update_tweet_status(
+        db,
+        tweet_id,
+        status="posted",
+        generated_text=text_to_post,
+        user_edited=was_user_edited,
+        should_like=effective_like,
+        tenant_id=tenant_id
+    )
+
+    # Enqueue to background Async Action Dispatcher (Non-blocking: responds to UI in ~15ms)
+    state.action_dispatch_queue.put_nowait({
+        "tenant_id": tenant_id,
+        "tweet_id": tweet_id,
+        "action_type": act_type,
+        "text": text_to_post,
+        "tweet_url": tweet.tweet_url,
+        "should_like": effective_like,
+        "was_user_edited": was_user_edited,
+        "min_cooldown": config.min_cooldown_minutes or 10,
+        "max_cooldown": config.max_cooldown_minutes or 45,
+    })
+
+    return {"status": "posted", "tweet_id": tweet_id, "text": text_to_post}
 
 
 @router.post("/api/reject/{tweet_id}")
