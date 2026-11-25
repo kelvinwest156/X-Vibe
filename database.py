@@ -72,13 +72,24 @@ engine = create_engine(DB_FILE, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def init_db():
+def init_db(retries: int = 3, delay: float = 2.0):
     """Initializes database tables, auto-migrates new columns, and seeds default AgentConfig."""
-    Base.metadata.create_all(bind=engine)
+    last_err = None
+    for attempt in range(retries):
+        try:
+            Base.metadata.create_all(bind=engine)
 
-    from sqlalchemy import inspect
-    inspector = inspect(engine)
-    existing_tables = inspector.get_table_names()
+            from sqlalchemy import inspect
+            inspector = inspect(engine)
+            existing_tables = inspector.get_table_names()
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Database init connection attempt {attempt + 1}/{retries} failed: {e}. Retrying in {delay}s...")
+            time.sleep(delay)
+    else:
+        logger.error(f"Failed to connect to database in init_db after {retries} attempts: {last_err}. Proceeding with caution.")
+        return
 
     if "agent_config" in existing_tables:
         cfg_cols = [c["name"] for c in inspector.get_columns("agent_config")]

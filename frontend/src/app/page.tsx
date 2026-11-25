@@ -160,7 +160,7 @@ async function extractApiError(res: Response, fallback = "Action failed"): Promi
     }
   } catch {}
   if (res.status === 429) {
-    return "API rate limit or daily quota reached (429). Please try again later or switch API keys in Settings.";
+    return "Server rate limit active (429). Background polling has paused for 60 seconds to allow the server to cooldown.";
   }
   if (res.status === 401 || res.status === 403) {
     return "Authentication error (401/403). Please verify your API key or session.";
@@ -381,16 +381,36 @@ export default function HomePage() {
     notify("Signed out of workspace.");
   }, [notify]);
 
+  const rateLimitedUntilRef = useRef<number>(0);
+  const last429NoticeRef = useRef<number>(0);
+
   const apiFetch = useCallback(
-    (url: string, options: RequestInit = {}) => {
+    async (url: string, options: RequestInit = {}) => {
+      // If we are currently in an edge rate-limit cooldown, skip network request
+      if (Date.now() < rateLimitedUntilRef.current) {
+        return new Response(JSON.stringify({ detail: "Client paused due to edge rate limit cooldown." }), {
+          status: 429,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
       const headers = new Headers(options.headers || {});
       headers.set("X-Tenant-Id", tenantId);
       if (authToken) {
         headers.set("Authorization", `Bearer ${authToken}`);
       }
-      return fetch(url, { ...options, headers });
+      const res = await fetch(url, { ...options, headers });
+      if (res.status === 429) {
+        // Back off for 60 seconds so the server rate limiter resets
+        rateLimitedUntilRef.current = Date.now() + 60000;
+        if (Date.now() - last429NoticeRef.current > 60000) {
+          last429NoticeRef.current = Date.now();
+          notify("Server edge rate limit reached (429). Pausing automatic sync for 60 seconds to allow the server to cooldown.", true);
+        }
+      }
+      return res;
     },
-    [tenantId, authToken]
+    [tenantId, authToken, notify]
   );
 
   const [apiKey, setApiKey] = useState("");
@@ -416,6 +436,7 @@ export default function HomePage() {
 
   const refresh = useCallback(async (includeAnalytics = false) => {
     if (isRefreshingRef.current) return;
+    if (Date.now() < rateLimitedUntilRef.current) return;
     isRefreshingRef.current = true;
     try {
       const calls: Promise<Response>[] = [
@@ -490,21 +511,23 @@ export default function HomePage() {
     refresh(true);
     loadHistory();
 
-    // Relaxed background interval: poll status & queue every 20s (skips heavy analytics)
+    // Relaxed background interval: poll status & queue every 30s (skips heavy analytics)
     const t = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
+      if (Date.now() < rateLimitedUntilRef.current) return;
       refresh(false);
-    }, 20000);
+    }, 30000);
 
-    // Refresh analytics every 120s (2 minutes) if tab is active
+    // Refresh analytics every 180s (3 minutes) if tab is active
     const tAnalytics = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
+      if (Date.now() < rateLimitedUntilRef.current) return;
       apiFetch("/api/analytics")
         .then(async (res) => {
           if (res.ok) setAnalytics(await res.json());
         })
         .catch(() => {});
-    }, 120000);
+    }, 180000);
 
     // Refresh when tab becomes visible after being backgrounded
     const handleVisibility = () => {

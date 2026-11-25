@@ -54,8 +54,11 @@ logger = logging.getLogger("x_vibebot.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manages application startup (database init, background worker loops) and graceful shutdown."""
-    init_db()
-    logger.info("Database verified.")
+    try:
+        init_db()
+        logger.info("Database verified.")
+    except Exception as e:
+        logger.warning(f"Database verification warning during lifespan: {e}")
 
     # Cloud Persistence: Hydrate API keys and browser session cookies from DB on startup
     try:
@@ -125,25 +128,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static asset directories
+class CachedStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            req_path = scope.get("path", "")
+            if "/_next/static/" in req_path or "static/" in path or "/logos/" in req_path:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=86400"
+        return response
+
+
+# Mount static asset directories with aggressive immutable caching for Next.js chunks
 static_dir = os.path.join(state.BASE_DIR, "static")
 os.makedirs(static_dir, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
+app.mount("/static", CachedStaticFiles(directory=static_dir), name="static")
 
 next_out_dir = os.path.join(state.BASE_DIR, "frontend", "out")
 if os.path.isdir(os.path.join(next_out_dir, "_next")):
-    app.mount("/_next", StaticFiles(directory=os.path.join(next_out_dir, "_next")), name="next_assets")
+    app.mount("/_next", CachedStaticFiles(directory=os.path.join(next_out_dir, "_next")), name="next_assets")
 elif os.path.isdir(os.path.join(static_dir, "_next")):
-    app.mount("/_next", StaticFiles(directory=os.path.join(static_dir, "_next")), name="next_static_assets")
+    app.mount("/_next", CachedStaticFiles(directory=os.path.join(static_dir, "_next")), name="next_static_assets")
 
 # Mount logos directory for avatar and branding assets
 logos_dir = os.path.join(next_out_dir, "logos")
 if os.path.isdir(logos_dir):
-    app.mount("/logos", StaticFiles(directory=logos_dir), name="logos")
+    app.mount("/logos", CachedStaticFiles(directory=logos_dir), name="logos")
 elif os.path.isdir(os.path.join(static_dir, "logos")):
-    app.mount("/logos", StaticFiles(directory=os.path.join(static_dir, "logos")), name="logos")
+    app.mount("/logos", CachedStaticFiles(directory=os.path.join(static_dir, "logos")), name="logos")
 elif os.path.isdir(os.path.join(state.BASE_DIR, "frontend", "public", "logos")):
-    app.mount("/logos", StaticFiles(directory=os.path.join(state.BASE_DIR, "frontend", "public", "logos")), name="logos")
+    app.mount("/logos", CachedStaticFiles(directory=os.path.join(state.BASE_DIR, "frontend", "public", "logos")), name="logos")
 
 # Include modular domain routers
 app.include_router(auth_router)

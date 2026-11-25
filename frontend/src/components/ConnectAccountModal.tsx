@@ -58,9 +58,25 @@ export default function ConnectAccountModal({
     if (!isOpen || !windowOpened || isLoggedIn) return;
 
     let isCancelled = false;
+    let attempts = 0;
     const interval = setInterval(async () => {
+      attempts++;
+      if (attempts > 20) {
+        clearInterval(interval);
+        setWindowOpened(false);
+        return;
+      }
       try {
         const res = await apiFetch("/api/browser/check-session", { method: "POST" });
+        if (res.status === 429) {
+          clearInterval(interval);
+          setWindowOpened(false);
+          setFeedback({
+            text: "Server rate limit active (429). Please wait a moment before trying again.",
+            isError: true,
+          });
+          return;
+        }
         const data = await res.json();
         if (!isCancelled && res.ok && data.is_logged_in) {
           clearInterval(interval);
@@ -79,7 +95,7 @@ export default function ConnectAccountModal({
       } catch {
         // Continue polling silently
       }
-    }, 1800);
+    }, 5000);
 
     return () => {
       isCancelled = true;
